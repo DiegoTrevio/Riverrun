@@ -131,6 +131,8 @@ if ./riverrun update >/dev/null 2>&1; then echo "ERROR: debió fallar"; exit 1; 
 grep -q "docker tag sha256:abc123 riverrun-backend:previous" "$LOG"
 grep -q "docker tag riverrun-backend:previous plataforma-backend" "$LOG"
 grep -q "up -d --no-build --no-deps backend" "$LOG"
+# La base y Redis vuelven a la configuración anterior antes que el backend (INF-2: red interna y contraseña de Redis).
+[[ "$(grep -n "up -d --no-build --no-deps postgres redis" "$LOG" | head -1 | cut -d: -f1)" -lt "$(grep -n "up -d --no-build --no-deps backend" "$LOG" | head -1 | cut -d: -f1)" ]] || { cat "$LOG"; echo "ERROR: la vuelta atrás no regresó la base y Redis antes del backend"; exit 1; }
 
 echo "== sin respaldo no se actualiza"
 : > "$LOG"; newcommit v4

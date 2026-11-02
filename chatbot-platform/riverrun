@@ -152,7 +152,8 @@ ensure_redis_password() {
 
 wait_postgres() { # segundos
   local i
-  for (( i = 0; i < ${1:-60}; i++ )); do dc exec -T postgres pg_isready -U chatbot >/dev/null 2>&1 && return 0; sleep 1; done
+  # Por TCP: en el primer arranque, el servidor temporal que corre los scripts de inicio solo escucha en el socket.
+  for (( i = 0; i < ${1:-60}; i++ )); do dc exec -T postgres pg_isready -h 127.0.0.1 -U chatbot >/dev/null 2>&1 && return 0; sleep 1; done
   return 1
 }
 
@@ -667,6 +668,10 @@ update_rollback() {
     fi
   fi
   git reset -q --hard "$OLD_HEAD"
+  # La base y Redis vuelven a la configuración anterior (su red y Redis sin contraseña, como los espera la versión
+  # anterior): si se quedaran en la red interna o con contraseña, el backend y Evolution de antes no los alcanzarían.
+  dc up -d --no-build --no-deps postgres redis || true
+  wait_postgres 60 || true
   if [[ -n "$PREV_BACKEND" ]]; then
     restore_backend_image
     APP_VERSION="$(version)" dc up -d --no-build --no-deps backend

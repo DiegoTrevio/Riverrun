@@ -23,7 +23,7 @@ Cada etapa es un PR con pruebas que fallan con el código anterior y pasan con e
 | 5. IA y Copiloto | Tarjetas de confirmación completas, costo de sub-llamados, notas de cotización, fuga de instrucciones (AI-5…AI-13) | 5′ ✅ (revisión del 31 de octubre: AI-14 y bajos de IA); AI-6…AI-13 pendientes |
 | 6. Secretos y datos | Claves separadas con rotación, credenciales de canales cifradas, retención en Evolution (INF-6…INF-8, INF-13) | 6′ ✅ (revisión del 31 de octubre: ZIP sin secretos, `HTTP_LOG` sin tokens, IN-21); INF-6…INF-8, INF-13 e IN-6/7 pendientes |
 | 7. Detección | Bitácora de seguridad, alertas, avisos al usuario | Pendiente |
-| 8. Contenedores | Roles de base de datos, Redis con clave, redes aisladas, límites, imágenes al día (INF-2, INF-3, INF-9, INF-10) | Pendiente |
+| 8. Contenedores | Roles de base de datos, Redis con clave, redes aisladas, límites, imágenes al día (INF-2, INF-3, INF-9, INF-10) | 8 ✅ (los altos: INF-2 e INF-3); INF-9 e INF-10 pendientes |
 | 9. Servidor | `./riverrun harden`: firewall (también `DOCKER-USER`), SSH con llave, fail2ban, actualizaciones automáticas, respaldos con cifrado autenticado (INF-11, INF-12) | 9′ ✅ (revisión del 31 de octubre: claves de ejemplo en producción); `harden`, INF-11 e INF-12 pendientes |
 | 10. Cadena de suministro | Dependabot, versiones fijadas por SHA y digest, búsqueda de secretos, escaneos programados (INF-4, INF-15) | 10′ ✅ (revisión del 31 de octubre: Docker sin `curl \| sh`); INF-4 e INF-15 pendientes |
 
@@ -392,13 +392,32 @@ Revisión independiente: encontró que espacios o comillas saltaban la regla, qu
 
 **Queda para después:** `./riverrun harden` (INF-11, INF-12) y la cadena de suministro de fondo (INF-4, INF-15), en las etapas 9 y 10 originales.
 
+## Etapa 8: contenedores (los altos INF-2 e INF-3)
+
+| # | Hallazgo | Arreglo | Prueba |
+|---|---|---|---|
+| INF-2 | El backend, Evolution y el respaldo entraban a PostgreSQL con el mismo superusuario: un fallo en Evolution leía las conversaciones del backend, y uno en el backend podía ejecutar programas en el servidor de la base (`COPY … PROGRAM`). Redis, que guarda las claves de las sesiones de WhatsApp, no tenía contraseña, y todo estaba en una sola red. | `docker/db-roles.sql`: `riverrun_app` (dueño de la base `chatbot`) y `riverrun_evolution` (dueño de `evolution`), sin superusuario, sin crear bases ni roles, y cada uno solo puede conectarse a su base; todo lo de `public` pasa a su dueño y el superusuario deja creadas `pgcrypto` y `vector`. `./riverrun` lo aplica en `install` (antes de arrancar), en `update` (después del respaldo; si falla, la versión nueva no se aplica) y en `restore`, y a mano con `./riverrun db-roles`. Redis con contraseña (`REDIS_PASSWORD`, generada). PostgreSQL y Redis en una red interna sin salida a internet que Caddy no alcanza. La vuelta atrás de `update` regresa primero la base y Redis a la configuración anterior. Aviso en la revisión de configuración si producción sigue con el superusuario. | `scripts/test-db-roles.sh` (PostgreSQL real: base migrada por el superusuario y base nueva migrada por la app), `scripts/test-cli.sh`, `config-check.test.ts` |
+| INF-3 | `./riverrun update` nunca actualizaba Caddy, Node, Redis ni PostgreSQL. | `update` construye con `--pull` (la base de Node del backend y del respaldo con sus parches) y descarga Redis y Caddy de su misma etiqueta. PostgreSQL no se cambia solo: cambiar su imagen sobre un volumen existente sigue con su procedimiento (`docs/semantic-activation.md`). | `scripts/test-cli.sh` |
+
+Revisión independiente: encontró que la vuelta atrás dejaba al backend anterior sin alcanzar la base (seguía en la red interna) y a Evolution sin poder entrar a Redis (seguía con contraseña), y que en una instalación nueva los usuarios podían crearse mientras PostgreSQL aún corría sus scripts de inicio (solo escucha en el socket); ambos quedaron corregidos (la base y Redis vuelven primero; la espera es por TCP, también en su revisión de salud).
+
+**Cambios que nota la gente:**
+- La primera actualización con esta versión reinicia PostgreSQL y Redis (cambian de red, y Redis toma su contraseña) además del backend y Evolution: unos segundos sin servicio, como en cualquier actualización. Las sesiones de WhatsApp se conservan (Redis guarda sus datos en su volumen).
+- `.env` gana `DB_APP_USER`, `DB_APP_PASSWORD`, `DB_EVOLUTION_USER`, `DB_EVOLUTION_PASSWORD` y `REDIS_PASSWORD` (los genera `./riverrun`; no se muestran).
+- Quien levante los contenedores con `docker compose` sin `./riverrun` sigue funcionando con el superusuario hasta correr `./riverrun db-roles`.
+
+**Queda para después:**
+- El respaldo sigue con el superusuario: comprueba cada copia restaurándola (crea una base y la extensión `vector`). No tiene puertos ni recibe tráfico de afuera.
+- Si cambia la versión de pgvector en la imagen, la extensión instalada no se actualiza sola (el backend ya no puede): se hace con el superusuario (`ALTER EXTENSION vector UPDATE`).
+- Límites de memoria y rotación de registros (INF-9) y el aviso de `PANEL_BIND=0.0.0.0` (INF-10).
+- Se probó con PostgreSQL real y con un Docker simulado; en esta revisión no hubo Docker real: conviene una prueba en un servidor de staging antes de producción.
+
 ## Hallazgos pendientes por etapa
 
 Abreviaturas: ID identidad, PAY cobros, IN entradas, AI IA y Copiloto, INF servidor.
 
-### Altos (en la etapa 8)
-- **INF-2** Un solo superusuario de PostgreSQL compartido por el backend, Evolution y el respaldo; Redis sin contraseña (guarda las claves de las sesiones de WhatsApp); red plana.
-- **INF-3** `./riverrun update` nunca actualiza Caddy, Node, Redis ni PostgreSQL.
+### Altos
+Ninguno: INF-2 e INF-3 se corrigieron en la etapa 8.
 
 ### Medios
 - **PAY-6** Cuentas sin cupo siguen gastando IA (transcripción, Copiloto, herramientas con IA); las que están en pausa ya no, desde la 3a.
