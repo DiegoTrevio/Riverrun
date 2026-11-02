@@ -427,3 +427,30 @@ t('AI-9: la IA que gastan las herramientas por dentro cuenta para el costo del p
   assert.ok(Math.abs(turn.usd - (own + sub)) < 1e-6, `el turno (${turn.usd}) suma lo del Copiloto (${own}) y lo de la herramienta (${sub})`);
   await undo(lastAction(out));
 });
+
+t('AI-9: al confirmar una tarjeta, la IA que gasta la herramienta cuenta para el pedido que la propuso', async () => {
+  const contact = conv.contact_id;
+  const th = (await owner('POST', '/api/copilot/threads', {})).json().id as string;
+  const say = async (text: string) => {
+    assert.equal((await owner('POST', `/api/copilot/threads/${th}/messages`, { text })).statusCode, 202);
+    await waitFor(async () => (await owner('GET', `/api/copilot/threads/${th}`)).json().turn?.status !== 'running', 8000);
+    return (await owner('GET', `/api/copilot/threads/${th}`)).json();
+  };
+  // Etiquetar a un cliente deja su nombre en el hilo: el cambio de instrucciones siguiente llega como tarjeta (AI-5).
+  script([call('etiquetar', { contacto_ids: [contact], agregar: ['revisar'] }), 'Listo.']);
+  await say('Etiqueta a ese cliente para revisar');
+  h.setScript(() => JSON.stringify({ summary: 'Quité el corte.', question: '', operations: [{ op: 'remove', line: 3, text: '' }] }));
+  script([call('cambiar_instrucciones', { agente_id: h.botId, cambio: 'quita el precio del corte' }), 'Queda por confirmar.']);
+  const out = await say('Quita el precio del corte');
+  const a = lastAction(out);
+  assert.equal(a.status, 'proposed', JSON.stringify(a));
+  const turnCost = async () => Number((await pool.query(`SELECT cost_usd FROM copilot_turns WHERE id = $1`, [a.turn_id])).rows[0].cost_usd);
+  const before = await turnCost();
+  const since = (await pool.query(`SELECT now() AS t`)).rows[0].t;
+  assert.equal((await confirm(a)).statusCode, 200);
+  const sub = Number((await pool.query(`SELECT coalesce(sum(coalesce(charged_usd, reserved_usd)), 0) AS usd FROM ai_spend WHERE account_id = $1 AND kind = 'prompt_edit' AND created_at >= $2`, [h.accountId, since])).rows[0].usd);
+  assert.ok(sub > 0, 'la edición al confirmar gastó IA');
+  assert.ok(Math.abs((await turnCost()) - before - sub) < 1e-6, 'y se sumó al pedido');
+  const done = ((await owner('GET', `/api/copilot/threads/${th}`)).json().actions as any[]).find((x) => x.id === a.id);
+  await undo(done);
+});

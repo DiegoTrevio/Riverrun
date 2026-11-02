@@ -11,8 +11,8 @@ import { normalize } from './text.js';
 /** Palabras seguidas iguales a partir de las cuales se considera copia. */
 export const LEAK_RUN = 12;
 
-/** Los nombres de los campos del JSON de decisión y los títulos del prompt no tienen por qué llegar al cliente. */
-const MARKERS = /\b(save_data|image_ids|context_image_ids|saved_message_codes|info_not_found|flow_step|wants_final|qty_quote|item_code)\b|<\/?instrucciones>|reglas que nunca se rompen|configuracion del agente|estado de la conversacion|orden de prioridad/;
+/** Los campos del JSON de decisión y los títulos del prompt (con su «#»: sin él son frases comunes) no llegan al cliente. */
+const MARKERS = /\b(save_data|image_ids|context_image_ids|saved_message_codes|info_not_found|flow_step|wants_final|qty_quote|item_code)\b|<\/?instrucciones>|#+ *(reglas que nunca se rompen|configuracion del agente|estado de la conversacion|orden de prioridad|quien eres|como responder)/;
 
 const words = (s: string) => normalize(s).replace(/[^\p{L}\p{N}%$]+/gu, ' ').trim().split(' ').filter(Boolean);
 
