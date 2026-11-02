@@ -58,6 +58,9 @@ case "$*" in
   "inspect --format {{.Image}} evo-contenedor") echo "id-$(cat EVO_RUNNING)" ;;
   "image inspect --format {{.Id}} "*) ref="${*##* }"; [[ -f "PULLED" && "$(cat PULLED)" == "$ref" || "$ref" == "$(cat EVO_RUNNING 2>/dev/null)" ]] && echo "id-$ref" ;;
   "image inspect --format {{range .RepoDigests}}"*) echo "$(cat EVO_RUNNING)@sha256:anterior" ;;
+  # Usuarios de PostgreSQL por servicio: guarda lo que recibe (las contraseñas y docker/db-roles.sql).
+  *"psql -X -q -U chatbot -d postgres"*) cat > ROLES_IN; [[ -f FALLA_ROLES ]] && exit 1; exit 0 ;;
+  *"pg_isready"*) exit 0 ;;
   *"psql -U chatbot -d evolution"*) cat EVO_MIG 2>/dev/null || echo "-" ;;
   *"psql -U chatbot -d chatbot"*) echo "palmas,otra" ;;
   *"config-check.js"*) [[ -f CONFIG_NO_CORRE ]] && exit 5; echo "Configuración (producción): 0 crítico(s)"; [[ -f CONFIG_MALA ]] && { echo "✕ [CRÍTICO] SESSION_SECRET es demasiado corto"; exit 2; }; exit 0 ;;
@@ -76,8 +79,8 @@ git init -q --bare "$work/origin.git"
 git clone -q "$work/origin.git" "$work/app" 2>/dev/null
 cd "$work/app"
 # Estado del docker simulado y .env: nunca entran en los commits de prueba (EVO_IMAGE sí: es "código").
-printf '%s\n' .env EVO_RUNNING EVO_MIG EVO_PLAN_RC EVO_VERIFY_RC PULLED MIGRA_AL_ARRANCAR CONFIG_MALA PULL_FALLA FALLA_RESPALDO FALLA_PREVIA SIN_FUNCIONAL CONFIG_NO_CORRE HEALTH_N FALLA_TARDIA FALLA_SOSTENIDA REKEY_IN FALLA_REKEY > .gitignore
-cp "$here/riverrun" . && echo "v1" > VERSION && git add -A && git commit -qm "v1" && git push -q origin HEAD:main 2>/dev/null
+printf '%s\n' .env EVO_RUNNING EVO_MIG EVO_PLAN_RC EVO_VERIFY_RC PULLED MIGRA_AL_ARRANCAR CONFIG_MALA PULL_FALLA FALLA_RESPALDO FALLA_PREVIA SIN_FUNCIONAL CONFIG_NO_CORRE HEALTH_N FALLA_TARDIA FALLA_SOSTENIDA REKEY_IN FALLA_REKEY ROLES_IN FALLA_ROLES > .gitignore
+cp "$here/riverrun" . && mkdir -p docker && cp "$here/docker/db-roles.sql" docker/ && echo "v1" > VERSION && git add -A && git commit -qm "v1" && git push -q origin HEAD:main 2>/dev/null
 git branch -q --set-upstream-to=origin/main 2>/dev/null || git branch -q -u origin/main
 # Publica una versión nueva en el "origin" y deja la copia local donde estaba. $3 = imagen de Evolution del código nuevo.
 newcommit() {
@@ -103,21 +106,39 @@ newcommit v2
 [[ "$(cat VERSION)" == v2 ]]
 grep -n "backup.sh now\|up -d --build" "$LOG" | head -2 | cut -d: -f2- | head -1 | grep -q "backup.sh now"
 grep -q "up -d --build" "$LOG"
+# INF-3: la base de Node y del respaldo con parches (--pull), y Redis y Caddy de su misma etiqueta.
+grep -q "compose build --pull backend backup" "$LOG" || { cat "$LOG"; echo "ERROR: no construyó con --pull"; exit 1; }
+grep -q "compose pull --quiet redis caddy" "$LOG" || { echo "ERROR: no descargó Redis ni Caddy"; exit 1; }
+# INF-2: usuarios de PostgreSQL por servicio (después del respaldo, antes de levantar) y Redis con contraseña.
+grep -q "set app_pw '" ROLES_IN && grep -q "riverrun_app" ROLES_IN || { echo "ERROR: no corrió db-roles.sql"; exit 1; }
+[[ "$(grep -n "backup.sh now" "$LOG" | head -1 | cut -d: -f1)" -lt "$(grep -n "psql -X -q -U chatbot -d postgres" "$LOG" | head -1 | cut -d: -f1)" ]] || { echo "ERROR: los usuarios de PostgreSQL antes del respaldo"; exit 1; }
+grep -q "^DB_APP_USER=riverrun_app$" .env && grep -Eq "^DB_APP_PASSWORD=.{40,}$" .env && grep -q "^DB_EVOLUTION_USER=riverrun_evolution$" .env && grep -Eq "^REDIS_PASSWORD=.{40,}$" .env || { cat .env; echo "ERROR: faltan usuarios o contraseñas en .env"; exit 1; }
+app_pw="$(sed -n 's/^DB_APP_PASSWORD=//p' .env)"
+
+echo "== usuarios de PostgreSQL: si fallan no se aplica la versión; al repetir, las contraseñas no cambian"
+: > "$LOG"; newcommit v2b; touch FALLA_ROLES
+if ./riverrun update >/dev/null 2>&1; then echo "ERROR: actualizó sin los usuarios de PostgreSQL"; exit 1; fi
+[[ "$(cat VERSION)" == v2 ]] && ! grep -q "up -d --build" "$LOG" || { echo "ERROR: aplicó la versión con db-roles fallido"; exit 1; }
+rm -f FALLA_ROLES
+./riverrun update >/dev/null
+[[ "$(cat VERSION)" == v2b && "$(sed -n 's/^DB_APP_PASSWORD=//p' .env)" == "$app_pw" ]] || { echo "ERROR: cambió la contraseña de la app al repetir"; exit 1; }
 
 echo "== versión nueva enferma: vuelve a la anterior"
 : > "$LOG"
 newcommit v3-mala VERSION_MALA
 if ./riverrun update >/dev/null 2>&1; then echo "ERROR: debió fallar"; exit 1; fi
-[[ "$(cat VERSION)" == v2 && ! -f VERSION_MALA ]] || { echo "ERROR: no volvió al código anterior"; exit 1; }
+[[ "$(cat VERSION)" == v2b && ! -f VERSION_MALA ]] || { echo "ERROR: no volvió al código anterior"; exit 1; }
 grep -q "docker tag sha256:abc123 riverrun-backend:previous" "$LOG"
 grep -q "docker tag riverrun-backend:previous plataforma-backend" "$LOG"
 grep -q "up -d --no-build --no-deps backend" "$LOG"
+# La base y Redis vuelven a la configuración anterior antes que el backend (INF-2: red interna y contraseña de Redis).
+[[ "$(grep -n "up -d --no-build --no-deps postgres redis" "$LOG" | head -1 | cut -d: -f1)" -lt "$(grep -n "up -d --no-build --no-deps backend" "$LOG" | head -1 | cut -d: -f1)" ]] || { cat "$LOG"; echo "ERROR: la vuelta atrás no regresó la base y Redis antes del backend"; exit 1; }
 
 echo "== sin respaldo no se actualiza"
 : > "$LOG"; newcommit v4
 touch FALLA_RESPALDO
 if ./riverrun update >/dev/null 2>&1; then echo "ERROR: actualizó sin respaldo"; exit 1; fi
-[[ "$(cat VERSION)" == v2 ]]
+[[ "$(cat VERSION)" == v2b ]]
 ! grep -q "up -d --build" "$LOG"
 rm -f FALLA_RESPALDO
 

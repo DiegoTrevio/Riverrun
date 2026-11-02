@@ -16,7 +16,7 @@ const KEY = {
 const installed = (over: Env = {}): Env => ({
   NODE_ENV: 'production',
   PORT: '3000',
-  DATABASE_URL: `postgres://chatbot:${KEY.db}@postgres:5432/chatbot`,
+  DATABASE_URL: `postgres://riverrun_app:${KEY.db}@postgres:5432/chatbot`,
   WEBHOOK_BASE_URL: 'http://backend:3000',
   PUBLIC_BASE_URL: 'https://bot.ejemplo.com',
   DOMAIN: 'bot.ejemplo.com',
@@ -358,4 +358,11 @@ test('RESEND_API_KEY cuenta como correo saliente; un MAIL_FROM sin dominio real 
   assert.ok(!ids(resend).includes('mail_from.no_domain'));
   assert.equal(validateConfig(resend).services.find((x) => x.id === 'email')?.state, 'configured');
   assert.ok(ids({ ...resend, MAIL_FROM: 'Marca <hola@localhost>' }).includes('mail_from.no_domain'));
+});
+
+test('INF-2: en producción, el backend con el superusuario de PostgreSQL es aviso (corre ./riverrun db-roles)', () => {
+  const r = validateConfig(installed({ DATABASE_URL: `postgres://chatbot:${KEY.db}@postgres:5432/chatbot` }));
+  assert.ok(r.issues.some((i) => i.id === 'database.superuser' && i.level === 'warning'), formatReport(r));
+  assert.equal(blocksStartup(r), false, 'no impide arrancar: las instalaciones de antes pasan al actualizar');
+  assert.ok(!ids(installed()).includes('database.superuser'));
 });
