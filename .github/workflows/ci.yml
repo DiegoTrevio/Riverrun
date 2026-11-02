@@ -193,10 +193,11 @@ jobs:
   scripts:
     name: Scripts y respaldos
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     services:
       postgres:
-        image: postgres:16
+        # Con pgvector: la prueba de los usuarios por servicio migra la base de la app de cero.
+        image: pgvector/pgvector:0.8.7-pg16
         env:
           POSTGRES_USER: chatbot
           POSTGRES_PASSWORD: chatbot
@@ -205,6 +206,12 @@ jobs:
           --health-cmd "pg_isready -U chatbot" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: chatbot-platform/package-lock.json
+      - run: npm ci
       - name: Instalar cliente de PostgreSQL 16
         run: |
           sudo apt-get update -qq
@@ -219,6 +226,12 @@ jobs:
         run: |
           export PATH="/usr/lib/postgresql/16/bin:$PATH"
           bash scripts/test-backup.sh
+      - name: Un usuario de PostgreSQL por servicio (INF-2)
+        env:
+          PGHOST: localhost
+          PGUSER: chatbot
+          PGPASSWORD: chatbot
+        run: bash scripts/test-db-roles.sh
       - name: Flujo de actualización con vuelta atrás (docker simulado)
         run: bash scripts/test-cli.sh
       - name: El instalador genera una configuración válida

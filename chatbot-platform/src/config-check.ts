@@ -275,6 +275,14 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
         'La base de datos usa una contraseña vacía o de ejemplo.',
         'Cambia la contraseña del usuario de PostgreSQL y actualiza POSTGRES_PASSWORD (no basta con cambiar .env: el volumen guarda la clave anterior).',
       );
+      if (decodeURIComponent(new URL(get('DATABASE_URL')).username) === 'chatbot') add(
+        'warning',
+        'security',
+        'database.superuser',
+        ['DATABASE_URL', 'DB_APP_USER'],
+        'El backend se conecta a PostgreSQL con el superusuario: si alguien lo engañara, podría leer la base de Evolution o ejecutar programas en el servidor de la base.',
+        'Corre ./riverrun db-roles (o ./riverrun update): crea un usuario para el backend y otro para Evolution, cada uno solo con su base.',
+      );
     } catch {
       /* ya validado arriba */
     }

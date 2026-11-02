@@ -13,6 +13,7 @@
 #   ./riverrun logs [servicio]            registros en vivo
 #   ./riverrun restart     aplica cambios hechos a .env
 #   ./riverrun rotate-secret   cambia SESSION_SECRET (respaldo antes, confirmación, consecuencias avisadas)
+#   ./riverrun db-roles    un usuario de PostgreSQL por servicio (lo hacen solos install, update y restore)
 #   ./riverrun admin-password [correo]   recupera el acceso del superadministrador: contraseña nueva y sesiones cerradas
 #
 # Opciones de update: --no-backup  --accept-db-image-change  --accept-evolution-change (confirma sin preguntar)
@@ -140,6 +141,43 @@ ensure_health_token() {
   [[ -n "$(env_get HEALTH_TOKEN)" ]] && return 0
   env_set HEALTH_TOKEN "$(rand 32)"
   ok "Token de salud generado (HEALTH_TOKEN en .env; no se muestra)"
+}
+
+# Redis con contraseña (INF-2): guarda las claves de las sesiones de WhatsApp. Se genera una vez.
+ensure_redis_password() {
+  [[ -n "$(env_get REDIS_PASSWORD)" ]] && return 0
+  env_set REDIS_PASSWORD "$(rand 24)"
+  ok "Contraseña de Redis generada (REDIS_PASSWORD en .env; no se muestra)"
+}
+
+wait_postgres() { # segundos
+  local i
+  for (( i = 0; i < ${1:-60}; i++ )); do dc exec -T postgres pg_isready -U chatbot >/dev/null 2>&1 && return 0; sleep 1; done
+  return 1
+}
+
+# Un usuario de PostgreSQL por servicio (INF-2): el backend y Evolution dejan de usar el superusuario y cada uno solo
+# entra a su base (docker/db-roles.sql). Se puede repetir: deja todo igual salvo los objetos nuevos o restaurados, que
+# pasan a su dueño. Las contraseñas se generan una vez; el usuario se guarda en .env solo si todo salió bien (hasta
+# entonces docker-compose.yml sigue usando el superusuario).
+db_roles() {
+  local app_pw evo_pw
+  app_pw="$(env_get DB_APP_PASSWORD)"; [[ -n "$app_pw" ]] || app_pw="$(rand 24)"
+  evo_pw="$(env_get DB_EVOLUTION_PASSWORD)"; [[ -n "$evo_pw" ]] || evo_pw="$(rand 24)"
+  { printf '\\set app_pw %s\n\\set evo_pw %s\n' "'$app_pw'" "'$evo_pw'"; cat docker/db-roles.sql; } \
+    | dc exec -T -e PGOPTIONS='-c client_min_messages=warning' postgres psql -X -q -U chatbot -d postgres >/dev/null || return 1
+  env_set DB_APP_PASSWORD "$app_pw"; env_set DB_APP_USER riverrun_app
+  env_set DB_EVOLUTION_PASSWORD "$evo_pw"; env_set DB_EVOLUTION_USER riverrun_evolution
+}
+
+# ./riverrun db-roles: lo mismo a mano (p. ej. tras restaurar con docker compose directamente) y reinicia.
+cmd_db_roles() {
+  need_docker || die "Docker no está disponible"
+  dc up -d postgres >/dev/null
+  wait_postgres 60 || die "PostgreSQL no respondió"
+  db_roles || die "No se pudieron crear los usuarios de PostgreSQL (arriba el error). No se cambió la configuración."
+  ok "Cada servicio con su usuario de PostgreSQL (DB_APP_USER y DB_EVOLUTION_USER en .env)"
+  export APP_VERSION; APP_VERSION="$(version)"; dc up -d; wait_healthy 120 && ok "Funcionando" || die "No respondió: ./riverrun logs backend"
 }
 
 # ------------------------------------------------------------------ revisión previa y Evolution
@@ -328,7 +366,7 @@ cmd_install() {
 
   # Claves internas: se generan una sola vez y nunca se pisan.
   local gen=0 k
-  for k in POSTGRES_PASSWORD EVOLUTION_API_KEY SESSION_SECRET BACKUP_PASSPHRASE HEALTH_TOKEN; do
+  for k in POSTGRES_PASSWORD EVOLUTION_API_KEY SESSION_SECRET BACKUP_PASSPHRASE HEALTH_TOKEN REDIS_PASSWORD; do
     local cur; cur="$(env_get "$k")"
     if [[ -z "$cur" || "$cur" == cambia-esta-clave* ]]; then
       case "$k" in POSTGRES_PASSWORD) env_set "$k" "$(rand 16)" ;; *) env_set "$k" "$(rand 32)" ;; esac
@@ -407,6 +445,11 @@ cmd_install() {
 
   say; say "${B}Construyendo y arrancando (la primera vez tarda unos minutos)…${N}"
   export APP_VERSION; APP_VERSION="$(version)"
+  # Primero la base, para darle a cada servicio su usuario antes de que arranquen.
+  dc up -d postgres
+  wait_postgres 120 || die "PostgreSQL no respondió: ./riverrun logs postgres"
+  db_roles || die "No se pudieron crear los usuarios de PostgreSQL (arriba el error)."
+  ok "Usuarios de PostgreSQL por servicio creados"
   dc up -d --build
   say "Esperando a que el sistema responda…"
   wait_healthy 180 || { dc logs --tail 40 backend || true; die "El sistema no respondió a tiempo. Revisa los registros de arriba o corre ./riverrun logs backend"; }
@@ -491,6 +534,8 @@ cmd_restore() {
   # (Sin copia de Redis en el respaldo, el script lo dice y no toca nada.)
   dc run --rm --no-deps -T --entrypoint sh redis -s < docker/backup/redis-load.sh \
     || warn "No se pudieron cargar las claves de las sesiones de WhatsApp (Redis): si algún WhatsApp no recibe mensajes, vincúlalo de nuevo."
+  # Lo restaurado queda del superusuario: se devuelve a cada servicio (y se crean sus usuarios si el servidor es nuevo).
+  db_roles || die "Se restauró, pero no se pudieron dar los permisos a cada servicio: corre ./riverrun db-roles"
   export APP_VERSION; APP_VERSION="$(version)"
   dc up -d
   wait_healthy 180 && ok "Restauración completa y sistema funcionando" || die "Se restauró pero el sistema no responde: ./riverrun logs backend"
@@ -581,7 +626,11 @@ update_pull() {
 update_preflight() {
   export APP_VERSION; APP_VERSION="$(version)"
   say "Construyendo la nueva versión ($APP_VERSION)…"
-  dc build backend || abort_update "No se pudo construir la versión nueva. No se aplicó nada."
+  # --pull: la imagen base de Node (y la del respaldo) con sus parches de seguridad, no la que quedó en caché (INF-3).
+  dc build --pull backend backup || abort_update "No se pudo construir la versión nueva. No se aplicó nada."
+  # Redis y Caddy: la versión más reciente de su misma etiqueta (redis:7, caddy:2; parches). Se descargan aquí y se
+  # aplican con el resto; PostgreSQL no: cambiar su imagen sobre un volumen existente tiene su propio procedimiento.
+  dc pull --quiet redis caddy >/dev/null 2>&1 || warn "No se pudieron descargar las imágenes nuevas de Redis o Caddy; se sigue con las que hay."
   say "Revisando la configuración con la versión nueva…"
   preflight_config || abort_update "La versión nueva no arrancaría con esta configuración (problemas críticos arriba). Corrígelos en .env y repite ./riverrun update. No se aplicó nada."
   EVO_TARGET="$(evo_target_image)"
@@ -658,6 +707,10 @@ cmd_update() {
   update_backup
   # Antes de levantar la versión nueva: así sus contenedores reciben HEALTH_TOKEN. La línea base ya se midió.
   ensure_health_token
+  # Usuarios de PostgreSQL por servicio y Redis con contraseña (INF-2). Si fallan, no se aplica nada: la versión
+  # anterior sigue funcionando con el superusuario (los objetos que ya cambiaron de dueño no le estorban).
+  db_roles || abort_update "No se pudieron crear los usuarios de PostgreSQL (arriba el error). No se aplicó la versión nueva."
+  ensure_redis_password
   if dc up -d --build && wait_healthy 180 && evolution_verify && no_new_failures && observe_window; then
     ok "Actualizado a $APP_VERSION"
     (( EVO_CHANGES )) && ok "Evolution: $EVO_TARGET"
@@ -872,6 +925,7 @@ case "${1:-help}" in
   logs) shift; cmd_logs "$@" ;;
   restart) cmd_restart ;;
   rotate-secret) cmd_rotate_secret ;;
+  db-roles) cmd_db_roles ;;
   admin-password) shift; cmd_admin_password "$@" ;;
   preflight) shift; cmd_preflight "$@" ;;
   semantic) shift; cmd_semantic "$@" ;;

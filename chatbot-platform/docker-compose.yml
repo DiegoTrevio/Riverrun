@@ -22,13 +22,19 @@ services:
       test: ["CMD-SHELL", "pg_isready -U chatbot"]
       interval: 10s
       retries: 5
+    # Solo en la red interna (sin salida a internet): la alcanzan el backend, Evolution y el respaldo, no Caddy.
+    networks: [data]
 
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    # Con contraseña (REDIS_PASSWORD, la genera ./riverrun): guarda las claves de las sesiones de WhatsApp.
+    command: ["sh", "-c", "exec redis-server --appendonly yes $${REDIS_PASSWORD:+--requirepass \"$$REDIS_PASSWORD\"}"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
     volumes:
       - redisdata:/data
+    networks: [data]
 
   evolution:
     image: *evolution-image
@@ -41,7 +47,8 @@ services:
       AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY}
       DATABASE_ENABLED: "true"
       DATABASE_PROVIDER: postgresql
-      DATABASE_CONNECTION_URI: postgresql://chatbot:${POSTGRES_PASSWORD}@postgres:5432/evolution?schema=public
+      # Su propio usuario, solo con su base (./riverrun db-roles); sin él, el superusuario como antes.
+      DATABASE_CONNECTION_URI: postgresql://${DB_EVOLUTION_USER:-chatbot}:${DB_EVOLUTION_PASSWORD:-${POSTGRES_PASSWORD}}@postgres:5432/evolution?schema=public
       DATABASE_CONNECTION_CLIENT_NAME: evolution
       DATABASE_SAVE_DATA_INSTANCE: "true"
       DATABASE_SAVE_DATA_NEW_MESSAGE: "true"   # necesario para descargar notas de voz
@@ -49,7 +56,7 @@ services:
       DATABASE_SAVE_DATA_CONTACTS: "false"
       DATABASE_SAVE_DATA_CHATS: "false"
       CACHE_REDIS_ENABLED: "true"
-      CACHE_REDIS_URI: redis://redis:6379/6
+      CACHE_REDIS_URI: redis://${REDIS_PASSWORD:+:${REDIS_PASSWORD}@}redis:6379/6
       CACHE_REDIS_PREFIX_KEY: evolution
       CACHE_LOCAL_ENABLED: "false"
       WEBHOOK_GLOBAL_ENABLED: "false"
@@ -61,6 +68,7 @@ services:
     # Solo accesible desde el propio VPS (usa un túnel SSH para abrir el manager).
     ports:
       - "127.0.0.1:8080:8080"
+    networks: [default, data]
 
   backend:
     build:
@@ -78,7 +86,8 @@ services:
     environment:
       PORT: 3000
       APP_VERSION: ${APP_VERSION:-dev}
-      DATABASE_URL: postgres://chatbot:${POSTGRES_PASSWORD}@postgres:5432/chatbot
+      # Su propio usuario, dueño solo de su base (./riverrun db-roles); sin él, el superusuario como antes.
+      DATABASE_URL: postgres://${DB_APP_USER:-chatbot}:${DB_APP_PASSWORD:-${POSTGRES_PASSWORD}}@postgres:5432/chatbot
       WEBHOOK_BASE_URL: http://backend:3000
       # URL pública con HTTPS (Telegram, Messenger, Instagram, chat web e imágenes)
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://${DOMAIN}}
@@ -258,6 +267,7 @@ services:
       - backups:/backups:ro
     ports:
       - "${PANEL_BIND:-127.0.0.1}:3000:3000"
+    networks: [default, data]
 
   # Respaldo diario cifrado de las dos bases de datos, las fotos y las sesiones de WhatsApp (ver README → Respaldos).
   backup:
@@ -272,7 +282,7 @@ services:
       PGPASSWORD: ${POSTGRES_PASSWORD}
       BACKUP_PASSPHRASE: ${BACKUP_PASSPHRASE:?Define BACKUP_PASSPHRASE en .env (ejecuta ./riverrun install)}
       # Evolution guarda en Redis las claves de cifrado de cada sesión de WhatsApp: se respaldan con todo lo demás.
-      BACKUP_REDIS_URI: redis://redis:6379
+      BACKUP_REDIS_URI: redis://${REDIS_PASSWORD:+:${REDIS_PASSWORD}@}redis:6379
       BACKUP_HOUR: ${BACKUP_HOUR:-03:30}
       BACKUP_KEEP_DAILY: ${BACKUP_KEEP_DAILY:-7}
       BACKUP_KEEP_WEEKLY: ${BACKUP_KEEP_WEEKLY:-4}
@@ -290,6 +300,7 @@ services:
       - backups:/backups
       - uploads:/data/uploads:ro
       - evolution_instances:/evolution/instances:ro
+    networks: [default, data]
 
   # Solo para restaurar: ./riverrun restore  (no arranca con el resto).
   restore:
@@ -309,6 +320,7 @@ services:
       - evolution_instances:/evolution/instances
       # Deja ahí la copia de Redis; ./riverrun restore la carga con el propio Redis (docker/backup/redis-load.sh).
       - redisdata:/redis
+    networks: [default, data]
 
   caddy:
     image: caddy:2-alpine
@@ -325,6 +337,12 @@ services:
     volumes:
       - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
+
+# La base y Redis viven en una red interna sin salida a internet; Caddy (lo único expuesto) no la alcanza.
+networks:
+  default: {}
+  data:
+    internal: true
 
 volumes:
   pgdata:
