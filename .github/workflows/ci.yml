@@ -232,6 +232,12 @@ jobs:
           PGUSER: chatbot
           PGPASSWORD: chatbot
         run: bash scripts/test-db-roles.sh
+      - name: Limpieza de Evolution del contenedor de respaldos (PostgreSQL real)
+        env:
+          PGHOST: localhost
+          PGUSER: chatbot
+          PGPASSWORD: chatbot
+        run: bash scripts/test-evolution-cleanup.sh
       - name: Flujo de actualización con vuelta atrás (docker simulado)
         run: bash scripts/test-cli.sh
       - name: El instalador genera una configuración válida

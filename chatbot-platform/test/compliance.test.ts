@@ -133,6 +133,10 @@ t('derecho de supresión: borra al contacto y su historial, anonimiza citas y co
   assert.equal((await pool.query(`SELECT count(*)::int AS n FROM contacts WHERE id = $1`, [c.id])).rows[0].n, 0);
   assert.equal((await pool.query(`SELECT count(*)::int AS n FROM messages WHERE conversation_id = $1`, [conv])).rows[0].n, 0);
   assert.equal((await pool.query(`SELECT count(*)::int AS n FROM event_logs WHERE message LIKE '%tarjeta privada%'`)).rows[0].n, 0);
+  // INF-8: queda pedido el borrado de su chat en la base de Evolution (lo hace el contenedor de respaldos).
+  const erasure = (await pool.query(`SELECT e.instance, e.jids FROM evolution_erasures e WHERE '5215570000009@s.whatsapp.net' = ANY(e.jids) AND e.done_at IS NULL`)).rows[0];
+  assert.ok(erasure, 'el borrado llega a Evolution');
+  assert.ok(erasure.instance);
   const appt = (await pool.query(`SELECT customer_name, customer_phone, customer_email, notes FROM appointments WHERE account_id = $1 AND starts_at > now() ORDER BY created_at DESC LIMIT 1`, [h.accountId])).rows[0];
   assert.deepEqual(appt, { customer_name: '', customer_phone: '', customer_email: '', notes: '' }, 'el correo de la cita también se borra');
   const kept = (await pool.query(`SELECT count(*)::int AS n, count(decision)::int AS with_content FROM ai_runs WHERE account_id = $1 AND conversation_id IS NULL`, [h.accountId])).rows[0];

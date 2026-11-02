@@ -6,6 +6,7 @@
 #   backup.sh verify [FILE] comprueba que el respaldo (el último por defecto) se puede restaurar
 #   backup.sh restore FILE  restaura (FILE o "latest"); con el sistema detenido salvo PostgreSQL
 #   backup.sh list          lista los respaldos
+#   backup.sh evolution-cleanup  borra en Evolution lo pedido por el backend y lo más viejo que EVOLUTION_MESSAGE_DAYS
 #
 # Cada respaldo es un solo archivo .tar.enc cifrado con BACKUP_PASSPHRASE (AES-256). Sin la clave no se puede
 # leer: guárdala fuera del servidor (gestor de contraseñas).
@@ -28,6 +29,9 @@ REDIS_URI="${BACKUP_REDIS_URI:-}"
 REDIS_DIR="${REDIS_DATA_DIR:-/redis}" # volumen de Redis (solo al restaurar: ahí se deja la copia para cargarla)
 export PGHOST="${PGHOST:-postgres}" PGUSER="${PGUSER:-chatbot}" PGPASSWORD="${PGPASSWORD:-${POSTGRES_PASSWORD:-}}"
 STATUS="$BACKUP_DIR/status.json"
+APP_DB="${BACKUP_APP_DB:-chatbot}" # base del backend (ahí deja el backend los borrados pendientes para Evolution)
+# INF-8: días que Evolution conserva cada mensaje (el backend ya descargó notas de voz y archivos al llegar). 0 = sin límite.
+EVOLUTION_MESSAGE_DAYS="${EVOLUTION_MESSAGE_DAYS:-7}"
 
 # Copia en la nube con variables sencillas (cualquier almacenamiento compatible con S3: Backblaze B2, Cloudflare R2, AWS, Wasabi…).
 if [[ -z "$REMOTE" && -n "${BACKUP_S3_BUCKET:-}" ]]; then
@@ -235,6 +239,40 @@ restore() {
   log "Restauración completa."
 }
 
+# INF-8: Evolution guarda cada mensaje de WhatsApp en su base. Aquí (superusuario; el backend ya no entra a esa base) se
+# borran los chats de los contactos que se borraron en el panel y los mensajes más viejos que EVOLUTION_MESSAGE_DAYS.
+# Cada solicitud queda hecha y sin sus identificadores. Si Evolution no tiene esas tablas (otra versión), no hace nada.
+evolution_cleanup() {
+  wait_for_db || return 1
+  local has; has="$(psql -X -At -d "$EVOLUTION_DB" -c "SELECT to_regclass('public.\"Message\"') IS NOT NULL AND to_regclass('public.\"Instance\"') IS NOT NULL" 2>/dev/null || echo f)"
+  [[ "$has" == t ]] || { log "Limpieza de Evolution: su base no tiene las tablas esperadas; no se borra nada."; return 0; }
+  local row id instance jids n total=0
+  while IFS='|' read -r id instance jids; do
+    [[ -n "$id" ]] || continue
+    n="$(psql -X -At -v ON_ERROR_STOP=1 -d "$EVOLUTION_DB" -v inst="$instance" -v jids="$jids" <<'SQL'
+WITH gone AS (
+  DELETE FROM "Message" m USING "Instance" i
+   WHERE m."instanceId" = i.id AND i.name = :'inst'
+     AND (m.key->>'remoteJid' = ANY(:'jids'::text[]) OR m.key->>'remoteJidAlt' = ANY(:'jids'::text[]))
+  RETURNING 1)
+SELECT count(*) FROM gone;
+SQL
+)" || { log "Limpieza de Evolution: falló el borrado pedido $id; se reintenta en la próxima vuelta."; continue; }
+    psql -X -q -v ON_ERROR_STOP=1 -d "$APP_DB" -c "UPDATE evolution_erasures SET done_at = now(), deleted = ${n:-0}, jids = '{}' WHERE id = $id" >/dev/null
+    total=$((total + ${n:-0}))
+  done < <(psql -X -At -F '|' -d "$APP_DB" -c "SELECT id, instance, jids::text FROM evolution_erasures WHERE done_at IS NULL ORDER BY id LIMIT 500" 2>/dev/null || true)
+  (( total > 0 )) && log "Limpieza de Evolution: $total mensajes de contactos borrados."
+  if [[ "$EVOLUTION_MESSAGE_DAYS" =~ ^[0-9]+$ ]] && (( EVOLUTION_MESSAGE_DAYS > 0 )); then
+    n="$(psql -X -At -v ON_ERROR_STOP=1 -d "$EVOLUTION_DB" -v days="$EVOLUTION_MESSAGE_DAYS" <<'SQL'
+WITH gone AS (DELETE FROM "Message" WHERE "messageTimestamp" < extract(epoch FROM now() - make_interval(days => :'days'::int)) RETURNING 1)
+SELECT count(*) FROM gone;
+SQL
+)" || { log "Limpieza de Evolution: falló la retención de mensajes."; return 1; }
+    (( ${n:-0} > 0 )) && log "Limpieza de Evolution: $n mensajes de más de $EVOLUTION_MESSAGE_DAYS días borrados."
+  fi
+  return 0
+}
+
 seconds_until() { # HH:MM (UTC) → segundos hasta la próxima vez
   local target now
   target="$(date -u -d "today ${1}" +%s)"; now="$(date -u +%s)"
@@ -246,15 +284,23 @@ case "${1:-daemon}" in
   now) run_now ;;
   verify) verify_backup "${2:-}" ;;
   restore) restore "${2:-}" ;;
+  evolution-cleanup) evolution_cleanup ;;
   list) { ls -lh "$BACKUP_DIR"/riverrun-*.tar "$BACKUP_DIR"/riverrun-*.tar.enc 2>/dev/null; true; } | grep . || echo "Todavía no hay respaldos."; [[ -f "$STATUS" ]] && cat "$STATUS" ;;
   daemon)
     need_passphrase
     log "Respaldos diarios a las $BACKUP_HOUR UTC (conserva ${KEEP_DAILY} diarios, ${KEEP_WEEKLY} semanales, ${KEEP_MONTHLY} mensuales)${REMOTE:+; copia en $REMOTE}."
     # Si no hay ningún respaldo todavía, el primero se hace al arrancar (sin esperar a la noche).
     [[ -z "$(latest_file)" ]] && { run_now || true; }
+    # Cada hora: la limpieza de Evolution (INF-8); a BACKUP_HOUR, además, el respaldo.
+    next=$(( $(date -u +%s) + $(seconds_until "$BACKUP_HOUR") ))
     while true; do
-      sleep "$(seconds_until "$BACKUP_HOUR")"
-      run_now || log "El respaldo falló; se reintenta mañana (o corre './riverrun backup')."
+      evolution_cleanup || true
+      wait=$(( next - $(date -u +%s) )); (( wait > 3600 )) && wait=3600
+      (( wait > 0 )) && sleep "$wait"
+      if (( $(date -u +%s) >= next )); then
+        run_now || log "El respaldo falló; se reintenta mañana (o corre './riverrun backup')."
+        next=$(( $(date -u +%s) + $(seconds_until "$BACKUP_HOUR") ))
+      fi
     done ;;
-  *) die "Uso: backup.sh daemon|now|verify [archivo]|restore archivo|list" ;;
+  *) die "Uso: backup.sh daemon|now|verify [archivo]|restore archivo|list|evolution-cleanup" ;;
 esac

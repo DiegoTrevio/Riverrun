@@ -288,6 +288,8 @@ services:
       # Evolution guarda en Redis las claves de cifrado de cada sesión de WhatsApp: se respaldan con todo lo demás.
       BACKUP_REDIS_URI: redis://${REDIS_PASSWORD:+:${REDIS_PASSWORD}@}redis:6379
       BACKUP_HOUR: ${BACKUP_HOUR:-03:30}
+      # INF-8: días que Evolution conserva cada mensaje de WhatsApp (0 = sin límite); los borrados del panel llegan ahí cada hora.
+      EVOLUTION_MESSAGE_DAYS: ${EVOLUTION_MESSAGE_DAYS:-7}
       BACKUP_KEEP_DAILY: ${BACKUP_KEEP_DAILY:-7}
       BACKUP_KEEP_WEEKLY: ${BACKUP_KEEP_WEEKLY:-4}
       BACKUP_KEEP_MONTHLY: ${BACKUP_KEEP_MONTHLY:-6}
