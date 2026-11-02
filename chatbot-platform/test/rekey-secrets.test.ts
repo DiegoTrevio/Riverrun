@@ -102,3 +102,26 @@ t('pasa todo a la llave nueva (2FA, canales) y lo ilegible se cuenta y se deja',
   await withKeys(KEY_A, [], async () => assert.equal((await store.getChannel(ch.id))!.config.bot_token, '456:otro-token'));
   await store.deleteChannel(ch.id);
 });
+
+t('sin su llave, una credencial queda cifrada (no vacía) y un guardado automático no la pisa', async () => {
+  const lost = encryptSecret('token-real', { dataKey: 'llave-perdida-0123456789abcdef0123456789' });
+  const ch = await store.createChannel({ account_id: h.accountId, chatbot_id: h.botId, type: 'telegram', name: 'Bot 3', config: { bot_token: 'x' } });
+  await pool.query(`UPDATE channels SET config = config || jsonb_build_object('bot_token', $2::text) WHERE id = $1`, [ch.id, lost]);
+  const read = (await store.getChannel(ch.id))!;
+  assert.equal(read.config.bot_token, lost, 'se ve cifrada, no vacía');
+  await store.updateChannel(ch.id, { config: { ...read.config, secret: 'otro' } });
+  assert.equal((await pool.query(`SELECT config->>'bot_token' AS v FROM channels WHERE id = $1`, [ch.id])).rows[0].v, lost, 'el guardado no la borró');
+  await store.deleteChannel(ch.id);
+});
+
+t('--to-legacy (volver a una versión anterior): 2FA en v1 y credenciales de canales en claro', async () => {
+  const ch = await store.createChannel({ account_id: h.accountId, chatbot_id: h.botId, type: 'telegram', name: 'Bot 4', config: { bot_token: '789:token' } });
+  await withKeys(KEY_A, [], async () => {
+    await rekeySecrets(KEY_A);
+    const r = await rekeySecrets({ legacy: true });
+    assert.equal(r.unreadable, 0);
+  });
+  assert.equal((await pool.query(`SELECT config->>'bot_token' AS v FROM channels WHERE id = $1`, [ch.id])).rows[0].v, '789:token');
+  for (const row of await rows()) assert.ok(row.totp_secret.startsWith('v1.'), row.email);
+  await store.deleteChannel(ch.id);
+});

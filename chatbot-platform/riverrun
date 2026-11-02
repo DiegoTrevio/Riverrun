@@ -624,6 +624,7 @@ github_repo() {
 }
 update_verify_target() {
   local sha="$1" repo body total status conclusion checked top
+  local UPDATE_GITHUB_TOKEN; UPDATE_GITHUB_TOKEN="$(env_get UPDATE_GITHUB_TOKEN)"
   local signers; signers="$(env_get UPDATE_ALLOWED_SIGNERS)"
   if [[ -n "$signers" ]]; then
     [[ -f "$signers" ]] || die "UPDATE_ALLOWED_SIGNERS apunta a $signers, que no existe. No se aplicó nada."
@@ -645,9 +646,25 @@ update_verify_target() {
   checked="$(git log -1 --format=%H "HEAD..$sha" -- . "$top/.github/workflows/${RIVERRUN_CI_WORKFLOW:-ci.yml}")"
   if [[ -z "$checked" ]]; then ok "Los cambios no tocan la plataforma: no hay CI que comprobar"; return 0; fi
   # Solo el flujo de CI (las pruebas, las imágenes y los scripts), no otros flujos que no deciden si se despliega.
-  body="$(curl -fsS --max-time 20 -H 'Accept: application/vnd.github+json' "${RIVERRUN_GITHUB_API:-https://api.github.com}/repos/$repo/actions/workflows/${RIVERRUN_CI_WORKFLOW:-ci.yml}/runs?head_sha=$checked&per_page=5" 2>/dev/null)" \
-    || die "No se pudo consultar el CI de ${checked:0:12} en GitHub (¿sin internet?). No se aplicó nada; reintenta, o con --skip-ci-check si es una emergencia."
-  total="$(printf '%s' "$body" | grep -o '"total_count": *[0-9]*' | head -n 1 | grep -o '[0-9]*$' || echo 0)"
+  # GitHub corre el CI del último commit de cada push: se busca primero ese (la punta) y, si no tiene corrida, el último
+  # commit del rango que cambió la plataforma.
+  local cand code out; out="$(mktemp)"
+  for cand in "$sha" "$checked"; do
+    code="$(curl -sS -o "$out" -w '%{http_code}' --max-time 20 -H 'Accept: application/vnd.github+json' \
+      ${UPDATE_GITHUB_TOKEN:+-H "Authorization: Bearer $UPDATE_GITHUB_TOKEN"} \
+      "${RIVERRUN_GITHUB_API:-https://api.github.com}/repos/$repo/actions/workflows/${RIVERRUN_CI_WORKFLOW:-ci.yml}/runs?head_sha=$cand&per_page=5" 2>/dev/null || echo 000)"
+    case "$code" in
+      200) ;;
+      404) rm -f "$out"; die "GitHub no encontró el repositorio $repo o su flujo de CI (¿repositorio privado? define UPDATE_GITHUB_TOKEN en .env, con permiso de solo lectura de Actions). No se aplicó nada." ;;
+      401|403|429) rm -f "$out"; die "GitHub rechazó la consulta del CI (código $code: límite de consultas o token sin permiso). No se aplicó nada; reintenta en un rato o define UPDATE_GITHUB_TOKEN." ;;
+      *) rm -f "$out"; die "No se pudo consultar el CI de ${cand:0:12} en GitHub (¿sin internet?). No se aplicó nada; reintenta, o con --skip-ci-check si es una emergencia." ;;
+    esac
+    body="$(cat "$out")"
+    total="$(printf '%s' "$body" | grep -o '"total_count": *[0-9]*' | head -n 1 | grep -o '[0-9]*$' || echo 0)"
+    (( total > 0 )) && { checked="$cand"; break; }
+    [[ "$cand" == "$checked" ]] && break
+  done
+  rm -f "$out"
   (( total > 0 )) || die "El commit ${checked:0:12} no tiene una corrida del CI en GitHub. No se aplicó nada (¿se subió sin pasar por el CI?)."
   # La corrida más reciente es la primera de la lista.
   status="$(printf '%s' "$body" | grep -o '"status": *"[a-z_]*"' | head -n 1 | sed 's/.*"\([a-z_]*\)"$/\1/')"
@@ -737,6 +754,15 @@ update_rollback() {
       env_set EVOLUTION_IMAGE "$EVO_TARGET"
     elif [[ -n "$EVO_ENV_BEFORE" ]]; then
       env_set EVOLUTION_IMAGE "$EVO_PIN" # el operador la había fijado en .env: se vuelve a la que corría
+    fi
+  fi
+  # INF-6/INF-7: la versión anterior no conoce la llave de datos ni las credenciales de canales cifradas. Si es así, el
+  # código nuevo (que sigue aquí) deja todo en el formato que ella lee antes de volver; si no, se quedaría sin leerlo.
+  if ! git cat-file -e "$OLD_HEAD:./src/channel-secrets.ts" 2>/dev/null && git cat-file -e "HEAD:./src/cli/rekey-secrets.ts" 2>/dev/null; then
+    say "La versión anterior no lee los secretos cifrados con la llave de datos: se pasan a su formato antes de volver."
+    if ! dc run --rm --no-deps -T backend node dist/cli/rekey-secrets.js --to-legacy; then
+      warn "No se pudieron pasar los secretos al formato anterior: canales, 2FA o calendarios pueden fallar en la versión anterior."
+      warn "  Si pasa, restaura el respaldo previo a la actualización: ./riverrun restore ${UPD_BACKUP_FILE:-<respaldo previo>}"
     fi
   fi
   git reset -q --hard "$OLD_HEAD"
@@ -860,7 +886,9 @@ cmd_rotate_secret() {
     dc up -d backend
     wait_healthy 120 || die "El backend no respondió con la llave de datos nueva: ./riverrun logs backend. SESSION_SECRET no se cambió."
   fi
-  dc exec -T backend node dist/cli/rekey-secrets.js || die "No se pudieron re-cifrar los secretos con la llave de datos: no se cambió SESSION_SECRET."
+  local rk=0; dc exec -T backend node dist/cli/rekey-secrets.js || rk=$?
+  (( rk == 0 || rk == 3 )) || die "No se pudieron re-cifrar los secretos con la llave de datos: no se cambió SESSION_SECRET."
+  (( rk == 3 )) && warn "Algunos secretos ya no se podían leer desde antes (hay que volver a conectarlos); el resto quedó con la llave de datos."
   local new; new="$(rand 32)"
   env_set SESSION_SECRET "$new"
   dc up -d backend
@@ -882,15 +910,21 @@ cmd_rotate_data_key() {
   say "Respaldo verificado antes de cambiar nada…"
   dc exec -T backup /usr/local/bin/backup.sh now || die "El respaldo falló: no se cambia la llave sin respaldo. No se cambió nada."
   export APP_VERSION; APP_VERSION="$(version)"
-  local old; old="$(env_get DATA_KEY)"
+  local old prev; old="$(env_get DATA_KEY)"; prev="$(env_get DATA_KEYS_OLD)"
   env_set DATA_KEY "$(rand 32)"
-  # Lo que estaba con la anterior (o con SESSION_SECRET, si no había) se sigue leyendo durante el re-cifrado.
-  [[ -n "$old" ]] && env_set DATA_KEYS_OLD "$old"
+  # Lo que estaba con la anterior (o con las de antes, o con SESSION_SECRET) se sigue leyendo durante el re-cifrado:
+  # ninguna llave anterior se suelta aquí (si una rotación falló a medias, sus filas siguen con la suya).
+  [[ -n "$old" ]] && env_set DATA_KEYS_OLD "$old${prev:+,$prev}"
   dc up -d backend
   wait_healthy 120 || die "El backend no respondió con la llave nueva: ./riverrun logs backend. La anterior quedó en DATA_KEYS_OLD (sigue descifrando)."
-  dc exec -T backend node dist/cli/rekey-secrets.js || die "No se pudo re-cifrar todo con la llave nueva; lo guardado se sigue leyendo con DATA_KEYS_OLD. Corrige y vuelve a correr ./riverrun rotate-data-key."
-  ok "DATA_KEY cambiada y todo re-cifrado. Guarda la nueva fuera del servidor (está en .env; no se muestra)."
-  say "DATA_KEYS_OLD conserva la anterior: puedes borrarla de .env después del próximo respaldo."
+  local rk=0; dc exec -T backend node dist/cli/rekey-secrets.js || rk=$?
+  (( rk == 0 || rk == 3 )) || die "No se pudo re-cifrar todo con la llave nueva; lo guardado se sigue leyendo con DATA_KEYS_OLD. Corrige y vuelve a correr ./riverrun rotate-data-key (no se suelta ninguna llave)."
+  if (( rk == 3 )); then
+    warn "DATA_KEY cambiada, pero algunos secretos ya no se podían leer con ninguna llave (hay que volver a conectarlos). No borres DATA_KEYS_OLD."
+  else
+    ok "DATA_KEY cambiada y todo re-cifrado. Guarda la nueva fuera del servidor (está en .env; no se muestra)."
+    say "DATA_KEYS_OLD conserva las anteriores: puedes borrarlas de .env después del próximo respaldo."
+  fi
 }
 
 # ------------------------------------------------------------------ revisión previa a producción (solo lectura)

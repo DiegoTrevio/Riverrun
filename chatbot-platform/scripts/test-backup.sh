@@ -102,8 +102,19 @@ if bash "$here/docker/backup/backup.sh" restore "$work/out/riverrun-29990101-000
 [[ "$(psql -At -d bk_src -c 'SELECT count(*) FROM clientes')" == "3" ]] || { echo "ERROR: un respaldo alterado borró datos"; exit 1; }
 rm -f "$work/out/riverrun-29990101-000000.gpg.tar"
 
+echo "== INF-11: un respaldo armado con partes en claro (sin la clave) no se verifica ni se restaura"
+fk="$work/forjado"; mkdir -p "$fk"
+pg_dump --format=custom --dbname=bk_src --file="$fk/bk_src.dump"
+( cd "$fk" && tar -czf uploads.tar.gz -T /dev/null && cp "$t/manifest.json" . && sha256sum ./* > SHA256SUMS )
+tar -C "$fk" -cf "$work/out/riverrun-29990103-000000.gpg.tar" .
+if bash "$here/docker/backup/backup.sh" verify "$work/out/riverrun-29990103-000000.gpg.tar" >/dev/null 2>&1; then echo "ERROR: verificó un respaldo con partes en claro"; exit 1; fi
+if bash "$here/docker/backup/backup.sh" restore "$work/out/riverrun-29990103-000000.gpg.tar" >/dev/null 2>&1; then echo "ERROR: restauró un respaldo con partes en claro"; exit 1; fi
+[[ "$(psql -At -d bk_src -c 'SELECT count(*) FROM clientes')" == "3" ]] || { echo "ERROR: un respaldo forjado cambió datos"; exit 1; }
+rm -f "$work/out/riverrun-29990103-000000.gpg.tar"
+
 echo "== los respaldos de antes (.tar.enc, openssl) se siguen restaurando"
 l="$work/legacy"; mkdir -p "$l"; tar -C "$l" -xf "$f"
+rm -f "$l/SHA256SUMS.gpg"
 for g in "$l"/*.gpg; do gpg --batch --quiet --pinentry-mode loopback --passphrase "$BACKUP_PASSPHRASE" --decrypt --output "${g%.gpg}" "$g" 2>/dev/null; rm -f "$g"; done
 ( cd "$l" && sha256sum ./*.dump ./*.tar.gz ./manifest.json > SHA256SUMS )
 tar -C "$l" -cf - . | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:BACKUP_PASSPHRASE > "$work/out/riverrun-29990102-000000.tar.enc"

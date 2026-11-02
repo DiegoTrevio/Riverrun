@@ -16,7 +16,7 @@ import type pg from 'pg';
 import { config } from '../config.js';
 import { pool, withTransaction } from '../db.js';
 import { SEALED_CHANNEL_FIELDS } from '../channel-secrets.js';
-import { decryptSecret, encryptSecret, isSealed } from '../secret.js';
+import { appSecret, decryptSecret, encryptSecret, isSealed } from '../secret.js';
 
 export interface RekeyResult { rekeyed: number; unreadable: number }
 
@@ -27,9 +27,15 @@ const SIMPLE: { table: string; key: string; column: string }[] = [
   { table: 'platform_secrets', key: 'key', column: 'value' },
 ];
 
-export async function rekeySecrets(target: string): Promise<RekeyResult> {
-  if (target.length < 32) throw new Error('La llave de datos debe tener al menos 32 caracteres: no se cambió nada');
-  const using = { dataKey: target };
+/**
+ * `target`: la llave de datos con que se cifra todo; `legacy` vuelve al formato de antes (v1 con SESSION_SECRET y las
+ * credenciales de canales en claro, salvo la llave de Zernio, que ya iba en v1): es lo que lee una versión anterior a
+ * INF-6/INF-7 y lo usa `./riverrun update` al volver atrás.
+ */
+export async function rekeySecrets(target: string | { legacy: true }): Promise<RekeyResult> {
+  const legacy = typeof target !== 'string';
+  if (!legacy && target.length < 32) throw new Error('La llave de datos debe tener al menos 32 caracteres: no se cambió nada');
+  const using = legacy ? { session: appSecret() } : { dataKey: target };
   return withTransaction(async (db: pg.PoolClient) => {
     let rekeyed = 0, unreadable = 0;
 
@@ -60,7 +66,7 @@ export async function rekeySecrets(target: string): Promise<RekeyResult> {
     }
 
     // Credenciales de canales (también las que quedaron en claro de antes).
-    const channels = (await db.query<{ id: string; config: Record<string, unknown> }>(`SELECT id, config FROM channels FOR UPDATE`)).rows;
+    const channels = (await db.query<{ id: string; type: string; config: Record<string, unknown> }>(`SELECT id, type, config FROM channels FOR UPDATE`)).rows;
     for (const ch of channels) {
       const patch: Record<string, string> = {};
       for (const k of SEALED_CHANNEL_FIELDS) {
@@ -68,7 +74,7 @@ export async function rekeySecrets(target: string): Promise<RekeyResult> {
         if (typeof v !== 'string' || !v) continue;
         const plain = isSealed(v) ? decryptSecret(v) : v;
         if (plain === null) { unreadable++; continue; }
-        patch[k] = encryptSecret(plain, using);
+        patch[k] = legacy && !(ch.type === 'zernio' && k === 'api_key') ? plain : encryptSecret(plain, using);
       }
       if (Object.keys(patch).length) {
         await db.query(`UPDATE channels SET config = config || $2::jsonb WHERE id = $1`, [ch.id, JSON.stringify(patch)]);
@@ -81,9 +87,12 @@ export async function rekeySecrets(target: string): Promise<RekeyResult> {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    if (!config.dataKey) throw new Error('Falta DATA_KEY en el entorno del backend: no se cambió nada');
-    const r = await rekeySecrets(config.dataKey);
+    const toLegacy = process.argv.includes('--to-legacy');
+    if (!toLegacy && !config.dataKey) throw new Error('Falta DATA_KEY en el entorno del backend: no se cambió nada');
+    const r = await rekeySecrets(toLegacy ? { legacy: true } : config.dataKey);
     console.log(`Secretos re-cifrados: ${r.rekeyed}${r.unreadable ? `; ${r.unreadable} ya no se podían leer (hay que volver a conectarlos)` : ''}`);
+    // 3: terminó, pero algo quedó con una llave que ya no se tiene (no se debe soltar ninguna llave anterior).
+    if (r.unreadable) process.exitCode = 3;
   } catch (error) {
     console.error(error instanceof Error ? error.message : 'No se pudieron re-cifrar los secretos');
     process.exitCode = 1;

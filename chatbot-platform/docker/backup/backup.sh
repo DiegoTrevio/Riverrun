@@ -86,7 +86,22 @@ decrypt_legacy() { openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:BA
 
 # Abre un respaldo en DIR: los nuevos solo se desempacan (sus partes siguen cifradas); los de antes se descifran enteros.
 open_backup() { # FILE DIR
-  if [[ "$1" == *.tar.enc ]]; then decrypt_legacy "$1" | tar -C "$2" -xf - 2>/dev/null; else tar -C "$2" -xf "$1" 2>/dev/null; fi
+  if [[ "$1" == *.tar.enc ]]; then decrypt_legacy "$1" | tar -C "$2" -xf - 2>/dev/null; return; fi
+  tar -C "$2" -xf "$1" 2>/dev/null || return 1
+  # Formato nuevo: solo partes cifradas y las sumas, con su copia cifrada idéntica. Así nadie con acceso al volumen o al
+  # bucket arma un respaldo con partes en claro, ni mezcla partes de respaldos distintos. (En claro solo con
+  # BACKUP_ALLOW_PLAINTEXT=true, que es para pruebas.)
+  [[ "${BACKUP_ALLOW_PLAINTEXT:-false}" == "true" && ! -f "$2/SHA256SUMS.gpg" ]] && return 0
+  local f
+  for f in "$2"/* "$2"/.[!.]*; do
+    [[ -e "$f" ]] || continue
+    case "$(basename "$f")" in
+      manifest.json|SHA256SUMS|SHA256SUMS.gpg|*.dump.gpg|uploads.tar.gz.gpg|evolution_instances.tar.gz.gpg|redis.rdb.gpg) ;;
+      *) log "ERROR: el respaldo trae una parte sin cifrar o desconocida: $(basename "$f")"; return 1 ;;
+    esac
+  done
+  [[ -f "$2/SHA256SUMS.gpg" ]] || { log "ERROR: al respaldo le faltan sus sumas cifradas"; return 1; }
+  gpg_dec "$2/SHA256SUMS.gpg" | cmp -s - "$2/SHA256SUMS" || { log "ERROR: las sumas del respaldo no coinciden con su copia cifrada (¿clave incorrecta o partes cambiadas?)"; return 1; }
 }
 has_part() { [[ -f "$1/$2.gpg" || -f "$1/$2" ]]; } # DIR NAME
 part() { # DIR NAME → la parte en claro por la salida (descifra si va cifrada; falla si fue alterada)
@@ -138,6 +153,8 @@ make_backup() {
     else rm -f "$work/redis.rdb$SEAL_EXT"; redis_keys=missing; log "ATENCIÓN: no se pudo copiar Redis: este respaldo no incluye las claves de las sesiones de WhatsApp"; fi
   fi
   ( cd "$work" && sha256sum ./* > SHA256SUMS )
+  # Copia cifrada de las sumas: liga las partes a este respaldo (no se pueden cambiar ni mezclar sin la clave).
+  if [[ -n "$SEAL_EXT" ]]; then seal < "$work/SHA256SUMS" > "$work/SHA256SUMS.gpg"; fi
   # Con qué Evolution se hizo: restaurar su base en una versión más vieja que la que la migró puede dañarla.
   local evo_mig=""
   [[ " $DATABASES " == *" $EVOLUTION_DB "* ]] && evo_mig="$(evolution_migration "$EVOLUTION_DB")"
@@ -253,14 +270,18 @@ restore() {
   umask 077
   local work; work="$(mktemp -d "${TMPDIR:-/tmp}/restore.XXXXXX")"; TMP_DIRS+=("$work")
   log "Abriendo $(basename "$file")"
-  open_backup "$file" "$work" || die "No se pudo abrir el respaldo (¿clave incorrecta?)"
+  open_backup "$file" "$work" || die "No se pudo abrir el respaldo (¿clave incorrecta o respaldo alterado?). No se cambió nada."
   ( cd "$work" && sha256sum -c SHA256SUMS >/dev/null ) || die "Respaldo dañado (las sumas no coinciden)"
-  # Todas las partes se descifran (y se comprueba su integridad) ANTES de borrar nada: un respaldo alterado no se aplica.
+  # Todo se descifra (y se comprueba su integridad) ANTES de borrar nada, sin escribirlo: un respaldo alterado no se aplica.
   local enc
   for enc in "$work"/*.gpg; do
     [[ -f "$enc" ]] || continue
-    gpg_dec "$enc" > "${enc%.gpg}" || die "No se pudo descifrar $(basename "${enc%.gpg}"): clave incorrecta o respaldo alterado. No se cambió nada."
+    gpg_dec "$enc" > /dev/null || die "No se pudo descifrar $(basename "${enc%.gpg}"): clave incorrecta o respaldo alterado. No se cambió nada."
   done
+  local dumps=() d
+  for d in "$work"/*.dump "$work"/*.dump.gpg; do [[ -f "$d" ]] || continue; d="$(basename "$d")"; d="${d%.gpg}"; dumps+=("${d%.dump}"); done
+  (( ${#dumps[@]} )) || die "El respaldo no trae ninguna base de datos. No se cambió nada."
+  for d in "${dumps[@]}"; do part "$work" "$d.dump" | drain_into pg_restore --list >/dev/null 2>&1 || die "La base $d del respaldo no es legible. No se cambió nada."; done
   local b_img b_mig
   b_img="$(manifest_field "$work/manifest.json" evolution_image)"; b_mig="$(manifest_field "$work/manifest.json" evolution_migration)"
   log "Respaldo del $(manifest_field "$work/manifest.json" created_at) (RiverRun $(manifest_field "$work/manifest.json" version); Evolution ${b_img:-no registrada}${b_mig:+, esquema $b_mig})"
@@ -268,21 +289,27 @@ restore() {
     log "ATENCIÓN: el respaldo es de Evolution $b_img y la instalación usa $EVOLUTION_IMAGE."
     log "  Si la configurada es más vieja, fija EVOLUTION_IMAGE=$b_img en .env antes de arrancar (una versión vieja no entiende un esquema más nuevo)."
   fi
-  for dump in "$work"/*.dump; do
-    local db; db="$(basename "$dump" .dump)"
-    log "Restaurando base de datos: $db"
-    dropdb --if-exists --force "$db"
-    createdb "$db"
-    pg_restore --no-owner --exit-on-error --dbname="$db" "$dump" || die "Falló la restauración de $db"
+  for d in "${dumps[@]}"; do
+    log "Restaurando base de datos: $d"
+    dropdb --if-exists --force "$d"
+    createdb "$d"
+    part "$work" "$d.dump" | pg_restore --no-owner --exit-on-error --dbname="$d" || die "Falló la restauración de $d"
   done
-  if [[ -s "$work/uploads.tar.gz" && -d "$UPLOADS_DIR" ]]; then log "Restaurando fotos y archivos"; find "$UPLOADS_DIR" -mindepth 1 -delete; tar -C "$UPLOADS_DIR" -xzf "$work/uploads.tar.gz"; fi
-  if [[ -s "$work/evolution_instances.tar.gz" && -d "$EVOLUTION_DIR" ]]; then log "Restaurando sesiones de WhatsApp"; find "$EVOLUTION_DIR" -mindepth 1 -delete; tar -C "$EVOLUTION_DIR" -xzf "$work/evolution_instances.tar.gz"; fi
+  local name dir label
+  for name in uploads evolution_instances; do
+    dir="$UPLOADS_DIR"; label="fotos y archivos"; [[ "$name" == evolution_instances ]] && { dir="$EVOLUTION_DIR"; label="sesiones de WhatsApp"; }
+    has_part "$work" "$name.tar.gz" && [[ -d "$dir" ]] || continue
+    [[ ! -f "$work/$name.tar.gz" || -s "$work/$name.tar.gz" ]] || continue # de antes: vacío si no había archivos
+    log "Restaurando $label"
+    find "$dir" -mindepth 1 -delete
+    part "$work" "$name.tar.gz" | tar -C "$dir" -xzf - || die "Falló la restauración de $label"
+  done
   # Redis no se puede escribir en caliente desde aquí: se deja la copia en su volumen y `./riverrun restore` la carga con
   # el propio Redis (docker/backup/redis-load.sh) antes de arrancar Evolution.
-  if [[ -s "$work/redis.rdb" && -d "$REDIS_DIR" ]]; then
+  if has_part "$work" redis.rdb && [[ -d "$REDIS_DIR" ]]; then
     log "Preparando las claves de las sesiones de WhatsApp (Redis)"
-    cp "$work/redis.rdb" "$REDIS_DIR/riverrun-restore.rdb"
-  elif [[ -s "$work/redis.rdb" ]]; then
+    part "$work" redis.rdb > "$REDIS_DIR/riverrun-restore.rdb"
+  elif has_part "$work" redis.rdb; then
     log "ATENCIÓN: el respaldo trae las claves de las sesiones (redis.rdb) pero el volumen de Redis no está en $REDIS_DIR: usa ./riverrun restore."
   elif [[ -d "$REDIS_DIR" ]]; then
     log "ATENCIÓN: este respaldo es anterior y no trae las claves de las sesiones (Redis): si algún WhatsApp no recibe mensajes, vincúlalo de nuevo."
@@ -294,12 +321,20 @@ restore() {
 # borran los chats de los contactos que se borraron en el panel y los mensajes más viejos que EVOLUTION_MESSAGE_DAYS.
 # Cada solicitud queda hecha y sin sus identificadores. Si Evolution no tiene esas tablas (otra versión), no hace nada.
 evolution_cleanup() {
-  wait_for_db || return 1
+  # Sin PostgreSQL (se está reiniciando): se reintenta en la próxima vuelta, sin tumbar el demonio de respaldos.
+  pg_isready -q || { log "Limpieza de Evolution: PostgreSQL no responde; se reintenta en una hora."; return 1; }
+  # Ninguna consulta bloquea la vuelta: con filas tomadas por Evolution, se sigue en la próxima.
+  local PGOPTIONS="-c statement_timeout=120000 -c lock_timeout=10000"; export PGOPTIONS
   local has; has="$(psql -X -At -d "$EVOLUTION_DB" -c "SELECT to_regclass('public.\"Message\"') IS NOT NULL AND to_regclass('public.\"Instance\"') IS NOT NULL" 2>/dev/null || echo f)"
   [[ "$has" == t ]] || { log "Limpieza de Evolution: su base no tiene las tablas esperadas; no se borra nada."; return 0; }
-  local row id instance jids n total=0
-  while IFS='|' read -r id instance jids; do
-    [[ -n "$id" ]] || continue
+  local extra=() t
+  for t in Chat Contact; do
+    [[ "$(psql -X -At -d "$EVOLUTION_DB" -c "SELECT to_regclass('public.\"$t\"') IS NOT NULL" 2>/dev/null)" == t ]] && extra+=("$t")
+  done
+  local id instance jids n total=0
+  # Separadas por tabulador (los nombres de instancia solo llevan letras, números, guion y guion bajo).
+  while IFS=$'\t' read -r id instance jids; do
+    [[ "$id" =~ ^[0-9]+$ ]] || continue
     n="$(psql -X -At -v ON_ERROR_STOP=1 -d "$EVOLUTION_DB" -v inst="$instance" -v jids="$jids" <<'SQL'
 WITH gone AS (
   DELETE FROM "Message" m USING "Instance" i
@@ -309,17 +344,29 @@ WITH gone AS (
 SELECT count(*) FROM gone;
 SQL
 )" || { log "Limpieza de Evolution: falló el borrado pedido $id; se reintenta en la próxima vuelta."; continue; }
+    # Lo que Evolution guarda de ese chat además de sus mensajes (nombre, foto): chats y contactos, si los tiene.
+    for t in "${extra[@]}"; do
+      psql -X -q -v ON_ERROR_STOP=1 -d "$EVOLUTION_DB" -v inst="$instance" -v jids="$jids" -v tbl="$t" >/dev/null <<'SQL' || { log "Limpieza de Evolution: falló el borrado en $t del pedido $id; se reintenta."; continue 2; }
+DELETE FROM :"tbl" x USING "Instance" i WHERE x."instanceId" = i.id AND i.name = :'inst' AND x."remoteJid" = ANY(:'jids'::text[]);
+SQL
+    done
     psql -X -q -v ON_ERROR_STOP=1 -d "$APP_DB" -c "UPDATE evolution_erasures SET done_at = now(), deleted = ${n:-0}, jids = '{}' WHERE id = $id" >/dev/null
     total=$((total + ${n:-0}))
-  done < <(psql -X -At -F '|' -d "$APP_DB" -c "SELECT id, instance, jids::text FROM evolution_erasures WHERE done_at IS NULL ORDER BY id LIMIT 500" 2>/dev/null || true)
+  done < <(psql -X -At -F $'\t' -d "$APP_DB" -c "SELECT id, instance, jids::text FROM evolution_erasures WHERE done_at IS NULL ORDER BY id LIMIT 500" 2>/dev/null || true)
   (( total > 0 )) && log "Limpieza de Evolution: $total mensajes de contactos borrados."
   if [[ "$EVOLUTION_MESSAGE_DAYS" =~ ^[0-9]+$ ]] && (( EVOLUTION_MESSAGE_DAYS > 0 )); then
-    n="$(psql -X -At -v ON_ERROR_STOP=1 -d "$EVOLUTION_DB" -v days="$EVOLUTION_MESSAGE_DAYS" <<'SQL'
-WITH gone AS (DELETE FROM "Message" WHERE "messageTimestamp" < extract(epoch FROM now() - make_interval(days => :'days'::int)) RETURNING 1)
+    local sum=0
+    # Por tandas: la primera vez puede haber meses de mensajes y una sola orden tomaría la tabla demasiado tiempo.
+    for _ in $(seq 1 200); do
+      n="$(psql -X -At -v ON_ERROR_STOP=1 -d "$EVOLUTION_DB" -v days="$EVOLUTION_MESSAGE_DAYS" <<'SQL'
+WITH gone AS (DELETE FROM "Message" WHERE ctid IN (SELECT ctid FROM "Message" WHERE "messageTimestamp" < extract(epoch FROM now() - make_interval(days => :'days'::int)) LIMIT 5000) RETURNING 1)
 SELECT count(*) FROM gone;
 SQL
-)" || { log "Limpieza de Evolution: falló la retención de mensajes."; return 1; }
-    (( ${n:-0} > 0 )) && log "Limpieza de Evolution: $n mensajes de más de $EVOLUTION_MESSAGE_DAYS días borrados."
+)" || { log "Limpieza de Evolution: falló la retención de mensajes; se sigue en la próxima vuelta."; return 1; }
+      sum=$((sum + ${n:-0}))
+      (( ${n:-0} < 5000 )) && break
+    done
+    (( sum > 0 )) && log "Limpieza de Evolution: $sum mensajes de más de $EVOLUTION_MESSAGE_DAYS días borrados."
   fi
   return 0
 }

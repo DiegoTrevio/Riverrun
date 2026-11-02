@@ -19,13 +19,16 @@ export function sealChannelConfig<T extends Record<string, unknown> | undefined 
   return out as T;
 }
 
-/** Al leer: se descifran. Una que no se puede descifrar (llave perdida) queda vacía: el canal pide reconectar. */
+/**
+ * Al leer: se descifran. Una que no se puede descifrar (falta su llave) se deja cifrada, no vacía: el canal falla al
+ * autenticarse (y pide reconectar), y un guardado automático no la pisa con un vacío. Al volver la llave, vuelve a servir.
+ */
 export function openChannelConfig<T extends Record<string, unknown> | undefined | null>(config: T): T {
   if (!config || typeof config !== 'object') return config;
   const out: Record<string, unknown> = { ...config };
   for (const k of SEALED_CHANNEL_FIELDS) {
     const v = out[k];
-    if (isSealed(v)) out[k] = decryptSecret(v) ?? '';
+    if (isSealed(v)) out[k] = decryptSecret(v) ?? v;
   }
   return out as T;
 }

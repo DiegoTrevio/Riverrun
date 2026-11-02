@@ -18,6 +18,10 @@ q -d "$APP" -f "$here/migrations/111_evolution_erasures.sql" >/dev/null
 q -d "$EVO" >/dev/null <<'SQL'
 CREATE TABLE "Instance" (id text PRIMARY KEY, name text);
 CREATE TABLE "Message" (id text PRIMARY KEY, key jsonb, "messageTimestamp" int, "instanceId" text REFERENCES "Instance"(id) ON DELETE CASCADE);
+CREATE TABLE "Chat" (id text PRIMARY KEY, "remoteJid" text, "instanceId" text);
+CREATE TABLE "Contact" (id text PRIMARY KEY, "remoteJid" text, "pushName" text, "instanceId" text);
+INSERT INTO "Chat" VALUES ('c1', '5215511111111@s.whatsapp.net', 'i1'), ('c2', '5215522222222@s.whatsapp.net', 'i1'), ('c3', '5215511111111@s.whatsapp.net', 'i2');
+INSERT INTO "Contact" VALUES ('k1', '123@lid', 'Ana', 'i1'), ('k2', '5215522222222@s.whatsapp.net', 'Beto', 'i1');
 INSERT INTO "Instance" VALUES ('i1', 'principal'), ('i2', 'otra');
 INSERT INTO "Message" VALUES
   ('m1', '{"remoteJid":"5215511111111@s.whatsapp.net"}', extract(epoch FROM now())::int, 'i1'),
@@ -32,6 +36,8 @@ BACKUP_APP_DB="$APP" BACKUP_EVOLUTION_DB="$EVO" EVOLUTION_MESSAGE_DAYS=7 BACKUP_
 
 left="$(q -d "$EVO" -c "SELECT string_agg(id, ',' ORDER BY id) FROM \"Message\"")"
 [[ "$left" == "m3,m4" ]] || { echo "ERROR: quedaron $left (se esperaba m3 de otra instancia y m4 de otro chat)"; exit 1; }
+[[ "$(q -d "$EVO" -c "SELECT string_agg(id, ',' ORDER BY id) FROM \"Chat\"")" == "c2,c3" ]] || { echo "ERROR: no borró el chat (o borró otro)"; exit 1; }
+[[ "$(q -d "$EVO" -c "SELECT string_agg(id, ',' ORDER BY id) FROM \"Contact\"")" == "k2" ]] || { echo "ERROR: no borró el contacto (o borró otro)"; exit 1; }
 [[ "$(q -d "$APP" -c "SELECT done_at IS NOT NULL AND deleted = 2 AND jids = '{}' FROM evolution_erasures")" == t ]] || { echo "ERROR: la solicitud no quedó hecha y sin identificadores"; exit 1; }
 # Otra vuelta no cambia nada.
 BACKUP_APP_DB="$APP" BACKUP_EVOLUTION_DB="$EVO" BACKUP_DIR="$(mktemp -d)" bash "$here/docker/backup/backup.sh" evolution-cleanup

@@ -77,7 +77,13 @@ SHIM
 cat > "$work/bin/curl" <<'SHIM'
 #!/usr/bin/env bash
 for a in "$@"; do
-  if [[ "$a" == *"/actions/workflows/"* ]]; then echo "curl $a" >> "$LOG"; [[ -f CI_RESPUESTA ]] || exit 22; cat CI_RESPUESTA; exit 0; fi
+  if [[ "$a" == *"/actions/workflows/"* ]]; then
+    echo "curl $a" >> "$LOG"; o=""; prev=""
+    for b in "$@"; do [[ "$prev" == "-o" ]] && o="$b"; prev="$b"; done
+    [[ -f CI_RESPUESTA ]] || exit 6
+    cp CI_RESPUESTA "$o"
+    printf '%s' "$(cat CI_CODIGO 2>/dev/null || echo 200)"; exit 0
+  fi
 done
 exec /usr/bin/curl "$@"
 SHIM
@@ -88,7 +94,7 @@ git init -q --bare "$work/origin.git"
 git clone -q "$work/origin.git" "$work/app" 2>/dev/null
 cd "$work/app"
 # Estado del docker simulado y .env: nunca entran en los commits de prueba (EVO_IMAGE sí: es "código").
-printf '%s\n' .env EVO_RUNNING EVO_MIG EVO_PLAN_RC EVO_VERIFY_RC PULLED MIGRA_AL_ARRANCAR CONFIG_MALA PULL_FALLA FALLA_RESPALDO FALLA_PREVIA SIN_FUNCIONAL CONFIG_NO_CORRE HEALTH_N FALLA_TARDIA FALLA_SOSTENIDA REKEY_IN FALLA_REKEY ROLES_IN FALLA_ROLES CI_RESPUESTA > .gitignore
+printf '%s\n' .env EVO_RUNNING EVO_MIG EVO_PLAN_RC EVO_VERIFY_RC PULLED MIGRA_AL_ARRANCAR CONFIG_MALA PULL_FALLA FALLA_RESPALDO FALLA_PREVIA SIN_FUNCIONAL CONFIG_NO_CORRE HEALTH_N FALLA_TARDIA FALLA_SOSTENIDA REKEY_IN FALLA_REKEY ROLES_IN FALLA_ROLES CI_RESPUESTA CI_CODIGO > .gitignore
 cp "$here/riverrun" . && mkdir -p docker && cp "$here/docker/db-roles.sql" docker/ && echo "v1" > VERSION && git add -A && git commit -qm "v1" && git push -q origin HEAD:main 2>/dev/null
 git branch -q --set-upstream-to=origin/main 2>/dev/null || git branch -q -u origin/main
 # Publica una versión nueva en el "origin" y deja la copia local donde estaba. $3 = imagen de Evolution del código nuevo.
@@ -348,7 +354,10 @@ grep -q "no tiene una corrida del CI" "$work/out" || { cat "$work/out"; echo "ER
 rm -f CI_RESPUESTA
 if ./riverrun update > "$work/out" 2>&1; then echo "ERROR: aplicó sin poder consultar el CI"; exit 1; fi
 grep -q "No se pudo consultar el CI" "$work/out" || { cat "$work/out"; echo "ERROR: sin respuesta de GitHub debía detener todo"; exit 1; }
-ci 1 "$(run completed '"success"')"
+echo 404 > CI_CODIGO; ci 1 "$(run completed '"success"')"
+if ./riverrun update > "$work/out" 2>&1; then echo "ERROR: aplicó con GitHub respondiendo 404"; exit 1; fi
+grep -q "UPDATE_GITHUB_TOKEN" "$work/out" || { cat "$work/out"; echo "ERROR: un 404 debía sugerir el token"; exit 1; }
+rm -f CI_CODIGO
 ./riverrun update > "$work/out" 2>&1 || { cat "$work/out"; echo "ERROR: con el CI en verde debía aplicarse"; exit 1; }
 grep -q "CI en verde" "$work/out" && [[ "$(cat VERSION)" == v12b ]] || { cat "$work/out"; echo "ERROR: no aplicó con el CI en verde"; exit 1; }
 : > "$LOG"; newcommit v12c
@@ -356,6 +365,18 @@ ci 1 "$(run completed '"failure"')"
 ./riverrun update --skip-ci-check > "$work/out" 2>&1 || { cat "$work/out"; echo "ERROR: --skip-ci-check debía aplicar"; exit 1; }
 grep -q "Se omite la comprobación del CI" "$work/out" && [[ "$(cat VERSION)" == v12c ]] || { cat "$work/out"; echo "ERROR: --skip-ci-check debía avisar y aplicar"; exit 1; }
 rm -f CI_RESPUESTA; unset RIVERRUN_GITHUB_REPO
+
+echo "== volver atrás a una versión sin llave de datos: antes se pasan los secretos a su formato (INF-6/INF-7)"
+base="$(git rev-parse HEAD)"; git fetch -q origin; git reset -q --hard origin/main
+mkdir -p src/cli; echo "// nueva" > src/cli/rekey-secrets.ts; touch VERSION_MALA; echo v12d > VERSION
+git add -A; git commit -qm v12d; git push -q origin HEAD:main; git reset -q --hard "$base"
+: > "$LOG"
+if ./riverrun update > "$work/out" 2>&1; then echo "ERROR: aplicó una versión que no queda sana"; exit 1; fi
+grep -q "node dist/cli/rekey-secrets.js --to-legacy" "$LOG" || { cat "$work/out"; echo "ERROR: no pasó los secretos al formato anterior antes de volver"; exit 1; }
+grep -q "se pasan a su formato antes de volver" "$work/out" && [[ "$(cat VERSION)" == v12c ]] || { cat "$work/out"; echo "ERROR: debía volver a v12c"; exit 1; }
+# El origen queda con una versión limpia (sin esos archivos) para lo que sigue.
+git fetch -q origin; base="$(git rev-parse HEAD)"; git reset -q --hard origin/main
+git rm -q -r src VERSION_MALA; echo v12e > VERSION; git commit -qm v12e; git push -q origin HEAD:main; git reset -q --hard "$base"
 
 echo "== backend anterior sin /health/functional: se compara con /health/ready y una falla nueva sí vuelve atrás"
 : > "$LOG"; touch SIN_FUNCIONAL; base="$(git rev-parse HEAD)"; git fetch -q origin; git reset -q --hard origin/main
