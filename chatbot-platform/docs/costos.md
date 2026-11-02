@@ -238,19 +238,23 @@ en Riverrun (`docs/produccion.md`); guías de terceros hablan de ~200–500 MB p
 Contra el mismo ejemplo con redes en Zernio (~437–648 USD) y sin contar lo que Meta cobraría con WhatsApp oficial. Con
 Evolution, la IA es ~90 % del costo: el precio de un plan se fija casi solo con su tope de IA.
 
-**Ejemplo con un solo cliente** (un número de WhatsApp; ~5 respuestas por conversación). Con un cliente, el servidor
-lo paga entero él: un VPS de 4 GB alcanza (Hetzner CX23 ~6 USD, o ~24 USD en DigitalOcean).
+**Ejemplo con un solo cliente** (un número de WhatsApp, servidor en DigitalOcean). Con un cliente, el servidor lo paga
+entero él: un Droplet Basic de 4 GB (2 vCPU, 80 GB) cuesta **24 USD al mes**; el de 2 GB, 12 USD, queda justo. Cada
+columna son los mensajes que manda el agente en el mes (~5 por conversación).
 
-| Al mes (USD) | Chico: 200 conversaciones | Mediano: 1 000 | Grande: 3 000 |
-|---|---|---|---|
-| IA, + 5.5 % de OpenRouter | ~2–4 | ~11–21 | ~32–63 |
-| VPS de 4 GB | ~6–24 | ~6–24 | ~6–24 |
-| Dominio | ~1–2 | ~1–2 | ~1–2 |
-| Respaldos, correo, monitoreo, Zernio, Meta | 0 | 0 | 0 |
-| **Total** | **~9–30** | **~18–47** | **~39–89** |
+| Al mes (USD) | 1 000 mensajes (~200 conversaciones) | 5 000 (~1 000) | **10 000 (~2 000)** | 15 000 (~3 000) |
+|---|---|---|---|---|
+| IA, + 5.5 % de OpenRouter | ~2–4 | ~11–21 | **~21–42** | ~32–63 |
+| DigitalOcean 4 GB | 24 | 24 | **24** | 24 |
+| Dominio | ~1–2 | ~1–2 | **~1–2** | ~1–2 |
+| Respaldos, correo, monitoreo, Zernio, Meta | 0 | 0 | **0** | 0 |
+| **Total** | **~27–30** | **~36–47** | **~46–68** | **~57–89** |
 
-- El cliente grande gasta más IA que el tope por omisión (20 USD): sube el tope de su plan a ~60 USD o el agente deja
-  de responder con IA a mitad de mes.
+- Desde ~5 000 mensajes el cliente gasta más IA que el tope por omisión (20 USD): con 10 000, sube el tope de su plan a
+  ~45 USD (con 15 000, a ~65) o el agente deja de responder con IA a mitad de mes.
+- Si «10 000 mensajes» cuenta los del cliente y los del agente (mitad y mitad), la IA es la de la columna de 5 000.
+- Cuando el agente divide una respuesta en varios mensajes, es una sola llamada a la IA: la IA sale más barata que la
+  tabla, que supone una llamada por mensaje.
 - OpenRouter cobra mínimo 0.80 USD por compra de créditos: con poco gasto, compra de 25 USD o más de una vez.
 - Además, al cobrarle: con Stripe, un plan de 1 000 MXN + IVA (1 160 MXN) deja ~52 MXN de comisión (3.6 % + 3 MXN, más
   el IVA de la comisión). Facturapi, según su plan.
@@ -286,6 +290,7 @@ datos de esas páginas vienen de resúmenes de búsqueda y de sitios de terceros
 - Servidor: [Hetzner 2026 (Bitdoze)](https://www.bitdoze.com/es/hetzner-cloud-precios-2026/),
   [Hetzner junio 2026 (WZ-IT)](https://wz-it.com/en/blog/hetzner-price-increase-june-2026-cpx-ccx-alternatives/),
   [DigitalOcean](https://betterstack.com/community/guides/web-servers/digitalocean-review/),
+  [Droplets 2026 (TemperStack)](https://www.temperstack.com/plans/digitalocean/),
   [Backblaze B2](https://costbench.com/software/cloud-infrastructure/backblaze-b2/)
 - Correo: [Resend](https://www.usecarly.com/blog/resend-pricing/)
 - Evolution: [memoria por número (Hostinger)](https://www.hostinger.com/vps/docker/evolution-go),
