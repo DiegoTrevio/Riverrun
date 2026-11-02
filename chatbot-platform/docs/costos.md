@@ -271,6 +271,46 @@ columna son los mensajes que manda el agente en el mes (~5 por conversación).
 - **Mantenimiento.** Sesiones que se caen (por ejemplo, si el teléfono pasa unos 14 días sin conectarse, WhatsApp
   desvincula los dispositivos), actualizaciones de Evolution y la memoria del servidor corren por tu cuenta.
 
+## Lo que se suele olvidar
+
+Además de lo de arriba, en cualquier escenario:
+
+**Se paga cada mes:**
+
+- **IA fuera de las respuestas** (+10–30 % sobre las tablas, que solo cuentan respuestas): notas de voz (~0.002 USD por
+  minuto), fotos y PDF (~0.001 c/u), resúmenes de la memoria, reintentos cuando el validador pide corregir, Copiloto
+  (~0.003 por pedido) y «Llena todo por mí». Con 10 000 mensajes de un cliente, la IA queda en ~23–55 USD en lugar de
+  ~21–42. El dato real está en Consumo de IA.
+- **IVA de servicios extranjeros.** Los precios de aquí van sin IVA. Desde 2020, quien vende servicios digitales a México
+  desde fuera debe cobrar 16 % de IVA (DigitalOcean, OpenRouter…; no confirmé si cada uno ya lo cobra). Si facturas
+  como negocio, ese IVA se acredita; si no, es costo.
+- **Tipo de cambio.** Todo se cobra en dólares: el banco aplica su tipo de cambio y algunas tarjetas cobran comisión por
+  compras en el extranjero. Revisa la tuya.
+- **Respaldo de DigitalOcean** (opcional, +20 % del Droplet: 4.80 USD con el de 4 GB). No hace falta porque Riverrun
+  respalda cada noche, pero entonces activa la copia en la nube (`BACKUP_S3_*`; Backblaze B2 da 10 GB gratis): si se
+  pierde el Droplet, los respaldos locales se pierden con él.
+- **Pruebas con IA real en GitHub**: hasta ~4 USD al mes si `RIVERRUN_LIVE_EVAL_ENABLED` está encendido.
+
+**Normalmente los paga el cliente:**
+
+- **La línea y el teléfono del número de WhatsApp:** el chip con saldo para que no se dé de baja y un teléfono que se
+  conecte al menos cada ~14 días; si no, WhatsApp desvincula la sesión de Evolution.
+- **Un buzón de correo con su dominio** (p. ej. `ventas@`): Resend solo envía. Google Workspace cuesta ~7–8 USD por
+  usuario al mes; Zoho Mail tiene plan gratis.
+
+**Del negocio, no de la plataforma:** Facturapi para las facturas, un contador si facturas, el ISR de la ganancia
+(el IVA que cobras no es costo) y la comisión de Stripe por cada cobro que un cliente desconozca (disputa).
+
+**Sin factura:** tu tiempo de soporte y mantenimiento, el riesgo de que bloqueen el número y la licencia de Evolution si
+algún día actualizas a la 2.4 o posterior.
+
+**No cuesta, aunque parezca:** el tráfico (el Droplet trae 4 TB al mes), el disco (80 GB alcanzan; cada cuenta tiene
+1 GB de archivos por omisión, `PLAN_DEFAULT_STORAGE_MB`), el certificado HTTPS, el inicio de sesión con Google, Google
+Calendar, Turnstile, Telegram y Evolution 2.3.7.
+
+Con todo esto, el cliente de 10 000 mensajes con DigitalOcean queda en **~48–81 USD al mes sin IVA**, o **~56–94 USD**
+si pagas el IVA de los servicios extranjeros y no lo acreditas.
+
 ## Fuentes
 
 Consultadas el 2 nov 2026. Desde esta sesión no se pudieron abrir `docs.zernio.com` ni `developers.facebook.com`; los
@@ -293,6 +333,8 @@ datos de esas páginas vienen de resúmenes de búsqueda y de sitios de terceros
   [Droplets 2026 (TemperStack)](https://www.temperstack.com/plans/digitalocean/),
   [Backblaze B2](https://costbench.com/software/cloud-infrastructure/backblaze-b2/)
 - Correo: [Resend](https://www.usecarly.com/blog/resend-pricing/)
+- IVA de servicios digitales extranjeros: [El Contribuyente](https://www.elcontribuyente.mx/2020/05/plataformas-digitales-tendran-que-expedir-facturas-a-sus-usuarios/),
+  [Sovos](https://sovos.com/es/iva/reglas-fiscales/cumplimiento-del-iva-mexico/)
 - Evolution: [memoria por número (Hostinger)](https://www.hostinger.com/vps/docker/evolution-go),
   [despliegue y memoria (Railway)](https://railway.com/deploy/evolution-whatsapp-api),
   [licencia desde la 2.4](https://github.com/evolution-foundation/evolution-api/releases)
