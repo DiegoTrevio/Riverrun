@@ -44,7 +44,9 @@ const current = (): SealWith => (config.dataKey ? { dataKey: config.dataKey } : 
 /** Un texto ya cifrado por `encryptSecret` (cualquier versión). */
 export const isSealed = (v: unknown): v is string => typeof v === 'string' && /^v[12]\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]*)?$/.test(v);
 
-export function encryptSecret(plain: string, using: SealWith = current()): string {
+/** `using` como texto: una llave de sesión (formato v1, el de antes). */
+export function encryptSecret(plain: string, usingArg: SealWith | string = current()): string {
+  const using: SealWith = typeof usingArg === 'string' ? { session: usingArg } : usingArg;
   const iv = crypto.randomBytes(12);
   const v2 = 'dataKey' in using;
   const c = crypto.createCipheriv('aes-256-gcm', v2 ? dataKey(using.dataKey) : encKey(using.session), iv);
@@ -64,7 +66,8 @@ function open(key: Buffer, iv: string, tag: string, data: string): string | null
 }
 
 /** null si está dañado o si no se tiene la llave con la que se cifró (hay que volver a conectar). */
-export function decryptSecret(packed: string, keys: { session?: string; dataKeys?: string[] } = {}): string | null {
+export function decryptSecret(packed: string, keysArg: { session?: string; dataKeys?: string[] } | string = {}): string | null {
+  const keys = typeof keysArg === 'string' ? { session: keysArg } : keysArg;
   const parts = String(packed ?? '').split('.');
   if (parts[0] === 'v1' && parts.length === 4) return open(encKey(keys.session ?? appSecret()), parts[1], parts[2], parts[3]);
   if (parts[0] === 'v2' && parts.length === 5) {

@@ -58,9 +58,10 @@ function fair<T>(accountId: string, fn: () => Promise<T>): Promise<T> {
 }
 
 /** IN-6: LibreOffice no hereda las variables del backend (llaves, contraseñas, DATABASE_URL). */
-export const sofficeEnv = (home: string) => ({
-  PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin', HOME: home, TMPDIR: home, LANG: process.env.LANG ?? 'C.UTF-8', SAL_USE_VCLPLUGIN: 'svp',
-});
+export const sofficeEnv = (home: string) => {
+  const { PATH: path_, LANG: lang } = process.env; // del sistema, no de la configuración de la app
+  return { PATH: path_ ?? '/usr/local/bin:/usr/bin:/bin', HOME: home, TMPDIR: home, LANG: lang ?? 'C.UTF-8', SAL_USE_VCLPLUGIN: 'svp' };
+};
 
 function sofficeConvert(docx: Buffer): Promise<Buffer> {
   return (async () => {
