@@ -17,7 +17,7 @@ import { allowed, toolSpec, type Ctx, type ToolDef } from './registry.js';
 import { assessRisk } from './risk.js';
 import { forModel } from './summarize.js';
 import { describePage } from './page.js';
-import { accountSnapshot, systemMessage } from './prompt.js';
+import { accountSnapshot, systemMessage, touchesCustomers } from './prompt.js';
 import { buildHistory, FULL_TURNS } from './history.js';
 import * as cs from './store.js';
 
@@ -122,6 +122,9 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
     const specs = defs.map(toolSpec);
     const snapshot = await accountSnapshot(ctx.call);
     const [stored, actions] = await Promise.all([cs.threadMessages(thread.id), cs.threadActions(thread.id)]);
+    // AI-5: los títulos de las acciones sobre clientes (con sus nombres) entran al prompt; el turno cuenta como contaminado.
+    const listed = [...actions.filter((a) => a.risk !== 'read').slice(-12), ...(await cs.actionsByIds(req.refs, thread.id))];
+    if (listed.some(touchesCustomers)) ctx.tainted = true;
     const system = systemMessage({ model: limits.model, user, accountName: account.name, timezone: ctx.timezone, snapshot, page, actions });
     const history: AnyMessage[] = buildHistory(stored, actions);
     const ai = accountAi(deps.ai, thread.account_id, null, 'copilot');
