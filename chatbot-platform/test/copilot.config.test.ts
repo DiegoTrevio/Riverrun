@@ -428,7 +428,7 @@ t('AI-9: la IA que gastan las herramientas por dentro cuenta para el costo del p
   await undo(lastAction(out));
 });
 
-t('AI-9: al confirmar una tarjeta, la IA que gasta la herramienta cuenta para el pedido que la propuso', async () => {
+t('AI-9: la IA de la vista previa de una tarjeta cuenta para el pedido; confirmar no la cuenta dos veces', async () => {
   const contact = conv.contact_id;
   const th = (await owner('POST', '/api/copilot/threads', {})).json().id as string;
   const say = async (text: string) => {
@@ -439,18 +439,22 @@ t('AI-9: al confirmar una tarjeta, la IA que gasta la herramienta cuenta para el
   // Etiquetar a un cliente deja su nombre en el hilo: el cambio de instrucciones siguiente llega como tarjeta (AI-5).
   script([call('etiquetar', { contacto_ids: [contact], agregar: ['revisar'] }), 'Listo.']);
   await say('Etiqueta a ese cliente para revisar');
-  h.setScript(() => JSON.stringify({ summary: 'Quité el corte.', question: '', operations: [{ op: 'remove', line: 3, text: '' }] }));
-  script([call('cambiar_instrucciones', { agente_id: h.botId, cambio: 'quita el precio del corte' }), 'Queda por confirmar.']);
-  const out = await say('Quita el precio del corte');
+  h.setScript(() => JSON.stringify({ summary: 'Agregué que los lunes cerramos.', question: '', operations: [{ op: 'add', line: 1, text: 'Los lunes cerramos.' }] }));
+  script([call('cambiar_instrucciones', { agente_id: h.botId, cambio: 'agrega que los lunes cerramos' }), 'Queda por confirmar.']);
+  const spent = async (kind: string) => Number((await pool.query(`SELECT coalesce(sum(coalesce(charged_usd, reserved_usd)), 0) AS usd FROM ai_spend WHERE account_id = $1 AND kind = $2`, [h.accountId, kind])).rows[0].usd);
+  const [edit0, own0] = [await spent('prompt_edit'), await spent('copilot')];
+  const out = await say('Agrega que los lunes cerramos');
   const a = lastAction(out);
   assert.equal(a.status, 'proposed', JSON.stringify(a));
   const turnCost = async () => Number((await pool.query(`SELECT cost_usd FROM copilot_turns WHERE id = $1`, [a.turn_id])).rows[0].cost_usd);
+  const editBefore = await spent('prompt_edit');
+  assert.ok(editBefore - edit0 > 0, 'la vista previa gastó IA');
   const before = await turnCost();
-  const since = (await pool.query(`SELECT now() AS t`)).rows[0].t;
+  assert.ok(Math.abs(before - (editBefore - edit0) - (await spent('copilot') - own0)) < 1e-6, 'el pedido suma la vista previa y el Copiloto');
   assert.equal((await confirm(a)).statusCode, 200);
-  const sub = Number((await pool.query(`SELECT coalesce(sum(coalesce(charged_usd, reserved_usd)), 0) AS usd FROM ai_spend WHERE account_id = $1 AND kind = 'prompt_edit' AND created_at >= $2`, [h.accountId, since])).rows[0].usd);
-  assert.ok(sub > 0, 'la edición al confirmar gastó IA');
-  assert.ok(Math.abs((await turnCost()) - before - sub) < 1e-6, 'y se sumó al pedido');
+  // Al confirmar se aplica el texto que se vio: sin otra llamada de IA y sin sumar otra vez.
+  assert.equal(await spent('prompt_edit'), editBefore);
+  assert.equal(await turnCost(), before);
   const done = ((await owner('GET', `/api/copilot/threads/${th}`)).json().actions as any[]).find((x) => x.id === a.id);
   await undo(done);
 });

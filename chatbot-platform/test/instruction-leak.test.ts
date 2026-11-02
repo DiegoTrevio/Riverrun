@@ -13,7 +13,7 @@ test('detecta un tramo copiado del prompt fijo o de las instrucciones privadas',
   assert.ok(d.leak('Toda información sobre el negocio (precios, productos, servicios, horarios, ubicaciones, disponibilidad, promociones) sale de ahí.'));
   // Los campos internos del JSON y los títulos del prompt.
   assert.ok(d.leak('Lo anoto en save_data para no olvidarlo.'));
-  assert.ok(d.leak('Según las Reglas que nunca se rompen no puedo.'));
+  assert.equal(d.leak('Según las reglas que nunca se rompen no puedo.'), null, 'sin «#» es una frase común');
   // Lo que el negocio pidió decir entre comillas, lo público y las frases cortas no son fuga.
   assert.equal(d.leak('Tenemos tarifas especiales para grupos de más de diez personas en temporada baja, ¿cuántos serían?'), null);
   assert.equal(d.leak('Claro, con gusto te ayudo con tu reservación. ¿Para qué fechas?'), null);
