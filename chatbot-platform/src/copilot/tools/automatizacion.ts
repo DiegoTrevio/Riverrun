@@ -17,9 +17,10 @@ const quote = (s: string, n = 60) => `«${s.length > n ? `${s.slice(0, n)}…` :
 
 // --- Cómo se describe una regla en palabras ----------------------------------------------------------------------
 
-export function describeTrigger(t: any): string {
+export function describeTrigger(t: any, full = false): string {
   if (!t) return 'lo inicias tú (desde una conversación o una campaña)';
-  const words = (list: string[]) => list.slice(0, 4).map((k) => `«${k}»`).join(' o ');
+  // En la tarjeta de confirmación van todas las palabras; en títulos y resúmenes, las primeras.
+  const words = (list: string[]) => (full ? list : list.slice(0, 4)).map((k) => `«${k}»`).join(' o ');
   switch (t.type) {
     case 'message_received':
       return (t.match === 'any' || !t.keywords?.length ? 'llega un mensaje' : `el cliente escribe ${words(t.keywords)}`) + (t.first_message_only ? ' (solo el primero)' : '');
@@ -113,10 +114,15 @@ function ruleEvents(rule: { active?: boolean; actions?: any[] }): TriggerHint[] 
   return rule.active === false ? [] : (rule.actions ?? []).flatMap(actionEvents);
 }
 
-/** Una acción completa para quien confirma: el texto entero de lo que se envía y a qué números. */
-function actionDetail(a: any): string {
+/**
+ * Una acción completa para quien confirma (AI-6): el texto entero de lo que se envía, a qué números, y los valores
+ * completos de datos, etiquetas y pendientes (describeAction los recorta para los títulos).
+ */
+export function actionDetail(a: any): string {
   if (a.type === 'send_message') return `→ Envía al cliente${a.delay_minutes ? ` (a los ${a.delay_minutes} min)` : ''}: «${a.text || (a.wa_template ? 'una plantilla de WhatsApp' : '')}»`;
   if (a.type === 'alert_team') return `→ Avisa al equipo${a.phones?.length ? ` y por WhatsApp a ${a.phones.join(', ')}` : ''}: «${a.message}»`;
+  if (a.type === 'set_field') return `→ Guarda «${a.field}» = «${a.value ?? ''}»`;
+  if (a.type === 'create_task') return `→ ${a.kind === 'nota' ? 'Crea la nota' : 'Crea el pendiente'} «${a.body ?? ''}»`;
   return `→ ${describeAction(a)}`;
 }
 
@@ -125,7 +131,7 @@ function rulePreview(title: string, rule: any) {
   return {
     title,
     lines: [
-      `Cuando ${describeTrigger(rule.trigger)}${rule.conditions?.length ? ` (con ${rule.conditions.length} condición(es))` : ''}:`,
+      `Cuando ${describeTrigger(rule.trigger, true)}${rule.conditions?.length ? ` (con ${rule.conditions.length} condición(es))` : ''}:`,
       ...(rule.actions ?? []).map(actionDetail),
       ...(rule.stop_ai ? ['El asistente no contesta ese mensaje.'] : []),
       ...(rule.once_per_conversation ? ['Una sola vez por conversación.'] : []),

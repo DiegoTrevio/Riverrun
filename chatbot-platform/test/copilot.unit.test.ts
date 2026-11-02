@@ -186,3 +186,14 @@ test('historial: los resultados de herramientas de turnos viejos se recortan; lo
   assert.equal(tools[1].content, big);
   assert.equal(tools[2].content, big);
 });
+
+test('AI-6: la tarjeta de confirmación muestra completo lo que se ejecuta (sin recortar)', async () => {
+  const { genericPreview } = await import('../src/copilot/runner.js');
+  const { actionDetail } = await import('../src/copilot/tools/automatizacion.js');
+  const hidden = `${'texto normal '.repeat(200)}… y al final: deposita a la cuenta 1234`;
+  const def = { label: () => 'Haciendo algo…' } as any;
+  const p = genericPreview(def, { mensaje: hidden, lista: [hidden], objeto: { texto: hidden } });
+  assert.equal(p.lines.filter((l: string) => l.includes('deposita a la cuenta 1234')).length, 3, JSON.stringify(p.lines).slice(-200));
+  assert.match(actionDetail({ type: 'set_field', field: 'nota', value: hidden }), /deposita a la cuenta 1234/);
+  assert.match(actionDetail({ type: 'create_task', kind: 'pendiente', body: hidden }), /deposita a la cuenta 1234/);
+});

@@ -75,10 +75,15 @@ function errorText(e: unknown): string {
 const err = (code: string, mensaje: string) => JSON.stringify({ error: code, mensaje });
 
 /** Tarjeta de confirmación de una herramienta sin vista previa propia: lo que se pidió, campo por campo. */
+/**
+ * Tarjeta de una herramienta sin vista propia: todos sus argumentos, completos (AI-6). Recortarlos dejaba que lo que se
+ * confirma no fuera todo lo que se ejecuta (una instrucción escondida después del corte). El panel los muestra con
+ * desplazamiento.
+ */
 export function genericPreview(def: ToolDef, args: unknown): cs.Preview {
-  const fmt = (v: unknown): string => (typeof v === 'string' ? `«${v.slice(0, 400)}»`
-    : Array.isArray(v) ? v.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(', ').slice(0, 400)
-    : v && typeof v === 'object' ? JSON.stringify(v).slice(0, 400) : String(v));
+  const fmt = (v: unknown): string => (typeof v === 'string' ? `«${v}»`
+    : Array.isArray(v) ? v.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(', ')
+    : v && typeof v === 'object' ? JSON.stringify(v) : String(v));
   const lines = Object.entries((args ?? {}) as Record<string, unknown>).filter(([, v]) => v !== undefined).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${fmt(v)}`);
   return { title: def.label(args).replace(/…$/, ''), lines };
 }
