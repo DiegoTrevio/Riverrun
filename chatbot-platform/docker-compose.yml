@@ -255,8 +255,10 @@ services:
       ZERNIO_API_KEY: ${ZERNIO_API_KEY:-}
       ZERNIO_RATE_PER_MIN: ${ZERNIO_RATE_PER_MIN:-}
       # PDF de las cotizaciones
-      QUOTE_PDF_BACKEND: ${QUOTE_PDF_BACKEND:-}
-      QUOTE_PDF_URL: ${QUOTE_PDF_URL:-}
+      # IN-6: los PDF de cotizaciones los hace el contenedor `pdf` (LibreOffice aparte, sin estos secretos ni internet).
+      # QUOTE_PDF_BACKEND=soffice vuelve a LibreOffice dentro del backend.
+      QUOTE_PDF_BACKEND: ${QUOTE_PDF_BACKEND:-gotenberg}
+      QUOTE_PDF_URL: ${QUOTE_PDF_URL:-http://pdf:3000}
       QUOTE_PDF_TIMEOUT_MS: ${QUOTE_PDF_TIMEOUT_MS:-}
       SOFFICE_PATH: ${SOFFICE_PATH:-}
       CFDI_PRODUCT_KEY: ${CFDI_PRODUCT_KEY:-}
@@ -289,7 +291,19 @@ services:
       - backups:/backups:ro
     ports:
       - "${PANEL_BIND:-127.0.0.1}:3000:3000"
-    networks: [default, data]
+    networks: [default, data, pdf]
+
+  # IN-6: Word → PDF de las cotizaciones (Gotenberg con LibreOffice). Sin secretos en su entorno, en una red interna sin
+  # salida a internet (solo el backend la alcanza): una plantilla maliciosa no lee llaves ni llega a ningún lado.
+  pdf:
+    image: ${PDF_IMAGE:-gotenberg/gotenberg:8.38.1-libreoffice@sha256:2098722190575dbd975d8abf02e4ce83ffe20783114c5cc56f1b2ac309e6a083}
+    restart: unless-stopped
+    mem_limit: ${PDF_MEM_LIMIT:-1g}
+    pids_limit: 300
+    logging: *logging
+    command: ["gotenberg", "--api-timeout=90s", "--libreoffice-restart-after=10", "--log-level=warn"]
+    security_opt: ["no-new-privileges:true"]
+    networks: [pdf]
 
   # Respaldo diario cifrado de las dos bases de datos, las fotos y las sesiones de WhatsApp (ver README → Respaldos).
   backup:
@@ -375,6 +389,8 @@ services:
 networks:
   default: {}
   data:
+    internal: true
+  pdf:
     internal: true
 
 volumes:

@@ -653,7 +653,7 @@ update_preflight() {
   dc build --pull backend backup || abort_update "No se pudo construir la versión nueva. No se aplicó nada."
   # Redis y Caddy: la versión más reciente de su misma etiqueta (redis:7, caddy:2; parches). Se descargan aquí y se
   # aplican con el resto; PostgreSQL no: cambiar su imagen sobre un volumen existente tiene su propio procedimiento.
-  dc pull --quiet redis caddy >/dev/null 2>&1 || warn "No se pudieron descargar las imágenes nuevas de Redis o Caddy; se sigue con las que hay."
+  dc pull --quiet redis caddy pdf >/dev/null 2>&1 || warn "No se pudieron descargar las imágenes nuevas de Redis, Caddy o del convertidor de PDF; se sigue con las que hay."
   say "Revisando la configuración con la versión nueva…"
   preflight_config || abort_update "La versión nueva no arrancaría con esta configuración (problemas críticos arriba). Corrígelos en .env y repite ./riverrun update. No se aplicó nada."
   EVO_TARGET="$(evo_target_image)"

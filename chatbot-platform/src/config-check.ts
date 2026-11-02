@@ -212,6 +212,11 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
   if (get('QUOTE_PDF_BACKEND') === 'gotenberg' && !has('QUOTE_PDF_URL')) {
     add('critical', 'core', 'quote_pdf.url', ['QUOTE_PDF_URL'], 'Las cotizaciones usan Gotenberg pero falta QUOTE_PDF_URL.', 'Define QUOTE_PDF_URL (p. ej. http://gotenberg:3000) o borra QUOTE_PDF_BACKEND para usar LibreOffice.');
   }
+  if (prod && get('QUOTE_PDF_BACKEND') === 'soffice') {
+    add('warning', 'security', 'quote_pdf.inside_backend', ['QUOTE_PDF_BACKEND'],
+      'Las plantillas de cotización se convierten con LibreOffice dentro del backend: una plantilla maliciosa corre junto a los datos de todas las cuentas.',
+      'Usa el contenedor `pdf` de docker-compose (QUOTE_PDF_BACKEND=gotenberg y QUOTE_PDF_URL=http://pdf:3000, lo de por omisión).');
+  }
   if (prod && get('QUOTE_PDF_BACKEND') === 'fake') {
     add('critical', 'core', 'quote_pdf.fake', ['QUOTE_PDF_BACKEND'], 'QUOTE_PDF_BACKEND=fake es solo para pruebas: los clientes recibirían un PDF de prueba.', 'Bórrala en producción.');
   }
