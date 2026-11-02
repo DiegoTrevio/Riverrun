@@ -153,6 +153,16 @@ ensure_data_key() {
   return 0
 }
 
+# INF-10: el puerto del panel publicado fuera de 127.0.0.1 lo abre Docker por su cuenta, por encima de ufw: el firewall
+# del servidor no lo protege. Devuelve el texto del aviso (vacío si está bien).
+panel_bind_warning() {
+  local bind; bind="$(env_get PANEL_BIND)"
+  case "${bind:-127.0.0.1}" in
+    127.*|localhost|::1|"[::1]") return 0 ;;
+  esac
+  printf 'PANEL_BIND=%s publica el puerto 3000 del backend en %s: Docker lo abre por encima del firewall (ufw no lo bloquea). Usa Caddy (HTTPS) y deja PANEL_BIND=127.0.0.1, o limita el acceso en la cadena DOCKER-USER.' "$bind" "$bind"
+}
+
 # Redis con contraseña (INF-2): guarda las claves de las sesiones de WhatsApp. Se genera una vez.
 ensure_redis_password() {
   [[ -n "$(env_get REDIS_PASSWORD)" ]] && return 0
@@ -374,6 +384,7 @@ cmd_install() {
   [[ -f "$ENV_FILE" ]] || { cp .env.example "$ENV_FILE"; chmod 600 "$ENV_FILE"; NEW=1; }
   : "${NEW:=0}"
   [[ "$NEW" == "1" ]] && ok "Archivo .env creado" || warn "Ya existe .env: se conserva y solo se completa lo que falte"
+  local pbi; pbi="$(panel_bind_warning)"; [[ -z "$pbi" ]] || warn "$pbi"
 
   # Claves internas: se generan una sola vez y nunca se pisan.
   local gen=0 k
@@ -728,6 +739,7 @@ cmd_update() {
   db_roles || abort_update "No se pudieron crear los usuarios de PostgreSQL (arriba el error). No se aplicó la versión nueva."
   ensure_redis_password
   ensure_data_key || true
+  local pbw; pbw="$(panel_bind_warning)"; [[ -z "$pbw" ]] || warn "$pbw"
   if dc up -d --build && wait_healthy 180 && evolution_verify && no_new_failures && observe_window; then
     ok "Actualizado a $APP_VERSION"
     (( EVO_CHANGES )) && ok "Evolution: $EVO_TARGET"
@@ -930,6 +942,8 @@ cmd_preflight() {
   else pf_warn "Ninguna alerta sale del servidor: define SMTP_URL (correo) o ALERT_WEBHOOK_URL (Slack, Discord, ntfy)."; fi
   if [[ -n "$(env_get HEARTBEAT_URL)" ]]; then pf_ok "Latido externo configurado (HEARTBEAT_URL)"
   else pf_warn "Sin HEARTBEAT_URL: si el servidor completo se cae, nadie avisa (crea un chequeo en healthchecks.io)."; fi
+  local pb; pb="$(panel_bind_warning)"
+  if [[ -n "$pb" ]]; then pf_warn "$pb"; else pf_ok "El panel solo escucha en el propio servidor (PANEL_BIND)"; fi
   if [[ -n "$(env_get HEALTH_TOKEN)" ]]; then pf_ok "HEALTH_TOKEN definido (/health/functional y /metrics activos)"
   else pf_warn "HEALTH_TOKEN vacío: /health/functional y /metrics no existen. Lo genera ./riverrun update."; fi
 

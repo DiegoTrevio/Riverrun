@@ -341,6 +341,13 @@ export RIVERRUN_PREFLIGHT_MEM_KB=2097152 RIVERRUN_PREFLIGHT_DISK_KB=20971520 RIV
 set +e; ./riverrun preflight --offline > "$work/out" 2>&1; rc=$?; set -e
 [[ "$rc" == 0 ]] && grep -q "SIN BLOQUEOS EN LO REVISADO" "$work/out" && grep -q "No verificado: último respaldo" "$work/out" && grep -q "Envíos reales habilitados" "$work/out" || { cat "$work/out"; echo "ERROR: con todo en orden debía pasar sin bloqueos"; exit 1; }
 ! grep -q "APROBADO\." "$work/out" || { echo "ERROR: no debe afirmar aprobación completa con comprobaciones sin verificar"; exit 1; }
+grep -q "El panel solo escucha en el propio servidor" "$work/out" || { cat "$work/out"; echo "ERROR: no revisó PANEL_BIND"; exit 1; }
+
+echo "== preflight: PANEL_BIND=0.0.0.0 avisa que Docker salta el firewall (INF-10)"
+cp .env .env.bind; printf 'PANEL_BIND=0.0.0.0\n' >> .env
+set +e; ./riverrun preflight --offline > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" == 0 ]] && grep -q "APROBADO CON ADVERTENCIAS" "$work/out" && grep -q "PANEL_BIND=0.0.0.0 publica el puerto 3000" "$work/out" && grep -q "por encima del firewall" "$work/out" || { cat "$work/out"; echo "ERROR: PANEL_BIND abierto debía avisar"; exit 1; }
+mv -f .env.bind .env
 
 echo "== preflight: modo sandbox avisa; disco insuficiente y configuración crítica bloquean"
 printf 'OUTBOUND_MODE=sandbox\n' >> .env

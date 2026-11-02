@@ -7,8 +7,17 @@
 # (respaldo verificado, confirmación y verificación de sesiones). Ver docs/evolution-api.md.
 x-evolution-image: &evolution-image ${EVOLUTION_IMAGE:-evoapicloud/evolution-api:v2.3.7@sha256:1bd8afc4a6cf48822e6cf02469aeae7bd35a12a6b616eacd1291926307f4d339}
 
+# INF-9: cada servicio con tope de memoria y de procesos (un servicio desbocado no tumba a los demás ni al servidor) y
+# registros que rotan (json-file, 3 × 10 MB). Los topes se ajustan en .env (*_MEM_LIMIT) según el tamaño del servidor.
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
 services:
   postgres:
+    mem_limit: ${POSTGRES_MEM_LIMIT:-1g}
+    pids_limit: 400
+    logging: *logging
     image: pgvector/pgvector:0.8.7-pg16
     restart: unless-stopped
     environment:
@@ -27,6 +36,9 @@ services:
     networks: [data]
 
   redis:
+    mem_limit: ${REDIS_MEM_LIMIT:-512m}
+    pids_limit: 200
+    logging: *logging
     image: redis:7-alpine
     restart: unless-stopped
     # Con contraseña (REDIS_PASSWORD, la genera ./riverrun): guarda las claves de las sesiones de WhatsApp.
@@ -38,6 +50,9 @@ services:
     networks: [data]
 
   evolution:
+    mem_limit: ${EVOLUTION_MEM_LIMIT:-1g}
+    pids_limit: 400
+    logging: *logging
     image: *evolution-image
     restart: unless-stopped
     depends_on:
@@ -72,6 +87,9 @@ services:
     networks: [default, data]
 
   backend:
+    mem_limit: ${BACKEND_MEM_LIMIT:-1536m}
+    pids_limit: 600
+    logging: *logging
     build:
       context: .
       args:
@@ -275,6 +293,9 @@ services:
 
   # Respaldo diario cifrado de las dos bases de datos, las fotos y las sesiones de WhatsApp (ver README → Respaldos).
   backup:
+    mem_limit: ${BACKUP_MEM_LIMIT:-512m}
+    pids_limit: 200
+    logging: *logging
     build: ./docker/backup
     restart: unless-stopped
     depends_on:
@@ -310,6 +331,9 @@ services:
 
   # Solo para restaurar: ./riverrun restore  (no arranca con el resto).
   restore:
+    mem_limit: ${BACKUP_MEM_LIMIT:-512m}
+    pids_limit: 200
+    logging: *logging
     build: ./docker/backup
     profiles: ["tools"]
     depends_on:
@@ -329,6 +353,9 @@ services:
     networks: [default, data]
 
   caddy:
+    mem_limit: ${CADDY_MEM_LIMIT:-256m}
+    pids_limit: 200
+    logging: *logging
     image: caddy:2-alpine
     profiles: ["https"]
     restart: unless-stopped
