@@ -82,7 +82,7 @@ Configuración única en Meta for Developers (la hace el administrador de la pla
 
 > **WhatsApp:** la conexión por Zernio es la API oficial de WhatsApp Business (Meta); Zernio no ofrece vinculación por QR. El WhatsApp normal con QR sigue siendo su propio canal (Evolution).
 
-| **Económico** | Todo corre en un VPS con Docker (Evolution, Postgres, Redis, backend). Solo se paga la API de OpenRouter; el contexto acotado, el caché de prompts y el modelo configurable por chatbot mantienen bajo el costo. |
+| **Económico** | Todo corre en un VPS con Docker (Evolution, Postgres, Redis, backend). Lo que se paga por uso es la IA (OpenRouter), las redes conectadas por Zernio y, con WhatsApp oficial, los mensajes que cobra Meta; el contexto acotado, el caché de prompts y el modelo configurable por chatbot mantienen bajo el costo de la IA. Desglose: [docs/costos.md](docs/costos.md). |
 
 ## Instalación en un VPS (Docker)
 

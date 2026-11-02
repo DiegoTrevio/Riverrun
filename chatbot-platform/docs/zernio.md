@@ -252,4 +252,6 @@ envían campañas ni avisos por esas redes. Telegram, X, Bluesky y Reddit no la 
 - **Borrar un negocio:** sus redes y su perfil se quitan de Zernio en un trabajo aparte (`zernio_cleanup`), con
   reintentos, para no seguir pagando por ellas.
 - **Costos:** Zernio cobra por cuenta conectada (las 2 primeras, gratis) y por mensajes salientes (10 000 al mes
-  gratis). Los paga la plataforma.
+  gratis). Los paga la plataforma. Aparte van las tarifas de Meta por WhatsApp oficial (las cobra Meta a la cuenta de
+  WhatsApp Business del número) y las de la API de X; ninguna entra en el costo estimado de esta página. Desglose y
+  precios: [costos.md](costos.md).
