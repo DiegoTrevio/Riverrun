@@ -8,8 +8,10 @@
 #   backup.sh list          lista los respaldos
 #   backup.sh evolution-cleanup  borra en Evolution lo pedido por el backend y lo más viejo que EVOLUTION_MESSAGE_DAYS
 #
-# Cada respaldo es un solo archivo .tar.enc cifrado con BACKUP_PASSPHRASE (AES-256). Sin la clave no se puede
-# leer: guárdala fuera del servidor (gestor de contraseñas).
+# Cada respaldo es un solo archivo .gpg.tar: cada parte (las bases, las fotos, las sesiones, las claves de Redis) va
+# cifrada por separado con BACKUP_PASSPHRASE (gpg, AES-256 con verificación de integridad: un archivo alterado no se
+# abre) desde que se escribe, así que nunca queda en claro en el disco. Sin la clave no se puede leer: guárdala fuera
+# del servidor (gestor de contraseñas). Los respaldos de antes (.tar.enc, openssl sin autenticación) se siguen abriendo.
 set -Eeuo pipefail
 
 BACKUP_DIR="${BACKUP_DIR:-/backups}"
@@ -70,8 +72,28 @@ need_passphrase() {
   fi
 }
 
-encrypt() { if [[ -n "${BACKUP_PASSPHRASE:-}" ]]; then openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:BACKUP_PASSPHRASE; else cat; fi; }
-decrypt() { if [[ "$1" == *.enc ]]; then openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:BACKUP_PASSPHRASE < "$1"; else cat "$1"; fi; }
+# INF-11: cifrado autenticado (gpg simétrico, AES-256 con MDC: si alguien cambia un byte, no descifra). La clave va por
+# un descriptor, nunca en los argumentos.
+export GNUPGHOME="${GNUPGHOME:-${TMPDIR:-/tmp}/riverrun-gnupg}"
+mkdir -p -m 700 "$GNUPGHOME"
+gpg_enc() { gpg --batch --yes --quiet --no-tty --pinentry-mode loopback --passphrase-fd 3 --symmetric --cipher-algo AES256 \
+  --s2k-mode 3 --s2k-digest-algo SHA512 --s2k-count 65011712 --compress-algo none --output - 3< <(printf '%s' "$BACKUP_PASSPHRASE"); }
+gpg_dec() { gpg --batch --quiet --no-tty --pinentry-mode loopback --passphrase-fd 3 --decrypt --output - "$1" 3< <(printf '%s' "$BACKUP_PASSPHRASE") 2>/dev/null; }
+seal() { if [[ -n "${BACKUP_PASSPHRASE:-}" ]]; then gpg_enc; else cat; fi; }
+SEAL_EXT=""; [[ -n "${BACKUP_PASSPHRASE:-}" ]] && SEAL_EXT=".gpg"
+# Respaldos de antes: un solo archivo .tar.enc (openssl, sin autenticación).
+decrypt_legacy() { openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:BACKUP_PASSPHRASE < "$1"; }
+
+# Abre un respaldo en DIR: los nuevos solo se desempacan (sus partes siguen cifradas); los de antes se descifran enteros.
+open_backup() { # FILE DIR
+  if [[ "$1" == *.tar.enc ]]; then decrypt_legacy "$1" | tar -C "$2" -xf - 2>/dev/null; else tar -C "$2" -xf "$1" 2>/dev/null; fi
+}
+has_part() { [[ -f "$1/$2.gpg" || -f "$1/$2" ]]; } # DIR NAME
+part() { # DIR NAME → la parte en claro por la salida (descifra si va cifrada; falla si fue alterada)
+  if [[ -f "$1/$2.gpg" ]]; then gpg_dec "$1/$2.gpg"; elif [[ -f "$1/$2" ]]; then cat "$1/$2"; else return 1; fi
+}
+# Lee la parte entera aunque el lector se detenga antes (así gpg comprueba la integridad y no muere por SIGPIPE).
+drain_into() { local s; "$@"; s=$?; cat >/dev/null; return "$s"; }
 
 wait_for_db() {
   for _ in $(seq 1 30); do pg_isready -q && return 0; sleep 2; done
@@ -87,72 +109,88 @@ latest_file() { { printf '%s\n' "$BACKUP_DIR"/riverrun-*.tar "$BACKUP_DIR"/river
 
 make_backup() {
   need_passphrase
+  umask 077
   mkdir -p "$BACKUP_DIR"
-  rm -f "$BACKUP_DIR"/*.partial # restos de un respaldo interrumpido
+  find "${BACKUP_DIR:?}" -maxdepth 1 -name '*.partial' -delete # restos de un respaldo interrumpido
   wait_for_db
   local ts work out
   ts="$(date -u +%Y%m%d-%H%M%S)"
-  work="$BACKUP_DIR/.work"
-  rm -rf "$work"; mkdir -p "$work" # (un intento anterior interrumpido deja restos aquí)
+  work="${BACKUP_DIR:?}/.work"
+  rm -rf "${BACKUP_DIR:?}/.work"; mkdir -p -m 700 "$work" # (un intento anterior interrumpido deja restos aquí)
+  # Cada parte se cifra mientras se escribe: en el disco nunca queda en claro (INF-11).
   log "Respaldo $ts: bases de datos"
   for db in $DATABASES; do
-    pg_dump --format=custom --compress=6 --no-owner --no-privileges --dbname="$db" --file="$work/$db.dump"
+    pg_dump --format=custom --compress=6 --no-owner --no-privileges --dbname="$db" | seal > "$work/$db.dump$SEAL_EXT"
   done
   log "Respaldo $ts: archivos"
-  if [[ -d "$UPLOADS_DIR" ]]; then tar -C "$UPLOADS_DIR" -czf "$work/uploads.tar.gz" .; else : > "$work/uploads.tar.gz"; fi
-  if [[ -d "$EVOLUTION_DIR" ]]; then tar -C "$EVOLUTION_DIR" -czf "$work/evolution_instances.tar.gz" .; else : > "$work/evolution_instances.tar.gz"; fi
+  local src name
+  for name in uploads evolution_instances; do
+    src="$UPLOADS_DIR"; [[ "$name" == evolution_instances ]] && src="$EVOLUTION_DIR"
+    if [[ -d "$src" ]]; then tar -C "$src" -czf - . ; else tar -czf - -T /dev/null; fi | seal > "$work/$name.tar.gz$SEAL_EXT"
+  done
   # Claves de las sesiones (instantánea consistente de Redis). Si Redis no responde, el respaldo sigue (las bases y los
   # archivos valen igual) pero queda marcado: la verificación lo da por fallido para que se vea y se avise.
   local redis_keys=""
   if [[ -n "$REDIS_URI" ]]; then
     log "Respaldo $ts: claves de las sesiones de WhatsApp (Redis)"
-    if redis-cli -u "$REDIS_URI" --rdb "$work/redis.rdb" >/dev/null 2>&1 && [[ -s "$work/redis.rdb" ]]; then redis_keys=included
-    else rm -f "$work/redis.rdb"; redis_keys=missing; log "ATENCIÓN: no se pudo copiar Redis: este respaldo no incluye las claves de las sesiones de WhatsApp"; fi
+    if redis-cli -u "$REDIS_URI" --rdb - 2>/dev/null | seal > "$work/redis.rdb$SEAL_EXT" \
+      && [[ "$(part "$work" redis.rdb | drain_into head -c 5)" == "REDIS" ]]; then redis_keys=included
+    else rm -f "$work/redis.rdb$SEAL_EXT"; redis_keys=missing; log "ATENCIÓN: no se pudo copiar Redis: este respaldo no incluye las claves de las sesiones de WhatsApp"; fi
   fi
   ( cd "$work" && sha256sum ./* > SHA256SUMS )
   # Con qué Evolution se hizo: restaurar su base en una versión más vieja que la que la migró puede dañarla.
   local evo_mig=""
   [[ " $DATABASES " == *" $EVOLUTION_DB "* ]] && evo_mig="$(evolution_migration "$EVOLUTION_DB")"
-  echo "{\"created_at\": \"$(date -u +%FT%TZ)\", \"databases\": \"$DATABASES\", \"version\": \"${APP_VERSION:-unknown}\", \"evolution_image\": \"$(json_escape "${EVOLUTION_IMAGE:-}")\", \"evolution_migration\": \"$(json_escape "$evo_mig")\", \"redis_keys\": \"$redis_keys\"}" > "$work/manifest.json"
-  local suffix="tar.enc"; [[ -z "${BACKUP_PASSPHRASE:-}" ]] && suffix="tar"
+  echo "{\"format\": \"2\", \"encryption\": \"${SEAL_EXT:+gpg}\", \"created_at\": \"$(date -u +%FT%TZ)\", \"databases\": \"$DATABASES\", \"version\": \"${APP_VERSION:-unknown}\", \"evolution_image\": \"$(json_escape "${EVOLUTION_IMAGE:-}")\", \"evolution_migration\": \"$(json_escape "$evo_mig")\", \"redis_keys\": \"$redis_keys\"}" > "$work/manifest.json"
+  local suffix="gpg.tar"; [[ -z "$SEAL_EXT" ]] && suffix="tar"
   out="$BACKUP_DIR/${BACKUP_PREFIX:-riverrun}-$ts.$suffix" # el respaldo previo a restaurar usa otro prefijo para que "latest" no lo elija
-  tar -C "$work" -cf - . | encrypt > "$out.partial"
+  tar -C "$work" -cf "$out.partial" .
   mv "$out.partial" "$out"
-  rm -rf "$work"
+  rm -rf "${BACKUP_DIR:?}/.work"
   chmod 600 "$out"
   log "Respaldo creado: $(basename "$out") ($(du -h "$out" | cut -f1))"
   echo "$out"
 }
 
-verify_backup() { # FILE → restaura en una base temporal y cuenta tablas
+verify_backup() { # FILE → descifra cada parte (en memoria: comprueba que nadie la alteró), restaura en una base temporal y cuenta tablas
   local file="${1:-$(latest_file)}"
   [[ -f "$file" ]] || { fail "No hay respaldos que verificar"; return 1; }
   need_passphrase
   wait_for_db
   local work; work="$(mktemp -d "$BACKUP_DIR/.verify.XXXXXX")"; TMP_DIRS+=("$work")
-  decrypt "$file" | tar -C "$work" -xf - 2>/dev/null || { fail "No se pudo abrir $(basename "$file") (¿clave incorrecta o archivo dañado?)"; return 1; }
+  open_backup "$file" "$work" || { fail "No se pudo abrir $(basename "$file") (¿clave incorrecta o archivo dañado?)"; return 1; }
   ( cd "$work" && sha256sum -c SHA256SUMS >/dev/null 2>&1 ) || { fail "Las sumas de verificación no coinciden: respaldo dañado"; return 1; }
   local f
+  for f in "$work"/*.gpg; do
+    [[ -f "$f" ]] || continue
+    gpg_dec "$f" > /dev/null || { fail "No se pudo descifrar $(basename "$f" .gpg) (¿clave incorrecta o archivo alterado?)"; return 1; }
+  done
   for f in uploads.tar.gz evolution_instances.tar.gz; do
-    [[ ! -s "$work/$f" ]] || tar -tzf "$work/$f" >/dev/null 2>&1 || { fail "$f dañado"; return 1; }
+    has_part "$work" "$f" || continue
+    [[ ! -f "$work/$f" || -s "$work/$f" ]] || continue # de antes: vacío si no había archivos
+    part "$work" "$f" | drain_into tar -tzf - >/dev/null 2>&1 || { fail "$f dañado"; return 1; }
   done
   # Redis: la instantánea empieza con "REDIS" + versión del formato (se carga con el propio Redis al restaurar).
-  if [[ -f "$work/redis.rdb" ]]; then
-    [[ "$(head -c 5 "$work/redis.rdb")" == "REDIS" ]] || { fail "redis.rdb dañado (claves de las sesiones de WhatsApp)"; return 1; }
+  if has_part "$work" redis.rdb; then
+    [[ "$(part "$work" redis.rdb | drain_into head -c 5)" == "REDIS" ]] || { fail "redis.rdb dañado (claves de las sesiones de WhatsApp)"; return 1; }
   elif [[ "$(manifest_field "$work/manifest.json" redis_keys)" == "missing" ]]; then
     fail "El respaldo no incluye las claves de las sesiones de WhatsApp: Redis no respondió al respaldar"; return 1
   fi
-  local dump
-  for dump in "$work"/*.dump; do pg_restore --list "$dump" >/dev/null 2>&1 || { fail "$(basename "$dump") no es legible"; return 1; }; done
+  local dump db
+  for dump in "$work"/*.dump "$work"/*.dump.gpg; do
+    [[ -f "$dump" ]] || continue
+    db="$(basename "$dump")"; db="${db%.gpg}"; db="${db%.dump}"
+    part "$work" "$db.dump" | drain_into pg_restore --list >/dev/null 2>&1 || { fail "$db.dump no es legible"; return 1; }
+  done
   # Prueba real: restaurar la base principal en una base temporal. Con BACKUP_VERIFY_ALL=true (antes de cambiar la
   # versión de Evolution), todas: también la de Evolution, que guarda las sesiones de WhatsApp.
-  local main="${DATABASES%% *}" targets db tables total=""
+  local main="${DATABASES%% *}" targets tables total=""
   targets="$main"; [[ "${BACKUP_VERIFY_ALL:-false}" == "true" ]] && targets="$DATABASES"
   for db in $targets; do
-    [[ -f "$work/$db.dump" ]] || { fail "Falta la base $db en el respaldo"; return 1; }
+    has_part "$work" "$db.dump" || { fail "Falta la base $db en el respaldo"; return 1; }
     dropdb --if-exists riverrun_verify >/dev/null 2>&1 || true
     createdb riverrun_verify
-    pg_restore --no-owner --exit-on-error --dbname=riverrun_verify "$work/$db.dump" >/dev/null 2>&1 || { fail "No se pudo restaurar la base $db en una base de prueba"; return 1; }
+    part "$work" "$db.dump" | drain_into pg_restore --no-owner --exit-on-error --dbname=riverrun_verify >/dev/null 2>&1 || { fail "No se pudo restaurar la base $db en una base de prueba"; return 1; }
     tables="$(psql -At -d riverrun_verify -c "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")"
     dropdb --if-exists riverrun_verify >/dev/null 2>&1 || true
     [[ "${tables:-0}" -gt 0 ]] || { fail "La base $db restaurada está vacía"; return 1; }
@@ -181,10 +219,16 @@ prune_local() {
   done
 }
 
+# INF-11: la copia en la nube solo escribe. Con una llave que solo puede subir (sin listar ni borrar), alguien que entre
+# al servidor no puede borrar ni reescribir las copias de afuera: la limpieza la hace una regla de ciclo de vida del
+# bucket (BACKUP_REMOTE_KEEP_DAYS como referencia). BACKUP_REMOTE_PRUNE=true vuelve a borrar desde aquí (necesita una
+# llave que pueda borrar, que es justo lo que conviene evitar).
 push_remote() { # FILE → nube (rclone). Devuelve 0 si salió bien o no hay nube configurada.
   [[ -n "$REMOTE" ]] || return 0
-  rclone copyto "$1" "$REMOTE/$(basename "$1")" --retries 3 --low-level-retries 5 2>&1 | tail -n 3 || return 1
-  rclone delete "$REMOTE" --min-age "${REMOTE_KEEP_DAYS}d" --include 'riverrun-*.tar*' >/dev/null 2>&1 || true
+  rclone copyto "$1" "$REMOTE/$(basename "$1")" --s3-no-check-bucket --no-check-dest --retries 3 --low-level-retries 5 2>&1 | tail -n 3 || return 1
+  if [[ "${BACKUP_REMOTE_PRUNE:-false}" == "true" ]]; then
+    rclone delete "$REMOTE" --min-age "${REMOTE_KEEP_DAYS}d" --include 'riverrun-*.tar*' >/dev/null 2>&1 || true
+  fi
   log "Copia en la nube: $REMOTE/$(basename "$1")"
 }
 
@@ -206,10 +250,17 @@ restore() {
   [[ -f "$file" ]] || die "No existe el respaldo: $file"
   need_passphrase
   wait_for_db
+  umask 077
   local work; work="$(mktemp -d "${TMPDIR:-/tmp}/restore.XXXXXX")"; TMP_DIRS+=("$work")
   log "Abriendo $(basename "$file")"
-  decrypt "$file" | tar -C "$work" -xf - || die "No se pudo abrir el respaldo (¿clave incorrecta?)"
+  open_backup "$file" "$work" || die "No se pudo abrir el respaldo (¿clave incorrecta?)"
   ( cd "$work" && sha256sum -c SHA256SUMS >/dev/null ) || die "Respaldo dañado (las sumas no coinciden)"
+  # Todas las partes se descifran (y se comprueba su integridad) ANTES de borrar nada: un respaldo alterado no se aplica.
+  local enc
+  for enc in "$work"/*.gpg; do
+    [[ -f "$enc" ]] || continue
+    gpg_dec "$enc" > "${enc%.gpg}" || die "No se pudo descifrar $(basename "${enc%.gpg}"): clave incorrecta o respaldo alterado. No se cambió nada."
+  done
   local b_img b_mig
   b_img="$(manifest_field "$work/manifest.json" evolution_image)"; b_mig="$(manifest_field "$work/manifest.json" evolution_migration)"
   log "Respaldo del $(manifest_field "$work/manifest.json" created_at) (RiverRun $(manifest_field "$work/manifest.json" version); Evolution ${b_img:-no registrada}${b_mig:+, esquema $b_mig})"

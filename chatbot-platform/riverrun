@@ -529,7 +529,8 @@ cmd_restore() {
   if [[ -f "$target" ]]; then
     # Archivo traído de fuera (p. ej. bajado de la nube a un servidor nuevo).
     local host; host="$(readlink -f "$target")"
-    target="/tmp/restore-input.tar"; [[ "$host" == *.enc ]] && target="/tmp/restore-input.tar.enc"
+    # La terminación dice el formato: .gpg.tar (partes cifradas con gpg), .tar.enc (de antes) o .tar.
+    case "$host" in *.tar.enc) target="/tmp/restore-input.tar.enc" ;; *.gpg.tar) target="/tmp/restore-input.gpg.tar" ;; *) target="/tmp/restore-input.tar" ;; esac
     extra=(-v "$host:$target:ro")
   else
     say "Respaldos disponibles:"; dc run --rm --no-deps -T restore list 2>/dev/null </dev/null | sed 's/^/  /' || true
