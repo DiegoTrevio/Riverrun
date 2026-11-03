@@ -3,6 +3,7 @@
  * una cookie de reto (firmada, 15 minutos) y la sesión se abre cuando llega el código de la app o uno de recuperación.
  * La primera vez el reto es para configurar la app. Solo este módulo abre sesiones.
  */
+import { recordSecurity } from '../security-log.js';
 import crypto from 'node:crypto';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { clearCookieOpts, cookieName, createSession, passwordVersion, sessionLimits, type SessionVia } from '../auth.js';
@@ -72,6 +73,8 @@ async function openSession(reply: FastifyReply, user: SessionUser, via: SessionV
   const expires = new Date(Date.now() + maxMs);
   const sid = (await store.createUserSession({ userId: user.id, expires, via, mfaAt, userAgent: String(req?.headers?.['user-agent'] ?? '').slice(0, 300), ip: String(req?.ip ?? '').slice(0, 64) })).id;
   reply.setCookie(cookieName('cp_session'), createSession(user.id, user.password_hash, sid, expires.getTime()), cookieOpts(maxMs));
+  const who = await store.getUser(user.id).catch(() => null);
+  await recordSecurity({ kind: 'login.ok', accountId: who?.account_id ?? null, userId: user.id, email: who?.email ?? '', ip: String(req?.ip ?? ''), userAgent: String(req?.headers?.['user-agent'] ?? ''), details: { via, mfa: !!mfaAt, role: user.role } });
   return sid;
 }
 
@@ -211,6 +214,7 @@ export const mfaChecks = { count: 0 };
 
 /** Un código malo más (`hits` ya lo cuenta): con 10 en una hora la verificación se bloquea una hora y la persona se entera por correo. */
 async function wrongCode(user: ChallengeUser, hits: number): Promise<{ result: 'bad' | 'locked' }> {
+  await recordSecurity({ kind: 'mfa.failed', accountId: user.account_id ?? null, userId: user.id, email: user.email, details: { attempts: hits } });
   if (hits < LIMITS.codePerUser.max) return { result: 'bad' };
   // Bloquea y avisa solo quien llega justo al tope: con muchos códigos a la vez llega un solo correo.
   if (hits === LIMITS.codePerUser.max) {

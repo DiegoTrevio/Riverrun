@@ -87,6 +87,8 @@ export const config = {
    * SESSION_SECRET: cambiar una no rompe la otra. DATA_KEYS_OLD (separadas por coma) solo descifran, durante una rotación.
    * Sin DATA_KEY se sigue usando la llave derivada de SESSION_SECRET (formato v1, el de antes).
    */
+  /** Etapa 7: días que se conserva la bitácora de seguridad (aunque la cuenta ya no exista). */
+  securityLogDays: Math.max(30, Number(env('SECURITY_LOG_DAYS', '365')) || 365),
   dataKey: env('DATA_KEY', ''),
   dataKeysOld: env('DATA_KEYS_OLD', '').split(',').map((x) => x.trim()).filter(Boolean),
   secureCookies: env('SECURE_COOKIES', 'false') === 'true',

@@ -1,4 +1,5 @@
 /** Ajustes → Integraciones: webhooks de eventos y llaves de la API pública. */
+import { actor, recordSecurity } from '../security-log.js';
 import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -133,6 +134,7 @@ export async function integrationRoutes(api: FastifyInstance) {
     const s = await astore.getSettings(accountId);
     await astore.saveSettings(accountId, { ...s, webhook_secret: crypto.randomBytes(24).toString('hex') });
     await logEvent({ level: 'info', source: 'admin', message: `Secreto de webhooks cambiado por ${req.user.email}`, accountId });
+    await recordSecurity({ kind: 'webhook_secret.rotated', accountId, ...actor(req) });
     return { webhook_secret: (await astore.getSettings(accountId)).webhook_secret };
   });
 
@@ -150,6 +152,7 @@ export async function integrationRoutes(api: FastifyInstance) {
     const k = newApiKey();
     const row = await queryOne<{ id: string }>(`INSERT INTO api_keys (account_id, name, prefix, key_hash, scope, created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, [accountId, b.name, k.prefix, k.hash, b.scope, req.user.id]);
     await logEvent({ level: 'info', source: 'admin', message: `Llave de API creada: ${b.name} (${b.scope === 'write' ? 'lectura y escritura' : 'solo lectura'})`, accountId });
+    await recordSecurity({ kind: 'apikey.created', accountId, ...actor(req), target: `${k.prefix} ${b.name}`, details: { scope: b.scope } });
     // La llave completa solo se devuelve aquí.
     return { id: row!.id, name: b.name, scope: b.scope, prefix: k.prefix, key: k.key };
   });
@@ -160,6 +163,7 @@ export async function integrationRoutes(api: FastifyInstance) {
     if (!k || (only && only !== k.account_id)) throw new HttpError(404, 'No encontrado');
     await query(`UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL`, [k.id]);
     await logEvent({ level: 'info', source: 'admin', message: `Llave de API revocada: ${k.name}`, accountId: k.account_id });
+    await recordSecurity({ kind: 'apikey.revoked', accountId: k.account_id, ...actor(req), target: k.name });
     return { ok: true };
   });
 

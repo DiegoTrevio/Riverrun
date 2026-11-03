@@ -5,6 +5,7 @@
  * - en el panel: descargar todos sus datos (ZIP) y pedir o cancelar el borrado de su cuenta.
  * Las páginas son HTML del servidor, sin JavaScript (salvo el captcha opcional del contacto), con la marca del dominio.
  */
+import { actor, recordSecurity } from '../security-log.js';
 import { ipLimitKey, limited } from '../identity/rate-limit.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -264,6 +265,7 @@ export async function accountSelfServiceRoutes(api: FastifyInstance) {
     if (await limited(`account-export:${accountId}`, 5, 86400_000)) throw new HttpError(429, 'Ya descargaste tus datos varias veces hoy; intenta mañana.');
     const zip = await buildAccountExport(accountId);
     await logEvent({ level: 'info', source: 'admin', message: `Descarga de todos los datos de la cuenta por ${req.user.email}`, accountId });
+    await recordSecurity({ kind: 'export.account', accountId, ...actor(req) });
     return reply
       .header('content-type', 'application/zip')
       .header('content-disposition', `attachment; filename="mis-datos-${new Date().toISOString().slice(0, 10)}.zip"`)
