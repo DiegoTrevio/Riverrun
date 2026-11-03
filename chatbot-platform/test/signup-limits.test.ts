@@ -23,7 +23,7 @@ const signup = (ip: string, over: Record<string, unknown> = {}) =>
     payload: { name: 'Prueba', company: `Negocio ${++n}`, business_type: 'otro', email: `alta${n}@topes.mx`, password: 'Pz-161-Qx-361-Kv', accept_terms: true, ...over },
   });
 const hits = async (key: string) => (await pool.query(`SELECT hits FROM rate_limits WHERE key = $1 AND expires_at > now()`, [key])).rows[0]?.hits ?? 0;
-const clearDay = () => pool.query(`DELETE FROM rate_limits WHERE key = 'signup-day'`);
+const clearDay = () => pool.query(`DELETE FROM rate_limits WHERE key IN ('signup-day', 'signup-day-alert')`);
 
 before(async () => {
   if (!ok) return;
@@ -84,4 +84,23 @@ t('el registro con Google comparte los topes de la conexión', async () => {
   await pool.query(`INSERT INTO rate_limits (key, hits, expires_at) VALUES ($1, 5, now() + interval '1 hour') ON CONFLICT (key) DO UPDATE SET hits = 5, expires_at = now() + interval '1 hour'`, [`signup-try:${ipKey('10.23.0.1')}`]);
   const r = await h.app.inject({ method: 'POST', url: '/api/signup/google', remoteAddress: '10.23.0.1', payload: { token: 'x', company: 'Con Google', accept_terms: true } });
   assert.equal(r.statusCode, 429, r.body);
+});
+
+t('el aviso del 80 % sale una sola vez al día aunque el contador vuelva a pasar por ahí (menor 4)', async () => {
+  const prev = { max: config.signup.dailyMax, email: config.signup.superadminEmail };
+  Object.assign(config.signup, { dailyMax: 5, superadminEmail: 'super2@topes.mx' });
+  const alerts = () => outbox.filter((m) => m.to === 'super2@topes.mx' && m.subject === 'Muchos registros hoy').length;
+  const setDay = (n: number) => pool.query(`INSERT INTO rate_limits (key, hits, expires_at) VALUES ('signup-day', $1, now() + interval '20 hours') ON CONFLICT (key) DO UPDATE SET hits = $1`, [n]);
+  try {
+    await clearDay();
+    await setDay(3);
+    assert.equal((await signup('10.24.0.1')).statusCode, 200);
+    assert.equal(alerts(), 1);
+    await setDay(3); // un registro que se soltó: el contador vuelve a pasar por el 80 %
+    assert.equal((await signup('10.24.0.2')).statusCode, 200);
+    assert.equal(alerts(), 1, 'un solo aviso al día');
+  } finally {
+    Object.assign(config.signup, { dailyMax: prev.max, superadminEmail: prev.email });
+    await clearDay();
+  }
 });

@@ -94,7 +94,9 @@ export async function assertCaptcha(token: string | undefined, ip: string): Prom
   if (result === 'invalid') throw new HttpError(400, CAPTCHA_MESSAGE);
   if (result === 'unavailable') {
     if ((await countHit('captcha-down-alert', HOUR)) === 1) {
-      await notifyPlatform('El captcha del registro no responde', 'Cloudflare Turnstile no respondió: los registros nuevos esperan hasta que vuelva («intenta en un momento»).', { urgent: true });
+      // Si el aviso falla, el registro responde igual «intenta en un momento» (503), no un error.
+      await notifyPlatform('El captcha del registro no responde', 'Cloudflare Turnstile no respondió: los registros nuevos esperan hasta que vuelva («intenta en un momento»).', { urgent: true })
+        .catch((e) => logEvent({ level: 'error', source: 'system', message: `No se pudo avisar del captcha caído: ${e?.message ?? e}` }));
     }
     throw new HttpError(503, CAPTCHA_UNAVAILABLE);
   }
