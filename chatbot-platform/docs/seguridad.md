@@ -19,13 +19,13 @@ Cada etapa es un PR con pruebas que fallan con el código anterior y pasan con e
 | 3. Registro y cobros | Captcha → correo → 2FA → tarjeta, topes contra prueba de tarjetas (PAY-2), pruebas gratis por persona (PAY-3), sin IA en pausa (parte de PAY-6); disputas, plan del precio, códigos y cobros a clientes (PAY-4…PAY-16) | ✅ Corregido (3a registro, 3b cobros) |
 | 3b′. Cobros de la revisión del 31 de octubre | PAY-17…PAY-23 y bajos de cobros | ✅ Corregido |
 | 3c. Revisión del 31 de octubre | Los altos de [la revisión del 31 de octubre](revision-seguridad-2026-10-31.md): dos caídas del proceso, atajos para sacar o borrar datos, cobros del agente, la ficha en el Copiloto (IN-15, IN-16, ID-11…ID-14, AI-5 en parte) | ✅ Corregido |
-| 4. Abuso de entradas | Límites compartidos en la base, tamaños por ruta, firma del webhook de WhatsApp, adjuntos sin macros, PDF aislados, cuota de IA antes de transcribir (IN-2…IN-14, PAY-6) | 4′ ✅ (revisión del 31 de octubre: IN-17…IN-20, IN-22, IN-5, parte de IN-8…IN-14 y límites en la base); IN-2 e IN-3 ✅; IN-21 ✅ en la 6′; PAY-6 ✅ en la 5″; IN-6/7 pendientes |
+| 4. Abuso de entradas | Límites compartidos en la base, tamaños por ruta, firma del webhook de WhatsApp, adjuntos sin macros, PDF aislados, cuota de IA antes de transcribir (IN-2…IN-14, PAY-6) | 4′ ✅ (revisión del 31 de octubre: IN-17…IN-20, IN-22, IN-5, parte de IN-8…IN-14 y límites en la base); IN-2 e IN-3 ✅; IN-21 ✅ en la 6′; IN-6/7 ✅ en la 6″; PAY-6 ✅ en la 5″ |
 | 5. IA y Copiloto | Tarjetas de confirmación completas, costo de sub-llamados, notas de cotización, fuga de instrucciones (AI-5…AI-13) | 5′ ✅ (revisión del 31 de octubre: AI-14 y bajos de IA); 5″ ✅ (AI-5…AI-9 y PAY-6); AI-10…AI-13 sin descripción registrada: requieren una auditoría nueva |
-| 6. Secretos y datos | Claves separadas con rotación, credenciales de canales cifradas, retención en Evolution (INF-6…INF-8, INF-13) | 6′ ✅ (revisión del 31 de octubre: ZIP sin secretos, `HTTP_LOG` sin tokens, IN-21); INF-6…INF-8, INF-13 e IN-6/7 pendientes |
+| 6. Secretos y datos | Claves separadas con rotación, credenciales de canales cifradas, retención en Evolution (INF-6…INF-8, INF-13) | 6′ ✅ (revisión del 31 de octubre: ZIP sin secretos, `HTTP_LOG` sin tokens, IN-21); 6″ ✅ (INF-6…INF-8, IN-6/7); INF-13 pendiente |
 | 7. Detección | Bitácora de seguridad, alertas, avisos al usuario | Pendiente |
-| 8. Contenedores | Roles de base de datos, Redis con clave, redes aisladas, límites, imágenes al día (INF-2, INF-3, INF-9, INF-10) | 8 ✅ (los altos: INF-2 e INF-3); INF-9 e INF-10 pendientes |
-| 9. Servidor | `./riverrun harden`: firewall (también `DOCKER-USER`), SSH con llave, fail2ban, actualizaciones automáticas, respaldos con cifrado autenticado (INF-11, INF-12) | 9′ ✅ (revisión del 31 de octubre: claves de ejemplo en producción); `harden`, INF-11 e INF-12 pendientes |
-| 10. Cadena de suministro | Dependabot, versiones fijadas por SHA y digest, búsqueda de secretos, escaneos programados (INF-4, INF-15) | 10′ ✅ (revisión del 31 de octubre: Docker sin `curl \| sh`); INF-4 e INF-15 pendientes |
+| 8. Contenedores | Roles de base de datos, Redis con clave, redes aisladas, límites, imágenes al día (INF-2, INF-3, INF-9, INF-10) | 8 ✅ (los altos: INF-2 e INF-3); INF-9 e INF-10 ✅ en la 6″ |
+| 9. Servidor | `./riverrun harden`: firewall (también `DOCKER-USER`), SSH con llave, fail2ban, actualizaciones automáticas, respaldos con cifrado autenticado (INF-11, INF-12) | 9′ ✅ (revisión del 31 de octubre: claves de ejemplo en producción); INF-11 ✅ en la 6″; `harden` e INF-12 pendientes |
+| 10. Cadena de suministro | Dependabot, versiones fijadas por SHA y digest, búsqueda de secretos, escaneos programados (INF-4, INF-15) | 10′ ✅ (revisión del 31 de octubre: Docker sin `curl \| sh`); INF-4 ✅ en la 6″; INF-15 pendiente |
 
 ## Etapa 1: lo que se corrigió
 
@@ -327,6 +327,30 @@ IN-6/7 y PAY-6) sigue pendiente.
 - Reservas: tres solicitudes pendientes con el correo de alguien le impiden reservar durante una hora; el tope de 20 por día por enlace cuenta cada solicitud.
 - Zernio: solo se juntan los avisos con el mismo cuerpo firmado; si Zernio reintentara con un cuerpo distinto, se procesaría dos veces.
 
+## Etapa 6″: los medios de secretos, datos, contenedores, respaldos y despliegue
+
+| # | Hallazgo | Arreglo | Prueba |
+|---|---|---|---|
+| INF-6 | `rotate-secret` rompía más de lo que avisaba: los tokens de Google y Outlook, las llaves de la plataforma y el 2FA dependían de SESSION_SECRET; no había versiones de llave. | Llave de datos aparte (`DATA_KEY`): lo cifrado lleva el id de su llave (`v2.<kid>`) y `DATA_KEYS_OLD` sigue descifrando durante una rotación; lo de antes (`v1`, con SESSION_SECRET) se sigue leyendo. `./riverrun` la genera en `install` y `update`. `rekey-secrets` pasa todo a la llave actual (2FA todo o nada; lo ilegible se cuenta). `rotate-secret` re-cifra antes con `DATA_KEY` y ya no obliga a reconectar; nuevo `rotate-data-key` (arranca con la nueva y la anterior, y luego re-cifra). `config-check` avisa si falta, es débil o es igual a SESSION_SECRET. | `rekey-secrets.test.ts`, `config-check.test.ts`, `scripts/test-cli.sh` |
+| INF-7 | Credenciales de canales (llave de Evolution, Telegram, Meta, IMAP/SMTP, secreto del webhook) en claro en la base. | Se cifran al guardar y se descifran al leer, en el almacén (`src/channel-secrets.ts`): el resto del código no cambia. Las de antes se cifran al arrancar. | `rekey-secrets.test.ts` y las de canales |
+| INF-8 | Evolution guardaba todos los mensajes sin retención y el borrado de un contacto no llegaba a su base. | El backend (que ya no entra a esa base) deja la solicitud en `evolution_erasures`; el contenedor de respaldos, cada hora, borra en Evolution los mensajes de ese chat (por `remoteJid` y `remoteJidAlt`, solo en su instancia), marca la solicitud y le quita los identificadores, y borra los mensajes de más de `EVOLUTION_MESSAGE_DAYS` (7). | `compliance.test.ts`, `scripts/test-evolution-cleanup.sh` (PostgreSQL real, en CI) |
+| INF-9 | Contenedores sin topes de memoria ni rotación de registros. | Cada servicio con `mem_limit` (ajustable en `.env`) y `pids_limit`; registros `json-file` de 3 × 10 MB. | `docker compose config`, `scripts/test-staging-overlay.sh` |
+| INF-10 | `PANEL_BIND=0.0.0.0` publicaba el panel por encima de ufw sin aviso. | `install`, `update` y `preflight` lo avisan (Docker abre el puerto por su cuenta). | `scripts/test-cli.sh` |
+| INF-11 | Respaldo: directorio de trabajo en claro, credencial de S3 que puede borrar, cifrado sin autenticación. | Cada parte se cifra con gpg (AES-256 con verificación de integridad) mientras se escribe: nada queda en claro. La verificación descifra en memoria; restaurar descifra y comprueba todo antes de borrar nada. Los `.tar.enc` de antes se siguen abriendo. La copia en la nube ya no borra: basta una llave que solo suba (la limpieza la hace el ciclo de vida del bucket; `BACKUP_REMOTE_PRUNE=true` para lo de antes). | `scripts/test-backup.sh` (parte alterada con sus sumas rehechas, respaldo de antes) |
+| IN-6/7 | Las plantillas DOCX las procesaba LibreOffice dentro del backend, con todos los secretos en su entorno; una sola cola de PDF para todas las cuentas. | Contenedor `pdf` (Gotenberg con LibreOffice, fijado por digest) sin secretos y en una red interna sin internet; es lo de por omisión. Con `soffice`, LibreOffice ya no hereda las variables del backend y `config-check` lo avisa en producción. Una cola por cuenta, por turnos, con 5 conversiones sin terminar como máximo (429). | `pdf-queue.unit.test.ts`, `quotes-template.unit.test.ts` (LibreOffice real) |
+| INF-4 | `update` desplegaba lo que hubiera en `main` sin verificar CI ni firma. | Antes de tocar nada consulta en GitHub el flujo `ci.yml` del último commit del rango que cambió la plataforma: debe haber terminado en verde (en rojo, corriendo, sin corrida o sin respuesta, no se aplica). Se despliega exactamente ese commit. Opcional: `UPDATE_ALLOWED_SIGNERS` (fuera del repositorio) exige la firma. `--skip-ci-check` para emergencias, a la vista. | `scripts/test-cli.sh` |
+
+**Cambios que nota la gente:**
+- La primera actualización genera `DATA_KEY` (no se muestra): guárdala fuera del servidor junto con SESSION_SECRET y BACKUP_PASSPHRASE.
+- Aparece el contenedor `pdf`. Los respaldos nuevos terminan en `.gpg.tar`.
+- `./riverrun update` necesita salir a `api.github.com` y espera a que el CI del commit termine en verde.
+- Si la copia en la nube usa una llave que puede borrar, conviene cambiarla por una que solo suba y crear la regla de ciclo de vida en el bucket.
+- Evolution conserva 7 días de mensajes (`EVOLUTION_MESSAGE_DAYS`).
+
+**Queda para después:**
+- La imagen del backend sigue trayendo LibreOffice (para `soffice`); se puede quitar cuando todas las instalaciones usen el contenedor `pdf`.
+- Se probó sin Docker real (configuración renderizada, PostgreSQL real, `docker` simulado): conviene una prueba en staging antes de producción.
+
 ## Etapa 5″: el resto de la IA y el Copiloto (AI-5…AI-9, PAY-6)
 
 | # | Hallazgo | Arreglo | Prueba |
@@ -451,13 +475,7 @@ Abreviaturas: ID identidad, PAY cobros, IN entradas, AI IA y Copiloto, INF servi
 Ninguno: INF-2 e INF-3 se corrigieron en la etapa 8.
 
 ### Medios
-- **IN-6/7** Plantillas DOCX que procesa LibreOffice dentro del backend, con todos los secretos en su entorno; cola de PDF única para todas las cuentas.
-- **INF-4** `update` despliega lo que haya en `main` sin verificar firma ni CI.
-- **INF-6** `rotate-secret` rompe más de lo que avisa (Zernio, Outlook, llaves guardadas); no hay versiones de clave.
-- **INF-7** Credenciales de canales (IMAP/SMTP, Meta, Telegram) en claro en la base.
-- **INF-8** Evolution guarda todos los mensajes sin retención; el borrado de datos no llega a su base.
-- **INF-9/10** Contenedores sin límites de memoria ni rotación de registros; `PANEL_BIND=0.0.0.0` salta el firewall sin aviso.
-- **INF-11** Respaldo: directorio de trabajo en claro, credencial de S3 que puede borrar, cifrado sin autenticación.
+Ninguno: los medios se corrigieron en las etapas 4′, 5″ y 6″.
 
 ### Bajos
 AI-10…AI-13, IN-8…IN-14 (calendario `.ics` sin escapar, asunto

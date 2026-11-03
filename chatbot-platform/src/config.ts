@@ -82,6 +82,13 @@ export const config = {
   adminUser: env('ADMIN_USER', 'admin'),
   adminPassword: env('ADMIN_PASSWORD', ''),
   sessionSecret: env('SESSION_SECRET', ''),
+  /**
+   * INF-6: llave de los datos cifrados en la base (tokens de Google y Outlook, 2FA, credenciales de canales), aparte de
+   * SESSION_SECRET: cambiar una no rompe la otra. DATA_KEYS_OLD (separadas por coma) solo descifran, durante una rotación.
+   * Sin DATA_KEY se sigue usando la llave derivada de SESSION_SECRET (formato v1, el de antes).
+   */
+  dataKey: env('DATA_KEY', ''),
+  dataKeysOld: env('DATA_KEYS_OLD', '').split(',').map((x) => x.trim()).filter(Boolean),
   secureCookies: env('SECURE_COOKIES', 'false') === 'true',
   /** Contraseñas filtradas (Have I Been Pwned por rango). `off` la apaga: decide solo la lista local. */
   pwnedPasswordsUrl: env('PWNED_PASSWORDS_URL', 'https://api.pwnedpasswords.com/range/'),

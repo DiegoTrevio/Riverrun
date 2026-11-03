@@ -18,6 +18,7 @@ import { clampInbound } from '../engine/text.js';
 import { imageAbsolutePath, type OutgoingFile, type Transport } from '../engine/transport.js';
 import { logEvent } from '../logs.js';
 import { notifyUsers } from '../automation/store.js';
+import { hydrateChannel } from '../store/index.js';
 import { countHit } from '../identity/rate-limit.js';
 import type { ChatService } from '../service.js';
 import { ChannelConfigSchemas, type Channel, type ImageAsset } from '../types.js';
@@ -384,7 +385,7 @@ export async function pollEmailChannels(service: Pick<ChatService, 'handleIncomi
   try {
     const rows = await query<Channel>(`SELECT ch.* FROM channels ch JOIN accounts a ON a.id = ch.account_id WHERE ch.type = 'email' AND ch.active AND a.active AND ch.config->>'imap_host' <> '' AND ch.config->>'imap_password' <> ''`);
     let n = 0;
-    for (const ch of rows) await pollEmailChannel(ch, async (m) => { n++; await service.handleIncoming(ch, m); });
+    for (const ch of rows.map((r) => hydrateChannel(r)!)) await pollEmailChannel(ch, async (m) => { n++; await service.handleIncoming(ch, m); });
     return n;
   } finally {
     polling = false;

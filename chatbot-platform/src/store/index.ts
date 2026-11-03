@@ -1,5 +1,6 @@
 import { evaluatedChatbot, evaluatedImages } from '../engine/agent-snapshot.js';
 import crypto from 'node:crypto';
+import { openChannelConfig, sealChannelConfig } from '../channel-secrets.js';
 import { enqueue } from '../engine/queue.js';
 import { deleteInBatches, query, queryOne, withTransaction } from '../db.js';
 import { removeInboundAccountFiles, type StoredMedia } from '../channels/media.js';
@@ -456,9 +457,10 @@ export async function deleteChatbot(id: string) {
 // Una cuenta pausada (prueba vencida) conserva el panel, pero sus canales no responden ni envían.
 const CHANNEL_SELECT = `SELECT ch.*, (a.active AND a.status <> 'paused') AS account_active FROM channels ch JOIN accounts a ON a.id = ch.account_id`;
 
-function hydrateChannel(row: Channel | null): Channel | null {
+/** INF-7: las credenciales se guardan cifradas; aquí se descifran. */
+export function hydrateChannel(row: Channel | null): Channel | null {
   if (!row) return null;
-  return { ...row, config: channelConfig(row.type, row.config) };
+  return { ...row, config: channelConfig(row.type, openChannelConfig(row.config)) };
 }
 
 export async function listChannels(accountId: string | null, opts: { chatbotId?: string; includePlayground?: boolean } = {}): Promise<Channel[]> {
@@ -506,7 +508,7 @@ export async function createChannel(c: { account_id: string; chatbot_id: string 
     }
     const result = await client.query(
       `INSERT INTO channels (account_id, chatbot_id, type, name, active, config, webhook_token) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-      [c.account_id, c.chatbot_id, c.type, c.name, c.active ?? true, JSON.stringify(c.config), newWebhookToken()],
+      [c.account_id, c.chatbot_id, c.type, c.name, c.active ?? true, JSON.stringify(sealChannelConfig(c.config)), newWebhookToken()],
     );
     return result.rows[0].id as string;
   });
@@ -523,7 +525,7 @@ export async function updateChannel(id: string, patch: { name?: string; active?:
   if (patch.name !== undefined) set('name', patch.name);
   if (patch.active !== undefined) set('active', patch.active);
   if (patch.chatbot_id !== undefined) set('chatbot_id', patch.chatbot_id);
-  if (patch.config !== undefined) set('config', JSON.stringify(patch.config));
+  if (patch.config !== undefined) set('config', JSON.stringify(sealChannelConfig(patch.config)));
   if (sets.length) {
     params.push(id);
     await query(`UPDATE channels SET ${sets.join(', ')}, updated_at = now() WHERE id = $${params.length}`, params);

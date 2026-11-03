@@ -2,6 +2,7 @@ import { settleAgentTests } from './agent-quality.js';
 import { httpLoggerOptions } from './http-log.js';
 import sjson from 'secure-json-parse';
 import { migrateLegacyZernioKeys } from './channels/zernio-connect.js';
+import { sealStoredChannelSecrets } from './channel-secrets.js';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -104,6 +105,8 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   startPlatformSecretsRefresh();
   // Canales de antes con su propia llave de Zernio en texto: quedan cifrados.
   await migrateLegacyZernioKeys().catch(() => undefined);
+  // INF-7: las credenciales de canales de antes, en claro, se cifran.
+  await sealStoredChannelSecrets().catch(() => undefined);
   app.addHook('onClose', async () => {
     stopPlatformSecretsRefresh();
     // Los pedidos al Copiloto en curso terminan su paso (con tope); los que no, quedan como interrumpidos.

@@ -52,7 +52,7 @@ docker run --rm --user "$(id -u):$(id -g)" --network "$NET" -v "$WORK/respaldos:
   -e BACKUP_PASSPHRASE="$PASS" -e BACKUP_DATABASES="chatbot evolution" \
   -e UPLOADS_DIR=/no-existe -e EVOLUTION_DIR=/no-existe \
   "$BACKUP_IMAGE" now >"$WORK/respaldo.log" 2>&1 || { cat "$WORK/respaldo.log"; fail "el respaldo de prueba no se creó"; }
-FILE="$(find "$WORK/respaldos" -maxdepth 1 -name 'riverrun-*.tar.enc' -printf '%f\n' | head -n 1)"
+FILE="$(find "$WORK/respaldos" -maxdepth 1 -name 'riverrun-*.gpg.tar' -printf '%f\n' | head -n 1)"
 [[ -n "$FILE" ]] || fail "no apareció el archivo del respaldo"
 cp "$WORK/respaldos/$FILE" "$WORK/$FILE"
 echo "Respaldo de prueba: $FILE"

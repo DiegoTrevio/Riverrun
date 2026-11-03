@@ -13,10 +13,12 @@
 #   ./riverrun logs [servicio]            registros en vivo
 #   ./riverrun restart     aplica cambios hechos a .env
 #   ./riverrun rotate-secret   cambia SESSION_SECRET (respaldo antes, confirmación, consecuencias avisadas)
+#   ./riverrun rotate-data-key cambia DATA_KEY, la llave de los datos cifrados (respaldo antes; nada se desconecta)
 #   ./riverrun db-roles    un usuario de PostgreSQL por servicio (lo hacen solos install, update y restore)
 #   ./riverrun admin-password [correo]   recupera el acceso del superadministrador: contraseña nueva y sesiones cerradas
 #
 # Opciones de update: --no-backup  --accept-db-image-change  --accept-evolution-change (confirma sin preguntar)
+#   --skip-ci-check (solo emergencias: aplica aunque el CI de GitHub no esté en verde)
 #   RIVERRUN_OBSERVE_SECONDS  tiempo que la versión nueva se observa antes de dar por buena (120; 0 = no observar)
 # Opciones de install (o variables de entorno, para instalar sin preguntas):
 #   --non-interactive  --no-start
@@ -141,6 +143,25 @@ ensure_health_token() {
   [[ -n "$(env_get HEALTH_TOKEN)" ]] && return 0
   env_set HEALTH_TOKEN "$(rand 32)"
   ok "Token de salud generado (HEALTH_TOKEN en .env; no se muestra)"
+}
+
+# Llave de los datos cifrados (INF-6), aparte de SESSION_SECRET. Generarla en una instalación con datos es seguro: lo
+# cifrado antes sigue leyéndose con SESSION_SECRET y lo nuevo usa esta llave. Devuelve 0 si la acaba de generar.
+ensure_data_key() {
+  [[ -n "$(env_get DATA_KEY)" ]] && return 1
+  env_set DATA_KEY "$(rand 32)"
+  ok "Llave de datos generada (DATA_KEY en .env; no se muestra). Guárdala fuera del servidor junto con SESSION_SECRET."
+  return 0
+}
+
+# INF-10: el puerto del panel publicado fuera de 127.0.0.1 lo abre Docker por su cuenta, por encima de ufw: el firewall
+# del servidor no lo protege. Devuelve el texto del aviso (vacío si está bien).
+panel_bind_warning() {
+  local bind; bind="$(env_get PANEL_BIND)"
+  case "${bind:-127.0.0.1}" in
+    127.*|localhost|::1|"[::1]") return 0 ;;
+  esac
+  printf 'PANEL_BIND=%s publica el puerto 3000 del backend en %s: Docker lo abre por encima del firewall (ufw no lo bloquea). Usa Caddy (HTTPS) y deja PANEL_BIND=127.0.0.1, o limita el acceso en la cadena DOCKER-USER.' "$bind" "$bind"
 }
 
 # Redis con contraseña (INF-2): guarda las claves de las sesiones de WhatsApp. Se genera una vez.
@@ -364,10 +385,11 @@ cmd_install() {
   [[ -f "$ENV_FILE" ]] || { cp .env.example "$ENV_FILE"; chmod 600 "$ENV_FILE"; NEW=1; }
   : "${NEW:=0}"
   [[ "$NEW" == "1" ]] && ok "Archivo .env creado" || warn "Ya existe .env: se conserva y solo se completa lo que falte"
+  local pbi; pbi="$(panel_bind_warning)"; [[ -z "$pbi" ]] || warn "$pbi"
 
   # Claves internas: se generan una sola vez y nunca se pisan.
   local gen=0 k
-  for k in POSTGRES_PASSWORD EVOLUTION_API_KEY SESSION_SECRET BACKUP_PASSPHRASE HEALTH_TOKEN REDIS_PASSWORD; do
+  for k in POSTGRES_PASSWORD EVOLUTION_API_KEY SESSION_SECRET DATA_KEY BACKUP_PASSPHRASE HEALTH_TOKEN REDIS_PASSWORD; do
     local cur; cur="$(env_get "$k")"
     if [[ -z "$cur" || "$cur" == cambia-esta-clave* ]]; then
       case "$k" in POSTGRES_PASSWORD) env_set "$k" "$(rand 16)" ;; *) env_set "$k" "$(rand 32)" ;; esac
@@ -519,7 +541,8 @@ cmd_restore() {
   if [[ -f "$target" ]]; then
     # Archivo traído de fuera (p. ej. bajado de la nube a un servidor nuevo).
     local host; host="$(readlink -f "$target")"
-    target="/tmp/restore-input.tar"; [[ "$host" == *.enc ]] && target="/tmp/restore-input.tar.enc"
+    # La terminación dice el formato: .gpg.tar (partes cifradas con gpg), .tar.enc (de antes) o .tar.
+    case "$host" in *.tar.enc) target="/tmp/restore-input.tar.enc" ;; *.gpg.tar) target="/tmp/restore-input.gpg.tar" ;; *) target="/tmp/restore-input.tar" ;; esac
     extra=(-v "$host:$target:ro")
   else
     say "Respaldos disponibles:"; dc run --rm --no-deps -T restore list 2>/dev/null </dev/null | sed 's/^/  /' || true
@@ -549,7 +572,7 @@ cmd_restore() {
 # Fases: opciones → código → qué corre hoy → pull (y relanzar si el procedimiento cambió) → revisión previa sin
 # arrancar → respaldo → aplicar y verificar → vuelta atrás si algo falla. Las variables UPD_* y EVO_* pasan los datos.
 update_args() {
-  UPD_BACKUP=1; ACCEPT_DB_IMAGE=0; ACCEPT_EVO=0; UPD_RESUME=""; UPD_PG_BEFORE=""; UPD_FORWARD=()
+  UPD_BACKUP=1; ACCEPT_DB_IMAGE=0; ACCEPT_EVO=0; UPD_RESUME=""; UPD_PG_BEFORE=""; UPD_FORWARD=(); SKIP_CI=0; UPD_TARGET=""
   # --resume-from/--pg-before: uso interno, cuando el procedimiento se relanza con el riverrun recién descargado.
   local args=("$@") i
   for (( i = 0; i < ${#args[@]}; i++ )); do
@@ -557,6 +580,7 @@ update_args() {
       --no-backup) UPD_BACKUP=0; UPD_FORWARD+=(--no-backup) ;;
       --accept-db-image-change) ACCEPT_DB_IMAGE=1; UPD_FORWARD+=(--accept-db-image-change) ;;
       --accept-evolution-change) ACCEPT_EVO=1; UPD_FORWARD+=(--accept-evolution-change) ;;
+      --skip-ci-check) SKIP_CI=1; UPD_FORWARD+=(--skip-ci-check) ;;
       --resume-from) UPD_RESUME="${args[$((i + 1))]:-}"; i=$((i + 1)) ;;
       --pg-before) UPD_PG_BEFORE="${args[$((i + 1))]:-}"; i=$((i + 1)) ;;
     esac
@@ -582,8 +606,72 @@ update_fetch() {
     say "No hay código nuevo, pero la imagen de Evolution configurada cambió."
   else
     say "${B}Cambios nuevos ($UPD_BEHIND):${N}"; git log --oneline HEAD..'@{u}' | head -n 15 | sed 's/^/  /'; say
+    UPD_TARGET="$(git rev-parse '@{u}')"
+    update_verify_target "$UPD_TARGET"
   fi
   return 0
+}
+
+# INF-4: lo que se va a desplegar se comprueba antes de tocar nada. Si el código viene de GitHub, el commit exacto debe
+# tener todas sus comprobaciones de CI terminadas y en verde (las pruebas, las imágenes y los scripts). Con
+# UPDATE_ALLOWED_SIGNERS (un archivo de firmantes permitidos que vive FUERA del repositorio), además, la firma del commit.
+# --skip-ci-check se salta solo lo del CI, a la vista.
+github_repo() {
+  [[ -n "${RIVERRUN_GITHUB_REPO:-}" ]] && { echo "$RIVERRUN_GITHUB_REPO"; return 0; }
+  local url; url="$(git remote get-url origin 2>/dev/null || true)"
+  [[ "$url" =~ github\.com[:/]([^/]+)/([^/]+)$ ]] || return 1
+  echo "${BASH_REMATCH[1]}/${BASH_REMATCH[2]%.git}"
+}
+update_verify_target() {
+  local sha="$1" repo body total status conclusion checked top
+  local UPDATE_GITHUB_TOKEN; UPDATE_GITHUB_TOKEN="$(env_get UPDATE_GITHUB_TOKEN)"
+  local signers; signers="$(env_get UPDATE_ALLOWED_SIGNERS)"
+  if [[ -n "$signers" ]]; then
+    [[ -f "$signers" ]] || die "UPDATE_ALLOWED_SIGNERS apunta a $signers, que no existe. No se aplicó nada."
+    git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile="$signers" verify-commit "$sha" >/dev/null 2>&1 \
+      || die "El commit $sha no tiene una firma de alguien en UPDATE_ALLOWED_SIGNERS. No se aplicó nada."
+    ok "Firma del commit verificada"
+  fi
+  if ! repo="$(github_repo)"; then
+    warn "El código no viene de GitHub: no se puede comprobar su CI. Revisa los cambios de arriba antes de seguir."
+    return 0
+  fi
+  if (( SKIP_CI )); then
+    warn "Se omite la comprobación del CI (--skip-ci-check): se aplica ${sha:0:12} sin saber si sus pruebas pasaron."
+    return 0
+  fi
+  # El CI corre solo cuando cambia la plataforma: se comprueba el último commit del rango que la cambió (es el código
+  # que se va a desplegar). Si en el rango no cambió nada de la plataforma, no hay código nuevo que probar.
+  top="$(git rev-parse --show-toplevel)"
+  checked="$(git log -1 --format=%H "HEAD..$sha" -- . "$top/.github/workflows/${RIVERRUN_CI_WORKFLOW:-ci.yml}")"
+  if [[ -z "$checked" ]]; then ok "Los cambios no tocan la plataforma: no hay CI que comprobar"; return 0; fi
+  # Solo el flujo de CI (las pruebas, las imágenes y los scripts), no otros flujos que no deciden si se despliega.
+  # GitHub corre el CI del último commit de cada push: se busca primero ese (la punta) y, si no tiene corrida, el último
+  # commit del rango que cambió la plataforma.
+  local cand code out; out="$(mktemp)"
+  for cand in "$sha" "$checked"; do
+    code="$(curl -sS -o "$out" -w '%{http_code}' --max-time 20 -H 'Accept: application/vnd.github+json' \
+      ${UPDATE_GITHUB_TOKEN:+-H "Authorization: Bearer $UPDATE_GITHUB_TOKEN"} \
+      "${RIVERRUN_GITHUB_API:-https://api.github.com}/repos/$repo/actions/workflows/${RIVERRUN_CI_WORKFLOW:-ci.yml}/runs?head_sha=$cand&per_page=5" 2>/dev/null || echo 000)"
+    case "$code" in
+      200) ;;
+      404) rm -f "$out"; die "GitHub no encontró el repositorio $repo o su flujo de CI (¿repositorio privado? define UPDATE_GITHUB_TOKEN en .env, con permiso de solo lectura de Actions). No se aplicó nada." ;;
+      401|403|429) rm -f "$out"; die "GitHub rechazó la consulta del CI (código $code: límite de consultas o token sin permiso). No se aplicó nada; reintenta en un rato o define UPDATE_GITHUB_TOKEN." ;;
+      *) rm -f "$out"; die "No se pudo consultar el CI de ${cand:0:12} en GitHub (¿sin internet?). No se aplicó nada; reintenta, o con --skip-ci-check si es una emergencia." ;;
+    esac
+    body="$(cat "$out")"
+    total="$(printf '%s' "$body" | grep -o '"total_count": *[0-9]*' | head -n 1 | grep -o '[0-9]*$' || echo 0)"
+    (( total > 0 )) && { checked="$cand"; break; }
+    [[ "$cand" == "$checked" ]] && break
+  done
+  rm -f "$out"
+  (( total > 0 )) || die "El commit ${checked:0:12} no tiene una corrida del CI en GitHub. No se aplicó nada (¿se subió sin pasar por el CI?)."
+  # La corrida más reciente es la primera de la lista.
+  status="$(printf '%s' "$body" | grep -o '"status": *"[a-z_]*"' | head -n 1 | sed 's/.*"\([a-z_]*\)"$/\1/')"
+  conclusion="$(printf '%s' "$body" | grep -o '"conclusion": *\("[a-z_]*"\|null\)' | head -n 1 | sed 's/.*: *"*\([a-z_]*\)"*$/\1/')"
+  [[ "$status" == completed ]] || die "El CI de ${checked:0:12} todavía está corriendo. No se aplicó nada: espera a que termine y vuelve a correr ./riverrun update."
+  [[ "$conclusion" == success ]] || die "El CI de ${checked:0:12} no está en verde (${conclusion:-sin resultado}). No se aplicó nada."
+  ok "CI en verde para ${checked:0:12}"
 }
 
 # Lo que corre hoy, antes de tocar nada: qué fallaba, la imagen de backend anterior y Evolution (versión y esquema).
@@ -609,7 +697,8 @@ update_snapshot() {
 # Pull del código. Si el procedimiento mismo cambió, se relanza con el nuevo (lo que corre no se toca hasta entonces).
 update_pull() {
   if (( UPD_BEHIND > 0 )); then
-    git pull -q --ff-only
+    # Exactamente el commit que se comprobó (si main avanzó mientras tanto, eso queda para la próxima).
+    git merge -q --ff-only "$UPD_TARGET"
     if ! git diff --quiet "$OLD_HEAD" HEAD -- riverrun; then
       say "El procedimiento de actualización cambió: se continúa con el nuevo."
       exec ./riverrun update --resume-from "$OLD_HEAD" --pg-before "$UPD_PG_BEFORE" "${UPD_FORWARD[@]}"
@@ -631,7 +720,7 @@ update_preflight() {
   dc build --pull backend backup || abort_update "No se pudo construir la versión nueva. No se aplicó nada."
   # Redis y Caddy: la versión más reciente de su misma etiqueta (redis:7, caddy:2; parches). Se descargan aquí y se
   # aplican con el resto; PostgreSQL no: cambiar su imagen sobre un volumen existente tiene su propio procedimiento.
-  dc pull --quiet redis caddy >/dev/null 2>&1 || warn "No se pudieron descargar las imágenes nuevas de Redis o Caddy; se sigue con las que hay."
+  dc pull --quiet redis caddy pdf >/dev/null 2>&1 || warn "No se pudieron descargar las imágenes nuevas de Redis, Caddy o del convertidor de PDF; se sigue con las que hay."
   say "Revisando la configuración con la versión nueva…"
   preflight_config || abort_update "La versión nueva no arrancaría con esta configuración (problemas críticos arriba). Corrígelos en .env y repite ./riverrun update. No se aplicó nada."
   EVO_TARGET="$(evo_target_image)"
@@ -665,6 +754,15 @@ update_rollback() {
       env_set EVOLUTION_IMAGE "$EVO_TARGET"
     elif [[ -n "$EVO_ENV_BEFORE" ]]; then
       env_set EVOLUTION_IMAGE "$EVO_PIN" # el operador la había fijado en .env: se vuelve a la que corría
+    fi
+  fi
+  # INF-6/INF-7: la versión anterior no conoce la llave de datos ni las credenciales de canales cifradas. Si es así, el
+  # código nuevo (que sigue aquí) deja todo en el formato que ella lee antes de volver; si no, se quedaría sin leerlo.
+  if ! git cat-file -e "$OLD_HEAD:./src/channel-secrets.ts" 2>/dev/null && git cat-file -e "HEAD:./src/cli/rekey-secrets.ts" 2>/dev/null; then
+    say "La versión anterior no lee los secretos cifrados con la llave de datos: se pasan a su formato antes de volver."
+    if ! dc run --rm --no-deps -T backend node dist/cli/rekey-secrets.js --to-legacy; then
+      warn "No se pudieron pasar los secretos al formato anterior: canales, 2FA o calendarios pueden fallar en la versión anterior."
+      warn "  Si pasa, restaura el respaldo previo a la actualización: ./riverrun restore ${UPD_BACKUP_FILE:-<respaldo previo>}"
     fi
   fi
   git reset -q --hard "$OLD_HEAD"
@@ -716,6 +814,8 @@ cmd_update() {
   # anterior sigue funcionando con el superusuario (los objetos que ya cambiaron de dueño no le estorban).
   db_roles || abort_update "No se pudieron crear los usuarios de PostgreSQL (arriba el error). No se aplicó la versión nueva."
   ensure_redis_password
+  ensure_data_key || true
+  local pbw; pbw="$(panel_bind_warning)"; [[ -z "$pbw" ]] || warn "$pbw"
   if dc up -d --build && wait_healthy 180 && evolution_verify && no_new_failures && observe_window; then
     ok "Actualizado a $APP_VERSION"
     (( EVO_CHANGES )) && ok "Evolution: $EVO_TARGET"
@@ -766,30 +866,65 @@ cmd_admin_password() {
   dc exec -T backend node dist/cli/admin-password.js "$email" || die "No se cambió la contraseña (¿el sistema está arrancado? ./riverrun status)"
 }
 
-# Cambia SESSION_SECRET (firma sesiones y enlaces, y cifra los tokens de Google). Respaldo verificado antes, confirmación
-# escrita y el secreto nuevo no se imprime. Consecuencias que se avisan: cierra sesiones del panel y reconecta Google.
+# Cambia SESSION_SECRET (firma sesiones y enlaces). Lo cifrado en la base pasa antes a DATA_KEY. Respaldo verificado antes, confirmación
+# escrita y el secreto nuevo no se imprime. Consecuencia que se avisa: cierra las sesiones del panel.
 cmd_rotate_secret() {
   need_docker || die "Docker no está disponible"
   [[ -f "$ENV_FILE" ]] || die "No hay .env: esta instalación no tiene secretos que cambiar."
   say "${R}${B}Cambiar SESSION_SECRET${N}"
   say "Consecuencias: se cierran todas las sesiones del panel; los enlaces firmados de fotos dejan de funcionar"
-  say "(se regeneran solos); las conexiones de Google Calendar hay que volver a conectarlas (sus tokens quedan cifrados"
-  say "con el secreto anterior). Los visitantes del chat web empiezan una conversación nueva (sus sesiones van firmadas)."
-  say "Los datos de conversaciones, cuentas, canales y WhatsApp no cambian."
-  say "Los secretos de la verificación en dos pasos se vuelven a cifrar con el nuevo."
+  say "(se regeneran solos). Los visitantes del chat web empiezan una conversación nueva (sus sesiones van firmadas)."
+  say "Lo cifrado en la base (2FA, Google Calendar, Outlook, credenciales de canales) se pasa antes a la llave de datos"
+  say "(DATA_KEY): no hay que volver a conectar nada."
   local sure=""; read -r -p "Escribe ROTAR SESSION_SECRET para continuar (cualquier otra cosa cancela): " sure || true
   [[ "$sure" == "ROTAR SESSION_SECRET" ]] || die "Cancelado: no se cambió nada."
   say "Respaldo verificado antes de cambiar nada…"
   dc exec -T backup /usr/local/bin/backup.sh now || die "El respaldo falló: no se cambia el secreto sin respaldo. No se cambió nada."
-  # El secreto nuevo va por la entrada (no queda en la lista de procesos); el re-cifrado es todo o nada.
-  local new; new="$(rand 32)"
-  printf '%s\n' "$new" | dc exec -T backend node dist/cli/rekey-mfa.js || die "No se pudieron re-cifrar los secretos de verificación en dos pasos: no se cambió nada."
-  env_set SESSION_SECRET "$new"
   export APP_VERSION; APP_VERSION="$(version)"
+  # Sin DATA_KEY todavía: se genera y el backend arranca con ella antes de re-cifrar.
+  if ensure_data_key; then
+    dc up -d backend
+    wait_healthy 120 || die "El backend no respondió con la llave de datos nueva: ./riverrun logs backend. SESSION_SECRET no se cambió."
+  fi
+  local rk=0; dc exec -T backend node dist/cli/rekey-secrets.js || rk=$?
+  (( rk == 0 || rk == 3 )) || die "No se pudieron re-cifrar los secretos con la llave de datos: no se cambió SESSION_SECRET."
+  (( rk == 3 )) && warn "Algunos secretos ya no se podían leer desde antes (hay que volver a conectarlos); el resto quedó con la llave de datos."
+  local new; new="$(rand 32)"
+  env_set SESSION_SECRET "$new"
   dc up -d backend
   wait_healthy 120 || die "El .env ya tiene el secreto nuevo pero el sistema no respondió: ./riverrun logs backend (luego ./riverrun restart). El respaldo previo está en /backups."
   ok "SESSION_SECRET cambiado. Guarda el nuevo fuera del servidor: está en .env (no se muestra aquí)."
-  warn "Vuelve a iniciar sesión en el panel y reconecta Google Calendar si lo usas."
+  warn "Vuelve a iniciar sesión en el panel."
+}
+
+# Cambia DATA_KEY (INF-6): la anterior pasa a DATA_KEYS_OLD (sigue descifrando), el backend arranca con las dos y luego
+# se re-cifra todo con la nueva. Respaldo verificado antes; en ningún momento se deja de poder leer lo guardado.
+cmd_rotate_data_key() {
+  need_docker || die "Docker no está disponible"
+  [[ -f "$ENV_FILE" ]] || die "No hay .env: esta instalación no tiene secretos que cambiar."
+  say "${R}${B}Cambiar DATA_KEY${N}"
+  say "Se vuelven a cifrar el 2FA, los permisos de Google Calendar y Outlook, las llaves de la plataforma y las"
+  say "credenciales de los canales. No se cierra ninguna sesión ni hay que volver a conectar nada."
+  local sure=""; read -r -p "Escribe ROTAR DATA_KEY para continuar (cualquier otra cosa cancela): " sure || true
+  [[ "$sure" == "ROTAR DATA_KEY" ]] || die "Cancelado: no se cambió nada."
+  say "Respaldo verificado antes de cambiar nada…"
+  dc exec -T backup /usr/local/bin/backup.sh now || die "El respaldo falló: no se cambia la llave sin respaldo. No se cambió nada."
+  export APP_VERSION; APP_VERSION="$(version)"
+  local old prev; old="$(env_get DATA_KEY)"; prev="$(env_get DATA_KEYS_OLD)"
+  env_set DATA_KEY "$(rand 32)"
+  # Lo que estaba con la anterior (o con las de antes, o con SESSION_SECRET) se sigue leyendo durante el re-cifrado:
+  # ninguna llave anterior se suelta aquí (si una rotación falló a medias, sus filas siguen con la suya).
+  [[ -n "$old" ]] && env_set DATA_KEYS_OLD "$old${prev:+,$prev}"
+  dc up -d backend
+  wait_healthy 120 || die "El backend no respondió con la llave nueva: ./riverrun logs backend. La anterior quedó en DATA_KEYS_OLD (sigue descifrando)."
+  local rk=0; dc exec -T backend node dist/cli/rekey-secrets.js || rk=$?
+  (( rk == 0 || rk == 3 )) || die "No se pudo re-cifrar todo con la llave nueva; lo guardado se sigue leyendo con DATA_KEYS_OLD. Corrige y vuelve a correr ./riverrun rotate-data-key (no se suelta ninguna llave)."
+  if (( rk == 3 )); then
+    warn "DATA_KEY cambiada, pero algunos secretos ya no se podían leer con ninguna llave (hay que volver a conectarlos). No borres DATA_KEYS_OLD."
+  else
+    ok "DATA_KEY cambiada y todo re-cifrado. Guarda la nueva fuera del servidor (está en .env; no se muestra)."
+    say "DATA_KEYS_OLD conserva las anteriores: puedes borrarlas de .env después del próximo respaldo."
+  fi
 }
 
 # ------------------------------------------------------------------ revisión previa a producción (solo lectura)
@@ -891,6 +1026,8 @@ cmd_preflight() {
   else pf_warn "Ninguna alerta sale del servidor: define SMTP_URL (correo) o ALERT_WEBHOOK_URL (Slack, Discord, ntfy)."; fi
   if [[ -n "$(env_get HEARTBEAT_URL)" ]]; then pf_ok "Latido externo configurado (HEARTBEAT_URL)"
   else pf_warn "Sin HEARTBEAT_URL: si el servidor completo se cae, nadie avisa (crea un chequeo en healthchecks.io)."; fi
+  local pb; pb="$(panel_bind_warning)"
+  if [[ -n "$pb" ]]; then pf_warn "$pb"; else pf_ok "El panel solo escucha en el propio servidor (PANEL_BIND)"; fi
   if [[ -n "$(env_get HEALTH_TOKEN)" ]]; then pf_ok "HEALTH_TOKEN definido (/health/functional y /metrics activos)"
   else pf_warn "HEALTH_TOKEN vacío: /health/functional y /metrics no existen. Lo genera ./riverrun update."; fi
 
@@ -930,6 +1067,7 @@ case "${1:-help}" in
   logs) shift; cmd_logs "$@" ;;
   restart) cmd_restart ;;
   rotate-secret) cmd_rotate_secret ;;
+  rotate-data-key) cmd_rotate_data_key ;;
   db-roles) cmd_db_roles ;;
   admin-password) shift; cmd_admin_password "$@" ;;
   preflight) shift; cmd_preflight "$@" ;;

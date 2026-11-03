@@ -84,6 +84,17 @@ export async function eraseContact(contactId: string, guard: { accountId?: strin
     );
     // Las rutas de sus archivos se leen antes de borrar el contacto: al borrarlo, esas filas desaparecen con los mensajes.
     const files = convIds.length ? (await client.query<{ file_path: string }>(`SELECT mm.file_path FROM message_media mm JOIN messages m ON m.id = mm.message_id WHERE m.conversation_id = ANY($1)`, [convIds])).rows.map((r) => r.file_path) : [];
+    // INF-8: los mensajes que Evolution guardó de este chat se borran en su base (el contenedor de respaldos lo hace,
+    // cada hora: el backend no entra a esa base). Con su identificador de WhatsApp y su número.
+    const wa = (await client.query<{ instance: string; phone: string }>(
+      `SELECT ch.config->>'instance' AS instance, c.phone FROM contacts c JOIN channels ch ON ch.id = c.channel_id WHERE c.id = $1 AND ch.type = 'whatsapp' AND coalesce(ch.config->>'instance', '') <> ''`,
+      [contactId],
+    )).rows[0];
+    if (wa) {
+      const digits = String(wa.phone ?? '').replace(/\D/g, '');
+      const jids = [...new Set([contact.external_id, digits ? `${digits}@s.whatsapp.net` : ''].filter(Boolean))];
+      await client.query(`INSERT INTO evolution_erasures (instance, jids) VALUES ($1, $2)`, [wa.instance, jids]);
+    }
     await client.query(`DELETE FROM contacts WHERE id = $1`, [contactId]);
     return { conversations: convIds.length, messages, files, quoteFiles };
   });

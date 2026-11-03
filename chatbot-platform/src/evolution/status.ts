@@ -5,6 +5,7 @@
  * Solo hace consultas de lectura con tiempo límite: nunca crea, borra, desconecta ni recrea instancias.
  * La versión se pide como máximo cada 10 minutos (en Evolution, la raíz consulta además la versión de WhatsApp Web).
  */
+import { openChannelConfig } from '../channel-secrets.js';
 import { webhookUrl } from '../channels/index.js';
 import { config } from '../config.js';
 import { redactSecrets } from '../config-check.js';
@@ -135,7 +136,8 @@ const sameServer = (ch: Pick<Channel, 'config'>) => {
 
 /** Revisa cada canal de WhatsApp activo: estado de la sesión y webhook. Lectura pura. */
 export async function deepCheck(now = new Date()): Promise<DeepCheck> {
-  const channels = await query<Channel>(`SELECT * FROM channels WHERE type = 'whatsapp' AND active ORDER BY created_at LIMIT 300`);
+  // INF-7: las llaves van cifradas en la base.
+  const channels = (await query<Channel>(`SELECT * FROM channels WHERE type = 'whatsapp' AND active ORDER BY created_at LIMIT 300`)).map((c) => ({ ...c, config: openChannelConfig(c.config) }));
   const evo = client();
   const results: InstanceCheck[] = [];
   const queue = channels.filter((c) => c.config?.instance);

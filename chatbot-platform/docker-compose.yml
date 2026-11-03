@@ -7,8 +7,17 @@
 # (respaldo verificado, confirmación y verificación de sesiones). Ver docs/evolution-api.md.
 x-evolution-image: &evolution-image ${EVOLUTION_IMAGE:-evoapicloud/evolution-api:v2.3.7@sha256:1bd8afc4a6cf48822e6cf02469aeae7bd35a12a6b616eacd1291926307f4d339}
 
+# INF-9: cada servicio con tope de memoria y de procesos (un servicio desbocado no tumba a los demás ni al servidor) y
+# registros que rotan (json-file, 3 × 10 MB). Los topes se ajustan en .env (*_MEM_LIMIT) según el tamaño del servidor.
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
 services:
   postgres:
+    mem_limit: ${POSTGRES_MEM_LIMIT:-1g}
+    pids_limit: 400
+    logging: *logging
     image: pgvector/pgvector:0.8.7-pg16
     restart: unless-stopped
     environment:
@@ -27,6 +36,9 @@ services:
     networks: [data]
 
   redis:
+    mem_limit: ${REDIS_MEM_LIMIT:-512m}
+    pids_limit: 200
+    logging: *logging
     image: redis:7-alpine
     restart: unless-stopped
     # Con contraseña (REDIS_PASSWORD, la genera ./riverrun): guarda las claves de las sesiones de WhatsApp.
@@ -38,6 +50,9 @@ services:
     networks: [data]
 
   evolution:
+    mem_limit: ${EVOLUTION_MEM_LIMIT:-1g}
+    pids_limit: 400
+    logging: *logging
     image: *evolution-image
     restart: unless-stopped
     depends_on:
@@ -72,6 +87,9 @@ services:
     networks: [default, data]
 
   backend:
+    mem_limit: ${BACKEND_MEM_LIMIT:-1536m}
+    pids_limit: 600
+    logging: *logging
     build:
       context: .
       args:
@@ -127,6 +145,9 @@ services:
       # Puede quedar vacía una vez creado el superadministrador (config-check lo avisa); SESSION_SECRET no.
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       SESSION_SECRET: ${SESSION_SECRET:?Define SESSION_SECRET en .env (ejecuta ./riverrun install)}
+      # INF-6: llave de los datos cifrados en la base (aparte de SESSION_SECRET); DATA_KEYS_OLD solo durante una rotación.
+      DATA_KEY: ${DATA_KEY:-}
+      DATA_KEYS_OLD: ${DATA_KEYS_OLD:-}
       SECURE_COOKIES: ${SECURE_COOKIES:-false}
       # Contraseñas filtradas (Have I Been Pwned por rango); off = solo la lista local. PASSWORD_HASH_COST es solo para pruebas.
       PWNED_PASSWORDS_URL: ${PWNED_PASSWORDS_URL:-}
@@ -234,8 +255,10 @@ services:
       ZERNIO_API_KEY: ${ZERNIO_API_KEY:-}
       ZERNIO_RATE_PER_MIN: ${ZERNIO_RATE_PER_MIN:-}
       # PDF de las cotizaciones
-      QUOTE_PDF_BACKEND: ${QUOTE_PDF_BACKEND:-}
-      QUOTE_PDF_URL: ${QUOTE_PDF_URL:-}
+      # IN-6: los PDF de cotizaciones los hace el contenedor `pdf` (LibreOffice aparte, sin estos secretos ni internet).
+      # QUOTE_PDF_BACKEND=soffice vuelve a LibreOffice dentro del backend.
+      QUOTE_PDF_BACKEND: ${QUOTE_PDF_BACKEND:-gotenberg}
+      QUOTE_PDF_URL: ${QUOTE_PDF_URL:-http://pdf:3000}
       QUOTE_PDF_TIMEOUT_MS: ${QUOTE_PDF_TIMEOUT_MS:-}
       SOFFICE_PATH: ${SOFFICE_PATH:-}
       CFDI_PRODUCT_KEY: ${CFDI_PRODUCT_KEY:-}
@@ -268,10 +291,25 @@ services:
       - backups:/backups:ro
     ports:
       - "${PANEL_BIND:-127.0.0.1}:3000:3000"
-    networks: [default, data]
+    networks: [default, data, pdf]
+
+  # IN-6: Word → PDF de las cotizaciones (Gotenberg con LibreOffice). Sin secretos en su entorno, en una red interna sin
+  # salida a internet (solo el backend la alcanza): una plantilla maliciosa no lee llaves ni llega a ningún lado.
+  pdf:
+    image: ${PDF_IMAGE:-gotenberg/gotenberg:8.38.1-libreoffice@sha256:2098722190575dbd975d8abf02e4ce83ffe20783114c5cc56f1b2ac309e6a083}
+    restart: unless-stopped
+    mem_limit: ${PDF_MEM_LIMIT:-1g}
+    pids_limit: 300
+    logging: *logging
+    command: ["gotenberg", "--api-timeout=90s", "--libreoffice-restart-after=10", "--log-level=warn"]
+    security_opt: ["no-new-privileges:true"]
+    networks: [pdf]
 
   # Respaldo diario cifrado de las dos bases de datos, las fotos y las sesiones de WhatsApp (ver README → Respaldos).
   backup:
+    mem_limit: ${BACKUP_MEM_LIMIT:-512m}
+    pids_limit: 200
+    logging: *logging
     build: ./docker/backup
     restart: unless-stopped
     depends_on:
@@ -285,6 +323,8 @@ services:
       # Evolution guarda en Redis las claves de cifrado de cada sesión de WhatsApp: se respaldan con todo lo demás.
       BACKUP_REDIS_URI: redis://${REDIS_PASSWORD:+:${REDIS_PASSWORD}@}redis:6379
       BACKUP_HOUR: ${BACKUP_HOUR:-03:30}
+      # INF-8: días que Evolution conserva cada mensaje de WhatsApp (0 = sin límite); los borrados del panel llegan ahí cada hora.
+      EVOLUTION_MESSAGE_DAYS: ${EVOLUTION_MESSAGE_DAYS:-7}
       BACKUP_KEEP_DAILY: ${BACKUP_KEEP_DAILY:-7}
       BACKUP_KEEP_WEEKLY: ${BACKUP_KEEP_WEEKLY:-4}
       BACKUP_KEEP_MONTHLY: ${BACKUP_KEEP_MONTHLY:-6}
@@ -305,6 +345,9 @@ services:
 
   # Solo para restaurar: ./riverrun restore  (no arranca con el resto).
   restore:
+    mem_limit: ${BACKUP_MEM_LIMIT:-512m}
+    pids_limit: 200
+    logging: *logging
     build: ./docker/backup
     profiles: ["tools"]
     depends_on:
@@ -324,6 +367,9 @@ services:
     networks: [default, data]
 
   caddy:
+    mem_limit: ${CADDY_MEM_LIMIT:-256m}
+    pids_limit: 200
+    logging: *logging
     image: caddy:2-alpine
     profiles: ["https"]
     restart: unless-stopped
@@ -343,6 +389,8 @@ services:
 networks:
   default: {}
   data:
+    internal: true
+  pdf:
     internal: true
 
 volumes:

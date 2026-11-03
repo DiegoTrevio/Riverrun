@@ -18,7 +18,7 @@ import { logEvent } from '../logs.js';
 import { outboundAllowed } from '../outbound-guard.js';
 import * as store from '../store/index.js';
 import { CHANNEL_TYPES, MASK, type Channel, type User } from '../types.js';
-import { encryptSecret } from '../secret.js';
+import { encryptSecret, isSealed } from '../secret.js';
 import { assertVerified } from './onboarding.js';
 import { parse } from './util.js';
 import { applyMetaSelection, disconnectMetaChannel, META_NONCE_COOKIE, sessionPages, startMetaConnect } from '../channels/meta-connect.js';
@@ -55,7 +55,7 @@ function clientConfig(user: User, type: string, cfg: Record<string, unknown> | u
   if (cfg && type === 'zernio' && user.role === 'superadmin') {
     const out = Object.fromEntries(Object.entries(cfg).filter(([k]) => !ZERNIO_SERVER_FIELDS.includes(k)));
     // La llave propia de un canal de antes se guarda cifrada (zernioKey la descifra al usarla).
-    if (typeof out.api_key === 'string' && out.api_key && out.api_key !== MASK && !out.api_key.startsWith('v1.')) out.api_key = encryptSecret(out.api_key);
+    if (typeof out.api_key === 'string' && out.api_key && out.api_key !== MASK && !isSealed(out.api_key)) out.api_key = encryptSecret(out.api_key);
     return out;
   }
   if (!cfg || user.role === 'superadmin') return cfg;

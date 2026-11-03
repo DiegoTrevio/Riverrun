@@ -68,9 +68,9 @@ export async function templateBuffer(accountId: string, templateId: string | nul
 }
 
 /** Llena y convierte un formato con datos dados (sin guardar nada). Lo usa la vista previa. */
-export async function renderPdf(buffer: Buffer, data: TemplateData): Promise<{ docx: Buffer; pdf: Buffer }> {
+export async function renderPdf(buffer: Buffer, data: TemplateData, accountId: string): Promise<{ docx: Buffer; pdf: Buffer }> {
   const docx = fillTemplate(buffer, data);
-  return { docx, pdf: await docxToPdf(docx) };
+  return { docx, pdf: await docxToPdf(docx, accountId) };
 }
 
 export interface RenderedQuote {
@@ -85,7 +85,7 @@ export async function renderQuote(accountId: string, quoteId: string): Promise<R
   if (!q) throw new Error('Cotización no encontrada');
   const [s, account, settings] = await Promise.all([qstore.getQuoteSettings(accountId), store.getAccount(accountId), astore.getSettings(accountId)]);
   const { buffer } = await templateBuffer(accountId, q.template_id);
-  const { docx, pdf } = await renderPdf(buffer, templateData(q, s, { accountName: account?.name ?? '', timeZone: settings.timezone }));
+  const { docx, pdf } = await renderPdf(buffer, templateData(q, s, { accountName: account?.name ?? '', timeZone: settings.timezone }), accountId);
   const stamp = `${q.id}-${Date.now()}`;
   const docxPath = path.posix.join(accountId, 'quotes', `${stamp}.docx`);
   const pdfPath = path.posix.join(accountId, 'quotes', `${stamp}.pdf`);

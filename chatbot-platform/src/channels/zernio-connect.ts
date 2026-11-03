@@ -138,7 +138,7 @@ export async function zernioFootprint(accountId: string): Promise<{ accounts: st
  */
 export async function migrateLegacyZernioKeys(): Promise<number> {
   const rows = await query<{ id: string; key: string; account_id: string }>(
-    `SELECT id, config->>'api_key' AS key, account_id FROM channels WHERE type = 'zernio' AND coalesce(config->>'api_key', '') <> '' AND config->>'api_key' NOT LIKE 'v1.%'`).catch(() => []);
+    `SELECT id, config->>'api_key' AS key, account_id FROM channels WHERE type = 'zernio' AND coalesce(config->>'api_key', '') <> '' AND config->>'api_key' !~ '^v[12]\\.'`).catch(() => []);
   const platform = String(process.env.ZERNIO_API_KEY || '');
   for (const r of rows) {
     const value = platform && r.key === platform ? '' : encryptSecret(r.key);

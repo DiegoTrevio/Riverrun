@@ -51,7 +51,7 @@ export interface ConfigReport {
 
 /** Variables cuyo valor es secreto: nunca se muestran (ni en el panel ni en los registros). */
 export const SECRET_VARS = [
-  'DATABASE_URL', 'POSTGRES_PASSWORD', 'SESSION_SECRET', 'ADMIN_PASSWORD', 'EVOLUTION_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY',
+  'DATABASE_URL', 'POSTGRES_PASSWORD', 'SESSION_SECRET', 'DATA_KEY', 'DATA_KEYS_OLD', 'ADMIN_PASSWORD', 'EVOLUTION_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY',
   'SMTP_URL', 'RESEND_API_KEY', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'MERCADOPAGO_ACCESS_TOKEN', 'MERCADOPAGO_WEBHOOK_SECRET',
   'GOOGLE_CLIENT_SECRET', 'MICROSOFT_CLIENT_SECRET', 'ZERNIO_API_KEY', 'META_APP_SECRET', 'META_VERIFY_TOKEN', 'BACKUP_PASSPHRASE', 'BACKUP_S3_SECRET', 'HEARTBEAT_URL', 'ALERT_WEBHOOK_URL',
   'TURNSTILE_SECRET_KEY', 'FACTURAPI_API_KEY',
@@ -211,6 +211,11 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
   }
   if (get('QUOTE_PDF_BACKEND') === 'gotenberg' && !has('QUOTE_PDF_URL')) {
     add('critical', 'core', 'quote_pdf.url', ['QUOTE_PDF_URL'], 'Las cotizaciones usan Gotenberg pero falta QUOTE_PDF_URL.', 'Define QUOTE_PDF_URL (p. ej. http://gotenberg:3000) o borra QUOTE_PDF_BACKEND para usar LibreOffice.');
+  }
+  if (prod && get('QUOTE_PDF_BACKEND') === 'soffice') {
+    add('warning', 'security', 'quote_pdf.inside_backend', ['QUOTE_PDF_BACKEND'],
+      'Las plantillas de cotización se convierten con LibreOffice dentro del backend: una plantilla maliciosa corre junto a los datos de todas las cuentas.',
+      'Usa el contenedor `pdf` de docker-compose (QUOTE_PDF_BACKEND=gotenberg y QUOTE_PDF_URL=http://pdf:3000, lo de por omisión).');
   }
   if (prod && get('QUOTE_PDF_BACKEND') === 'fake') {
     add('critical', 'core', 'quote_pdf.fake', ['QUOTE_PDF_BACKEND'], 'QUOTE_PDF_BACKEND=fake es solo para pruebas: los clientes recibirían un PDF de prueba.', 'Bórrala en producción.');
@@ -376,7 +381,7 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
       'session_secret.example',
       ['SESSION_SECRET'],
       'SESSION_SECRET es el valor de ejemplo (público): cualquiera podría firmar sesiones. No se arranca en producción con él.',
-      'Cámbialo con `./riverrun rotate-secret` (genera uno largo; cierra las sesiones del panel y hay que volver a conectar Google Calendar).',
+      'Cámbialo con `./riverrun rotate-secret` (genera uno largo y cierra las sesiones del panel; lo cifrado pasa antes a DATA_KEY).',
     );
   } else if (secret.length < 16 || PLACEHOLDER.test(secret) || new Set(secret).size < 6) {
     // Aviso y no crítico: hay instalaciones ya en marcha con valores cortos y no deben dejar de arrancar tras actualizar.
@@ -386,7 +391,7 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
       'session_secret.weak',
       ['SESSION_SECRET'],
       'SESSION_SECRET es demasiado corto o predecible: firma las sesiones y cifra los secretos guardados.',
-      'Cámbialo con `./riverrun rotate-secret` (genera uno largo; cierra las sesiones del panel y hay que volver a conectar Google Calendar).',
+      'Cámbialo con `./riverrun rotate-secret` (genera uno largo y cierra las sesiones del panel; lo cifrado pasa antes a DATA_KEY).',
     );
   } else if (secret.length < 32 && prod) {
     add(
@@ -397,6 +402,21 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
       'SESSION_SECRET tiene menos de 32 caracteres.',
       'Se recomienda `openssl rand -hex 32` (64 caracteres).',
     );
+  }
+  // INF-6: la llave de los datos cifrados, aparte de SESSION_SECRET.
+  const dataKey = get('DATA_KEY');
+  if (!dataKey) {
+    if (prod) add('warning', 'security', 'data_key.missing', ['DATA_KEY'],
+      'Sin DATA_KEY, los datos cifrados en la base (2FA, Google y Outlook, credenciales de canales) dependen de SESSION_SECRET: cambiarlo obliga a reconectar.',
+      'Corre `./riverrun update` (la genera; lo de antes se sigue leyendo) y guárdala fuera del servidor.');
+  } else if (dataKey.length < 32 || EXAMPLE_SECRET.test(dataKey) || PLACEHOLDER.test(dataKey) || new Set(dataKey).size < 10) {
+    add(prod ? 'critical' : 'warning', 'security', 'data_key.weak', ['DATA_KEY'],
+      'DATA_KEY es corta, de ejemplo o predecible: cifra los tokens y las credenciales guardados.',
+      'Cámbiala con `./riverrun rotate-data-key` (genera una larga y re-cifra todo; nada se desconecta).');
+  } else if (dataKey === secret) {
+    add('warning', 'security', 'data_key.same', ['DATA_KEY', 'SESSION_SECRET'],
+      'DATA_KEY es igual a SESSION_SECRET: no sirve separarlas si una se filtra.',
+      'Cámbiala con `./riverrun rotate-data-key`.');
   }
   const adminPw = get('ADMIN_PASSWORD');
   if (!adminPw) {

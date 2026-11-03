@@ -48,7 +48,7 @@ case "$*" in
       (( first )) || printf ','; first=0; printf '{"name":"%s","status":"%s"}' "$c" "$s"
     done; printf ']}' ;;
   *"backup.sh now"*) [[ -f FALLA_RESPALDO ]] && exit 1; exit 0 ;;
-  *"exec -T backend node dist/cli/rekey-mfa.js"*) cat > REKEY_IN; [[ -f FALLA_REKEY ]] && exit 1; echo "Secretos de verificación re-cifrados: 2" ;;
+  *"exec -T backend node dist/cli/rekey-secrets.js"*) [[ -f FALLA_REKEY ]] && exit 1; echo "Secretos re-cifrados: 2" ;;
   *"backup sh -c"*) echo "/backups/riverrun-20261010-120000.tar.enc" ;;
   *"images -q backend"*) echo "sha256:abc123" ;;
   "compose config evolution") printf 'services:\n  evolution:\n    image: %s\n  redis:\n    image: redis:7-alpine\n' "$(target)" ;;
@@ -73,13 +73,28 @@ case "$*" in
 esac
 exit 0
 SHIM
+# curl simulado para la API de GitHub (INF-4): las consultas de check-runs devuelven CI_RESPUESTA (o fallan sin él).
+cat > "$work/bin/curl" <<'SHIM'
+#!/usr/bin/env bash
+for a in "$@"; do
+  if [[ "$a" == *"/actions/workflows/"* ]]; then
+    echo "curl $a" >> "$LOG"; o=""; prev=""
+    for b in "$@"; do [[ "$prev" == "-o" ]] && o="$b"; prev="$b"; done
+    [[ -f CI_RESPUESTA ]] || exit 6
+    cp CI_RESPUESTA "$o"
+    printf '%s' "$(cat CI_CODIGO 2>/dev/null || echo 200)"; exit 0
+  fi
+done
+exec /usr/bin/curl "$@"
+SHIM
+chmod +x "$work/bin/curl"
 chmod +x "$work/bin/docker"; export PATH="$work/bin:$PATH"
 
 git init -q --bare "$work/origin.git"
 git clone -q "$work/origin.git" "$work/app" 2>/dev/null
 cd "$work/app"
 # Estado del docker simulado y .env: nunca entran en los commits de prueba (EVO_IMAGE sí: es "código").
-printf '%s\n' .env EVO_RUNNING EVO_MIG EVO_PLAN_RC EVO_VERIFY_RC PULLED MIGRA_AL_ARRANCAR CONFIG_MALA PULL_FALLA FALLA_RESPALDO FALLA_PREVIA SIN_FUNCIONAL CONFIG_NO_CORRE HEALTH_N FALLA_TARDIA FALLA_SOSTENIDA REKEY_IN FALLA_REKEY ROLES_IN FALLA_ROLES > .gitignore
+printf '%s\n' .env EVO_RUNNING EVO_MIG EVO_PLAN_RC EVO_VERIFY_RC PULLED MIGRA_AL_ARRANCAR CONFIG_MALA PULL_FALLA FALLA_RESPALDO FALLA_PREVIA SIN_FUNCIONAL CONFIG_NO_CORRE HEALTH_N FALLA_TARDIA FALLA_SOSTENIDA REKEY_IN FALLA_REKEY ROLES_IN FALLA_ROLES CI_RESPUESTA CI_CODIGO > .gitignore
 cp "$here/riverrun" . && mkdir -p docker && cp "$here/docker/db-roles.sql" docker/ && echo "v1" > VERSION && git add -A && git commit -qm "v1" && git push -q origin HEAD:main 2>/dev/null
 git branch -q --set-upstream-to=origin/main 2>/dev/null || git branch -q -u origin/main
 # Publica una versión nueva en el "origin" y deja la copia local donde estaba. $3 = imagen de Evolution del código nuevo.
@@ -108,7 +123,7 @@ grep -n "backup.sh now\|up -d --build" "$LOG" | head -2 | cut -d: -f2- | head -1
 grep -q "up -d --build" "$LOG"
 # INF-3: la base de Node y del respaldo con parches (--pull), y Redis y Caddy de su misma etiqueta.
 grep -q "compose build --pull backend backup" "$LOG" || { cat "$LOG"; echo "ERROR: no construyó con --pull"; exit 1; }
-grep -q "compose pull --quiet redis caddy" "$LOG" || { echo "ERROR: no descargó Redis ni Caddy"; exit 1; }
+grep -q "compose pull --quiet redis caddy pdf" "$LOG" || { echo "ERROR: no descargó Redis, Caddy ni el convertidor de PDF"; exit 1; }
 # INF-2: usuarios de PostgreSQL por servicio (después del respaldo, antes de levantar) y Redis con contraseña.
 grep -q "set app_pw '" ROLES_IN && grep -q "riverrun_app" ROLES_IN || { echo "ERROR: no corrió db-roles.sql"; exit 1; }
 [[ "$(grep -n "backup.sh now" "$LOG" | head -1 | cut -d: -f1)" -lt "$(grep -n "psql -X -q -U chatbot -d postgres" "$LOG" | head -1 | cut -d: -f1)" ]] || { echo "ERROR: los usuarios de PostgreSQL antes del respaldo"; exit 1; }
@@ -278,24 +293,38 @@ touch FALLA_RESPALDO
 if printf 'ROTAR SESSION_SECRET\n' | ./riverrun rotate-secret > "$work/out" 2>&1; then echo "ERROR: cambió sin respaldo"; exit 1; fi
 grep -q "^SESSION_SECRET=viejo-secreto-de-prueba$" .env
 rm -f FALLA_RESPALDO
-# Si no se pueden re-cifrar los secretos del 2FA, .env conserva el secreto de antes y no se reinicia nada.
+# La actualización generó DATA_KEY (INF-6) sin imprimirla.
+grep -Eq "^DATA_KEY=[0-9a-f]{64}$" .env || { echo "ERROR: falta DATA_KEY en .env"; exit 1; }
+dk="$(sed -n 's/^DATA_KEY=//p' .env)"
+# Si no se puede re-cifrar con la llave de datos, .env conserva el secreto de antes y no se reinicia nada.
 : > "$LOG"; touch FALLA_REKEY
-if printf 'ROTAR SESSION_SECRET\n' | ./riverrun rotate-secret > "$work/out" 2>&1; then echo "ERROR: cambió sin re-cifrar el 2FA"; exit 1; fi
-grep -q "No se pudieron re-cifrar los secretos de verificación en dos pasos: no se cambió nada." "$work/out"
+if printf 'ROTAR SESSION_SECRET\n' | ./riverrun rotate-secret > "$work/out" 2>&1; then echo "ERROR: cambió sin re-cifrar"; exit 1; fi
+grep -q "No se pudieron re-cifrar los secretos con la llave de datos: no se cambió SESSION_SECRET." "$work/out"
 grep -q "^SESSION_SECRET=viejo-secreto-de-prueba$" .env
-! grep -q "up -d backend" "$LOG" || { echo "ERROR: reinició sin re-cifrar el 2FA"; exit 1; }
-rm -f FALLA_REKEY REKEY_IN
+! grep -q "up -d backend" "$LOG" || { echo "ERROR: reinició sin re-cifrar"; exit 1; }
+rm -f FALLA_REKEY
 : > "$LOG"
 printf 'ROTAR SESSION_SECRET\n' | ./riverrun rotate-secret > "$work/out" 2>&1 || { cat "$work/out"; echo "ERROR: rotación fallida"; exit 1; }
 grep -Eq "^SESSION_SECRET=[0-9a-f]{64}$" .env && ! grep -q "viejo-secreto" .env
-grep -q "Los secretos de la verificación en dos pasos se vuelven a cifrar con el nuevo." "$work/out"
+grep -q "no hay que volver a conectar nada" "$work/out"
+[[ "$(sed -n 's/^DATA_KEY=//p' .env)" == "$dk" ]] || { echo "ERROR: rotate-secret cambió DATA_KEY"; exit 1; }
 nuevo="$(sed -n 's/^SESSION_SECRET=//p' .env)"
 ! grep -q "$nuevo" "$work/out" || { echo "ERROR: el secreto nuevo se imprimió"; exit 1; }
 ! grep -q "$nuevo" "$LOG" || { echo "ERROR: el secreto nuevo quedó en los argumentos"; exit 1; }
-[[ "$(cat REKEY_IN)" == "$nuevo" ]] || { echo "ERROR: el 2FA se re-cifró con otro secreto"; exit 1; }
-b="$(grep -n "backup.sh now" "$LOG" | head -n 1 | cut -d: -f1)"; k="$(grep -n "rekey-mfa.js" "$LOG" | head -n 1 | cut -d: -f1)"; u="$(grep -n "up -d backend" "$LOG" | head -n 1 | cut -d: -f1)"
+b="$(grep -n "backup.sh now" "$LOG" | head -n 1 | cut -d: -f1)"; k="$(grep -n "rekey-secrets.js" "$LOG" | head -n 1 | cut -d: -f1)"; u="$(grep -n "up -d backend" "$LOG" | head -n 1 | cut -d: -f1)"
 [[ -n "$b" && -n "$k" && -n "$u" && "$b" -lt "$k" && "$k" -lt "$u" ]] || { echo "ERROR: el orden debe ser respaldo → re-cifrado → reinicio"; exit 1; }
-rm -f REKEY_IN
+
+echo "== rotate-data-key: la anterior queda en DATA_KEYS_OLD, el backend arranca con las dos y luego se re-cifra"
+: > "$LOG"
+if printf 'nope\n' | ./riverrun rotate-data-key > "$work/out" 2>&1; then echo "ERROR: cambió sin confirmación"; exit 1; fi
+[[ "$(sed -n 's/^DATA_KEY=//p' .env)" == "$dk" ]]
+printf 'ROTAR DATA_KEY\n' | ./riverrun rotate-data-key > "$work/out" 2>&1 || { cat "$work/out"; echo "ERROR: rotación de DATA_KEY fallida"; exit 1; }
+nk="$(sed -n 's/^DATA_KEY=//p' .env)"
+[[ "$nk" =~ ^[0-9a-f]{64}$ && "$nk" != "$dk" ]] || { echo "ERROR: DATA_KEY no cambió"; exit 1; }
+[[ "$(sed -n 's/^DATA_KEYS_OLD=//p' .env)" == "$dk" ]] || { echo "ERROR: la anterior no quedó en DATA_KEYS_OLD"; exit 1; }
+! grep -q "$nk" "$work/out" && ! grep -q "$nk" "$LOG" || { echo "ERROR: la llave nueva se imprimió"; exit 1; }
+b="$(grep -n "backup.sh now" "$LOG" | head -n 1 | cut -d: -f1)"; u="$(grep -n "up -d backend" "$LOG" | head -n 1 | cut -d: -f1)"; k="$(grep -n "rekey-secrets.js" "$LOG" | head -n 1 | cut -d: -f1)"
+[[ -n "$b" && -n "$k" && -n "$u" && "$b" -lt "$u" && "$u" -lt "$k" ]] || { echo "ERROR: el orden debe ser respaldo → reinicio con las dos llaves → re-cifrado"; exit 1; }
 echo "== salud funcional: la actualización genera HEALTH_TOKEN (sin imprimirlo) y consulta /health/functional"
 : > "$LOG"; newcommit v12
 ./riverrun update > "$work/out" 2>&1 || { cat "$work/out"; echo "ERROR: la actualización con salud funcional falló"; exit 1; }
@@ -305,11 +334,55 @@ tok="$(sed -n 's/^HEALTH_TOKEN=//p' .env)"
 grep -q "/health/functional" "$LOG" || { echo "ERROR: no consultó /health/functional"; exit 1; }
 [[ "$(cat VERSION)" == v12 ]]
 
+echo "== INF-4: con código de GitHub, solo se despliega un commit con su CI (ci.yml) terminado y en verde"
+export RIVERRUN_GITHUB_REPO=dueno/riverrun
+# Como la API de Actions: la corrida más reciente primero; sus objetos anidados no traen status ni conclusion.
+ci() { printf '{\n  "total_count": %s,\n  "workflow_runs": [%s]\n}' "$1" "$2" > CI_RESPUESTA; }
+run() { printf '{"id": 1, "name": "CI", "head_sha": "x", "status": "%s", "conclusion": %s, "head_commit": {"message": "m"}}' "$1" "$2"; }
+: > "$LOG"; newcommit v12b
+ci 2 "$(run completed '"failure"'), $(run completed '"success"')"
+if ./riverrun update > "$work/out" 2>&1; then echo "ERROR: aplicó con el CI en rojo"; exit 1; fi
+grep -q "no está en verde (failure)" "$work/out" && [[ "$(cat VERSION)" == v12 ]] || { cat "$work/out"; echo "ERROR: el CI en rojo debía detener todo"; exit 1; }
+! grep -q "backup.sh now" "$LOG" || { echo "ERROR: respaldó antes de comprobar el CI"; exit 1; }
+grep -q "/repos/dueno/riverrun/actions/workflows/ci.yml/runs?head_sha=$(git rev-parse origin/main)" "$LOG" || { cat "$LOG"; echo "ERROR: no consultó el CI del commit exacto"; exit 1; }
+ci 1 "$(run in_progress null)"
+if ./riverrun update > "$work/out" 2>&1; then echo "ERROR: aplicó con el CI corriendo"; exit 1; fi
+grep -q "todavía está corriendo" "$work/out" && [[ "$(cat VERSION)" == v12 ]] || { cat "$work/out"; echo "ERROR: el CI sin terminar debía detener todo"; exit 1; }
+ci 0 ""
+if ./riverrun update > "$work/out" 2>&1; then echo "ERROR: aplicó un commit sin CI"; exit 1; fi
+grep -q "no tiene una corrida del CI" "$work/out" || { cat "$work/out"; echo "ERROR: sin CI debía detener todo"; exit 1; }
+rm -f CI_RESPUESTA
+if ./riverrun update > "$work/out" 2>&1; then echo "ERROR: aplicó sin poder consultar el CI"; exit 1; fi
+grep -q "No se pudo consultar el CI" "$work/out" || { cat "$work/out"; echo "ERROR: sin respuesta de GitHub debía detener todo"; exit 1; }
+echo 404 > CI_CODIGO; ci 1 "$(run completed '"success"')"
+if ./riverrun update > "$work/out" 2>&1; then echo "ERROR: aplicó con GitHub respondiendo 404"; exit 1; fi
+grep -q "UPDATE_GITHUB_TOKEN" "$work/out" || { cat "$work/out"; echo "ERROR: un 404 debía sugerir el token"; exit 1; }
+rm -f CI_CODIGO
+./riverrun update > "$work/out" 2>&1 || { cat "$work/out"; echo "ERROR: con el CI en verde debía aplicarse"; exit 1; }
+grep -q "CI en verde" "$work/out" && [[ "$(cat VERSION)" == v12b ]] || { cat "$work/out"; echo "ERROR: no aplicó con el CI en verde"; exit 1; }
+: > "$LOG"; newcommit v12c
+ci 1 "$(run completed '"failure"')"
+./riverrun update --skip-ci-check > "$work/out" 2>&1 || { cat "$work/out"; echo "ERROR: --skip-ci-check debía aplicar"; exit 1; }
+grep -q "Se omite la comprobación del CI" "$work/out" && [[ "$(cat VERSION)" == v12c ]] || { cat "$work/out"; echo "ERROR: --skip-ci-check debía avisar y aplicar"; exit 1; }
+rm -f CI_RESPUESTA; unset RIVERRUN_GITHUB_REPO
+
+echo "== volver atrás a una versión sin llave de datos: antes se pasan los secretos a su formato (INF-6/INF-7)"
+base="$(git rev-parse HEAD)"; git fetch -q origin; git reset -q --hard origin/main
+mkdir -p src/cli; echo "// nueva" > src/cli/rekey-secrets.ts; touch VERSION_MALA; echo v12d > VERSION
+git add -A; git commit -qm v12d; git push -q origin HEAD:main; git reset -q --hard "$base"
+: > "$LOG"
+if ./riverrun update > "$work/out" 2>&1; then echo "ERROR: aplicó una versión que no queda sana"; exit 1; fi
+grep -q "node dist/cli/rekey-secrets.js --to-legacy" "$LOG" || { cat "$work/out"; echo "ERROR: no pasó los secretos al formato anterior antes de volver"; exit 1; }
+grep -q "se pasan a su formato antes de volver" "$work/out" && [[ "$(cat VERSION)" == v12c ]] || { cat "$work/out"; echo "ERROR: debía volver a v12c"; exit 1; }
+# El origen queda con una versión limpia (sin esos archivos) para lo que sigue.
+git fetch -q origin; base="$(git rev-parse HEAD)"; git reset -q --hard origin/main
+git rm -q -r src VERSION_MALA; echo v12e > VERSION; git commit -qm v12e; git push -q origin HEAD:main; git reset -q --hard "$base"
+
 echo "== backend anterior sin /health/functional: se compara con /health/ready y una falla nueva sí vuelve atrás"
 : > "$LOG"; touch SIN_FUNCIONAL; base="$(git rev-parse HEAD)"; git fetch -q origin; git reset -q --hard origin/main
 echo "database" > FALLA_NUEVA; echo v13 > VERSION; git add -A; git commit -qm v13; git push -q origin HEAD:main; git reset -q --hard "$base"
 if ./riverrun update > "$work/out" 2>&1; then echo "ERROR: aplicó una versión que rompe la base de datos (según /health/ready)"; exit 1; fi
-grep -q "falla (antes no): database" "$work/out"; [[ "$(cat VERSION)" == v12 ]]
+grep -q "falla (antes no): database" "$work/out"; [[ "$(cat VERSION)" == v12c ]]
 rm -f SIN_FUNCIONAL FALLA_NUEVA
 
 echo "== preflight: sin .env bloquea"
@@ -327,6 +400,13 @@ export RIVERRUN_PREFLIGHT_MEM_KB=2097152 RIVERRUN_PREFLIGHT_DISK_KB=20971520 RIV
 set +e; ./riverrun preflight --offline > "$work/out" 2>&1; rc=$?; set -e
 [[ "$rc" == 0 ]] && grep -q "SIN BLOQUEOS EN LO REVISADO" "$work/out" && grep -q "No verificado: último respaldo" "$work/out" && grep -q "Envíos reales habilitados" "$work/out" || { cat "$work/out"; echo "ERROR: con todo en orden debía pasar sin bloqueos"; exit 1; }
 ! grep -q "APROBADO\." "$work/out" || { echo "ERROR: no debe afirmar aprobación completa con comprobaciones sin verificar"; exit 1; }
+grep -q "El panel solo escucha en el propio servidor" "$work/out" || { cat "$work/out"; echo "ERROR: no revisó PANEL_BIND"; exit 1; }
+
+echo "== preflight: PANEL_BIND=0.0.0.0 avisa que Docker salta el firewall (INF-10)"
+cp .env .env.bind; printf 'PANEL_BIND=0.0.0.0\n' >> .env
+set +e; ./riverrun preflight --offline > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" == 0 ]] && grep -q "APROBADO CON ADVERTENCIAS" "$work/out" && grep -q "PANEL_BIND=0.0.0.0 publica el puerto 3000" "$work/out" && grep -q "por encima del firewall" "$work/out" || { cat "$work/out"; echo "ERROR: PANEL_BIND abierto debía avisar"; exit 1; }
+mv -f .env.bind .env
 
 echo "== preflight: modo sandbox avisa; disco insuficiente y configuración crítica bloquean"
 printf 'OUTBOUND_MODE=sandbox\n' >> .env

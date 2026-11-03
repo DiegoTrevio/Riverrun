@@ -4,7 +4,7 @@
 # publicados, y lo borra al terminar.
 #
 #   scripts/restore-drill.sh                   baja el respaldo más reciente de la copia remota (BACKUP_S3_*)
-#   scripts/restore-drill.sh ARCHIVO.tar.enc   prueba un respaldo que ya tienes en esta máquina
+#   scripts/restore-drill.sh ARCHIVO           prueba un respaldo que ya tienes (.gpg.tar, o .tar.enc de antes)
 #
 # Usa la misma imagen de respaldos que producción (docker/backup) y su comando "verify" con todas las bases, así que
 # la prueba es la misma que corre el servidor cada noche, pero contra una copia descargada. Requiere docker y
@@ -48,7 +48,7 @@ else
   export RCLONE_CONFIG_BK_ENDPOINT="${BACKUP_S3_ENDPOINT:-}" RCLONE_CONFIG_BK_REGION="${BACKUP_S3_REGION:-}"
   REMOTE="bk:${BACKUP_S3_BUCKET}/riverrun"
   say "Buscando el respaldo más reciente en la copia remota"
-  FILE="$(rclone lsf "$REMOTE" --include 'riverrun-*.tar.enc' | sort | tail -n 1)"
+  FILE="$(rclone lsf "$REMOTE" --include 'riverrun-*.gpg.tar' --include 'riverrun-*.tar.enc' | sort | tail -n 1)"
   [[ -n "$FILE" ]] || die "No hay respaldos cifrados en la copia remota."
   say "Bajando $FILE"
   rclone copyto "$REMOTE/$FILE" "$WORK/$FILE"

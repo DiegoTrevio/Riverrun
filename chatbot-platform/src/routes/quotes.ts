@@ -310,7 +310,7 @@ export async function quoteRoutes(api: FastifyInstance, service: ChatService) {
     if (req.query.fmt !== 'pdf') return sendFile(reply, exampleTemplate(), 'Formato de cotizacion.docx', DOCX);
     const accountId = await targetAccount(req.user, req.query.account_id);
     const account = await store.getAccount(accountId);
-    const { pdf } = await renderPdf(exampleTemplate(), sampleData(await qstore.getQuoteSettings(accountId), account?.name ?? ''))
+    const { pdf } = await renderPdf(exampleTemplate(), sampleData(await qstore.getQuoteSettings(accountId), account?.name ?? ''), accountId)
       .catch((e) => { throw new HttpError(502, `No se pudo generar el PDF: ${e.message}`); });
     return sendFile(reply, pdf, 'Vista previa.pdf', 'application/pdf', true);
   });
@@ -361,7 +361,7 @@ export async function quoteRoutes(api: FastifyInstance, service: ChatService) {
     const abs = attachmentAbsolutePath(t.file_path);
     if (!fs.existsSync(abs)) throw new HttpError(404, 'El archivo ya no está guardado');
     const account = await store.getAccount(t.account_id);
-    const { pdf } = await renderPdf(await fsp.readFile(abs), sampleData(await qstore.getQuoteSettings(t.account_id), account?.name ?? ''))
+    const { pdf } = await renderPdf(await fsp.readFile(abs), sampleData(await qstore.getQuoteSettings(t.account_id), account?.name ?? ''), t.account_id)
       .catch((e) => { throw new HttpError(502, `No se pudo generar el PDF: ${e.message}`); });
     return sendFile(reply, pdf, `${t.name} (vista previa).pdf`, 'application/pdf', true);
   });
