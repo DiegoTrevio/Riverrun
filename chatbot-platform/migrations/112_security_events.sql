@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS security_events (
 CREATE INDEX IF NOT EXISTS security_events_at_idx ON security_events (at DESC);
 CREATE INDEX IF NOT EXISTS security_events_account_idx ON security_events (account_id, at DESC);
 CREATE INDEX IF NOT EXISTS security_events_kind_idx ON security_events (kind, at DESC);
+CREATE INDEX IF NOT EXISTS security_events_user_idx ON security_events (user_id, at DESC) WHERE user_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS security_events_ip_idx ON security_events (ip, at DESC) WHERE ip <> '';
 CREATE INDEX IF NOT EXISTS security_events_email_idx ON security_events (lower(email), at DESC) WHERE email <> '';
 

@@ -8,12 +8,13 @@
  * Al anotar, unas reglas sencillas buscan lo que no es normal y avisan al superadmin por el canal de las alertas del
  * sistema (correo y ALERT_WEBHOOK_URL), una vez por hora por regla y objetivo:
  *  - muchas contraseñas fallidas desde una IP, contra varias personas (alguien prueba listas de contraseñas);
- *  - muchas contraseñas fallidas contra una persona (alguien intenta adivinar la suya);
+ *  - muchas contraseñas fallidas contra una persona (alguien intenta adivinar la suya), o en toda la plataforma;
  *  - un superadmin que entra desde un dispositivo nuevo, o cuyo 2FA se bloquea por intentos;
  *  - muchas descargas de datos o muchos borrados de contactos de una misma persona en una hora.
  *
  * Nunca lanza: anotar o avisar no puede romper lo que se estaba haciendo.
  */
+import { createHmac } from 'node:crypto';
 import { query, queryOne } from './db.js';
 import { config } from './config.js';
 import { logEvent } from './logs.js';
@@ -40,10 +41,16 @@ export interface SecurityEvent {
 
 /** Umbrales de las reglas (en una ventana de 15 minutos para el acceso y de 1 hora para los datos). */
 export const RULES = {
-  stuffingFailures: 20, stuffingEmails: 5,
+  // El límite por IP deja pasar 8 intentos cada 15 minutos (y los frenados se anotan una vez): 8 contra 5 correos
+  // distintos ya es probar una lista.
+  stuffingFailures: 8, stuffingEmails: 5,
+  /** Contraseñas fallidas en toda la plataforma en 15 minutos (una lista probada desde muchas IP, pocas por IP). */
+  globalFailures: 100,
   bruteForceFailures: 10,
   exportsPerHour: 5,
   erasuresPerHour: 25,
+  /** Tope de avisos enviados por hora en total: pasado eso se anotan, y se manda un solo aviso de que hay demasiados. */
+  alertsPerHour: 10,
 };
 
 /** Solo lo que parece un correo se guarda como correo (quien escribe su contraseña en ese campo no la deja aquí). */
@@ -61,39 +68,104 @@ export async function recordSecurity(e: SecurityEvent): Promise<void> {
   }
 }
 
-/** Un aviso por regla y objetivo por hora (entre varios procesos también). true si toca avisar. */
-async function claimAlert(key: string): Promise<boolean> {
+/**
+ * Anota solo la primera vez por `key` cada `minutes` (p. ej. los intentos frenados por el límite: una ráfaga de miles
+ * deja una fila, no miles). Nunca lanza.
+ */
+export async function recordSecurityOnce(key: string, minutes: number, e: SecurityEvent): Promise<void> {
+  try {
+    if (await claimOnce(`once:${key}`, minutes)) await recordSecurity(e);
+  } catch (err: any) {
+    console.error('No se pudo anotar en la bitácora de seguridad', err?.message ?? err);
+  }
+}
+
+/**
+ * Lo que alguien escribió como usuario y no es una cuenta: no se guarda (puede ser su contraseña), solo una huella con
+ * llave para contar cuántos «correos» distintos se probaron desde una IP.
+ */
+export const loginFingerprint = (who: string) =>
+  createHmac('sha256', config.sessionSecret || 'riverrun').update(`login:${who.trim().toLowerCase()}`).digest('hex').slice(0, 16);
+
+/** Una vez por `key` cada `minutes` (entre varios procesos también). true si toca. */
+async function claimOnce(key: string, minutes: number): Promise<boolean> {
   const row = await queryOne(
     `INSERT INTO security_alerts (key, alerted_at) VALUES ($1, now())
-     ON CONFLICT (key) DO UPDATE SET alerted_at = now() WHERE security_alerts.alerted_at < now() - interval '1 hour'
+     ON CONFLICT (key) DO UPDATE SET alerted_at = now() WHERE security_alerts.alerted_at < now() - make_interval(mins => $2)
      RETURNING key`,
-    [key.slice(0, 300)],
+    [key.slice(0, 300), minutes],
   );
   return !!row;
 }
 
+const releaseClaim = (key: string) => query(`DELETE FROM security_alerts WHERE key = $1`, [key.slice(0, 300)]).catch(() => undefined);
+
+/** Envíos de avisos en curso: no detienen la petición que cruzó el umbral (las pruebas esperan con settleSecurityAlerts). */
+const inflight = new Set<Promise<void>>();
+export async function settleSecurityAlerts() {
+  await Promise.all([...inflight]);
+}
+
 async function alert(rule: string, target: string, title: string, body: string, e: SecurityEvent) {
-  if (!(await claimAlert(`${rule}:${target}`))) return;
+  const key = `${rule}:${target}`;
+  if (!(await claimOnce(key, 60))) return;
   await query(
     `INSERT INTO security_events (kind, account_id, email, ip, target, details) VALUES ($1, $2, $3, $4, $5, $6)`,
     [`alert.${rule}`, e.accountId ?? null, asEmail(e.email), String(e.ip ?? '').slice(0, 64), target.slice(0, 200), JSON.stringify({ title, body })],
   );
+  // Quien controla el objetivo (otra IP, otro correo) abre un aviso nuevo cada vez: un tope global evita que eso inunde
+  // el correo del superadmin. Pasado el tope todo queda en la bitácora y se manda un solo aviso de que hay demasiados.
+  const sent = await queryOne<{ n: number }>(
+    `SELECT count(*)::int AS n FROM security_events WHERE kind LIKE 'alert.%' AND kind <> 'alert.flood' AND at > now() - interval '1 hour'`);
+  let send: [string, string] | null = [title, body];
+  let claimed = key;
+  if ((sent?.n ?? 0) > RULES.alertsPerHour) {
+    send = null;
+    if (await claimOnce('flood', 60)) {
+      const flood = `Más de ${RULES.alertsPerHour} avisos de seguridad en la última hora: los siguientes solo quedan en la bitácora durante una hora. Puede ser un ataque desde muchas IP o contra muchas personas.`;
+      await query(`INSERT INTO security_events (kind, details) VALUES ('alert.flood', $1)`, [JSON.stringify({ title: 'Demasiados avisos de seguridad', body: flood })]);
+      send = ['Demasiados avisos de seguridad', flood];
+      claimed = 'flood';
+    }
+  }
   await logEvent({ level: 'warn', source: 'security', message: `${title}: ${body}`, accountId: e.accountId ?? null });
-  const { sendAlert } = await import('./monitor.js');
-  await sendAlert(`🔐 ${title}`, `${body}\n\nRevisa la bitácora de seguridad en Sistema → Seguridad.`);
+  if (!send) return;
+  const [t, b] = send;
+  const job = (async () => {
+    try {
+      const { sendAlert } = await import('./monitor.js');
+      await sendAlert(`🔐 ${t}`, `${b}\n\nRevisa la bitácora de seguridad en Sistema → Seguridad.`);
+    } catch (err: any) {
+      // Si no salió, la siguiente vez vuelve a intentar (no queda callado una hora sin haber avisado).
+      await releaseClaim(claimed);
+      console.error('No se pudo mandar el aviso de seguridad', err?.message ?? err);
+    }
+  })();
+  inflight.add(job);
+  void job.finally(() => inflight.delete(job));
 }
 
 async function detect(e: SecurityEvent) {
   if (e.kind === 'login.failed' || e.kind === 'login.blocked') {
     if (e.ip) {
       const r = await queryOne<{ n: number; people: number }>(
-        `SELECT count(*)::int AS n, count(DISTINCT lower(email))::int AS people FROM security_events
+        `SELECT count(*)::int AS n, count(DISTINCT COALESCE(NULLIF(lower(email), ''), details->>'who'))::int AS people FROM security_events
           WHERE kind IN ('login.failed', 'login.blocked') AND ip = $1 AND at > now() - interval '15 minutes'`,
         [e.ip],
       );
       if (r && r.n >= RULES.stuffingFailures && r.people >= RULES.stuffingEmails) {
         await alert('stuffing', e.ip, 'Muchos accesos fallidos desde una IP',
-          `${r.n} contraseñas fallidas en 15 minutos desde ${e.ip}, contra ${r.people} correos distintos: alguien está probando listas de contraseñas. El límite por IP ya lo frena; si sigue, bloquéala en el firewall.`, e);
+          `${r.n} intentos fallidos en 15 minutos desde ${e.ip}, contra ${r.people} correos distintos: alguien está probando listas de contraseñas. El límite por IP ya lo frena; si sigue, bloquéala en el firewall.`, e);
+      }
+    }
+    if (e.kind === 'login.failed') {
+      // Acotada: cuenta hasta el umbral, no toda la ráfaga.
+      const g = await queryOne<{ n: number }>(
+        `SELECT count(*)::int AS n FROM (SELECT 1 FROM security_events WHERE kind = 'login.failed' AND at > now() - interval '15 minutes' LIMIT $1) x`,
+        [RULES.globalFailures]);
+      if ((g?.n ?? 0) >= RULES.globalFailures) {
+        await alert('failures', 'plataforma', 'Muchos accesos fallidos en la plataforma',
+          `Más de ${RULES.globalFailures} contraseñas fallidas en 15 minutos, repartidas entre varias IP: puede ser una lista de contraseñas probada desde muchas máquinas. Revisa la bitácora de seguridad (filtro Accesos).`, { ...e, email: '', accountId: null });
       }
     }
     const email = asEmail(e.email);
@@ -140,11 +212,12 @@ async function detect(e: SecurityEvent) {
 }
 
 /** Lo que se muestra: el superadmin todo; un administrador, lo de su cuenta. */
-export async function listSecurityEvents(o: { accountId?: string | null; kind?: string; email?: string; ip?: string; before?: number; limit?: number }) {
+export async function listSecurityEvents(o: { accountId?: string | null; kind?: string; email?: string; ip?: string; before?: number; limit?: number; excludeAlerts?: boolean }) {
   const where: string[] = [];
   const params: unknown[] = [];
   const add = (sql: string, v: unknown) => { params.push(v); where.push(sql.replace('?', `$${params.length}`)); };
   if (o.accountId) add('account_id = ?', o.accountId);
+  if (o.excludeAlerts) where.push(`kind NOT LIKE 'alert.%'`);
   if (o.kind) add('kind LIKE ?', `${o.kind.replace(/[%_\\]/g, '')}%`);
   if (o.email) add('lower(email) = ?', o.email.toLowerCase());
   if (o.ip) add('ip = ?', o.ip);

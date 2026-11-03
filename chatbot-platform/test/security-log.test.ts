@@ -10,7 +10,7 @@ const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && '
 const { config } = await import('../src/config.js');
 const { outbox } = await import('../src/mailer.js');
 const { notifyUser } = await import('../src/identity/notices.js');
-const { pruneSecurityEvents, recordSecurity, RULES } = await import('../src/security-log.js');
+const { pruneSecurityEvents, recordSecurity, RULES, settleSecurityAlerts } = await import('../src/security-log.js');
 let h: Awaited<ReturnType<typeof createHarness>>;
 
 const PASS = 'Pz-771-Qx-772-Kv';
@@ -25,6 +25,7 @@ before(async () => {
   config.signup.superadminEmail = 'operador@seguridad.mx';
   await h.addUser({ account_id: h.accountId, email: 'duena@seguridad.mx', name: 'Dueña', password: PASS, role: 'admin' });
   await h.addUser({ account_id: h.accountId, email: 'agente@seguridad.mx', name: 'Agente', password: PASS, role: 'agent' });
+  await h.addUser({ account_id: h.accountId, email: 'objetivo@seguridad.mx', name: 'Objetivo', password: PASS, role: 'agent' });
 });
 after(async () => {
   config.signup.superadminEmail = '';
@@ -46,18 +47,25 @@ t('entrar y fallar al entrar quedan en la bitácora (sin guardar lo que no es un
 
 t('muchas contraseñas fallidas desde una IP contra varias personas: un aviso al superadmin (no uno por intento)', async () => {
   const ip = '10.9.1.1';
-  for (let i = 0; i < RULES.stuffingFailures + 5; i++) await failLogin(`victima${i % 6}@lista.mx`, ip);
+  for (let i = 0; i < 40; i++) await failLogin(`victima${i % 6}@lista.mx`, ip);
+  await settleSecurityAlerts();
   assert.equal((await events(`kind = 'alert.stuffing' AND ip = $1`, [ip])).length, 1);
   assert.equal(alertsTo(/Muchos accesos fallidos desde una IP/).length, 1);
-  assert.match(alertsTo(/Muchos accesos fallidos/)[0].text, /10\.9\.1\.1/);
-  // Los intentos frenados por el límite de la IP también cuentan.
-  assert.ok((await events(`kind = 'login.blocked' AND ip = $1`, [ip])).length > 0);
+  assert.match(alertsTo(/Muchos accesos fallidos desde una IP/)[0].text, /10\.9\.1\.1/);
+  // Los correos que no son cuentas no se guardan (solo su huella); los frenados por el límite, una fila por ventana.
+  const rows = await events(`ip = $1 AND kind LIKE 'login.%'`, [ip]);
+  assert.ok(rows.every((r) => r.email === '' && /^[0-9a-f]{16}$/.test(r.details.who)));
+  assert.equal(rows.filter((r) => r.kind === 'login.blocked').length, 1, '32 intentos frenados dejan una sola fila');
 });
 
 t('muchas contraseñas fallidas contra una persona (desde varias IP): aviso de fuerza bruta', async () => {
   for (let i = 0; i < RULES.bruteForceFailures; i++) await failLogin('objetivo@seguridad.mx', `10.9.2.${i + 1}`);
+  await settleSecurityAlerts();
   const a = await events(`kind = 'alert.bruteforce' AND target = 'objetivo@seguridad.mx'`);
   assert.equal(a.length, 1);
+  // El intento contra una persona de la cuenta queda en la cuenta: su administrador lo ve.
+  const failed = await events(`kind = 'login.failed' AND email = 'objetivo@seguridad.mx'`);
+  assert.ok(failed.every((r) => r.account_id === h.accountId && r.user_id));
   assert.equal(alertsTo(/adivinar la contraseña/).length, 1);
 });
 
@@ -65,10 +73,12 @@ t('un superadmin desde un dispositivo nuevo avisa al momento; un administrador, 
   const sup = (await pool.query(`SELECT id, email, name, account_id FROM users WHERE role = 'superadmin' LIMIT 1`)).rows[0];
   const before = alertsTo(/Acceso de superadmin/).length;
   await notifyUser(sup, 'new_device', { device: 'Firefox en Linux', ip: '203.0.113.9' });
+  await settleSecurityAlerts();
   assert.equal(alertsTo(/Acceso de superadmin/).length, before + 1);
   assert.equal((await events(`kind = 'notice.new_device' AND user_id = $1`, [sup.id])).at(-1).ip, '203.0.113.9');
   const admin = (await pool.query(`SELECT id, email, name, account_id FROM users WHERE email = 'duena@seguridad.mx'`)).rows[0];
   await notifyUser(admin, 'new_device', { device: 'Chrome', ip: '203.0.113.10' });
+  await settleSecurityAlerts();
   assert.equal(alertsTo(/Acceso de superadmin/).length, before + 1, 'solo los superadmin');
 });
 
@@ -78,8 +88,10 @@ t('muchas descargas de datos de una persona en una hora: aviso; quedan con quié
     const r = await owner('GET', '/api/export/contacts.csv');
     assert.equal(r.statusCode, 200, r.body);
   }
+  assert.equal((await owner('GET', '/api/export/contacts.csv?since=ayer')).statusCode, 400);
+  await settleSecurityAlerts();
   const rows = await events(`kind = 'export.contacts' AND email = 'duena@seguridad.mx'`);
-  assert.equal(rows.length, RULES.exportsPerHour);
+  assert.equal(rows.length, RULES.exportsPerHour, 'la petición mal formada no cuenta como descarga');
   assert.equal(rows[0].account_id, h.accountId);
   assert.equal((await events(`kind = 'alert.exports'`)).length, 1);
   assert.equal(alertsTo(/Muchas descargas de datos/).length, 1);
@@ -110,6 +122,28 @@ t('cambios de seguridad (avisos al usuario) y llaves de la API quedan anotados',
   await notifyUser(admin, 'role_changed', { by: 'admin@test.mx', role: 'administrador' });
   const n = (await events(`kind = 'notice.role_changed' AND user_id = $1`, [admin.id])).at(-1);
   assert.equal(n.details.by, 'admin@test.mx');
+});
+
+t('tope global: muchos avisos distintos en una hora mandan uno de «demasiados» y el resto solo se anota', async () => {
+  const before = outbox.filter((m) => m.to === 'operador@seguridad.mx').length;
+  // Quien controla el objetivo abre un aviso por correo atacado: aquí 15 personas distintas.
+  for (let p = 0; p < 15; p++) {
+    for (let i = 0; i < RULES.bruteForceFailures; i++) await recordSecurity({ kind: 'login.failed', email: `inunda${p}@lista.mx`, ip: `10.9.5.${i + 1}` });
+  }
+  await settleSecurityAlerts();
+  const sent = outbox.filter((m) => m.to === 'operador@seguridad.mx').length - before;
+  assert.ok(sent < 15, `se mandaron ${sent}`);
+  assert.equal(alertsTo(/Demasiados avisos de seguridad/).length, 1);
+  assert.equal((await events(`kind = 'alert.bruteforce' AND target LIKE 'inunda%'`)).length, 15, 'todos quedan en la bitácora');
+});
+
+t('el administrador ve los intentos fallidos contra su gente (sin la IP completa)', async () => {
+  const owner = await h.loginAs('duena@seguridad.mx', PASS);
+  const rows = (await owner('GET', '/api/security-events?kind=login.failed&limit=500')).json();
+  const r = rows.find((x: any) => x.email === 'objetivo@seguridad.mx');
+  assert.ok(r);
+  assert.match(r.ip, /…$/);
+  assert.equal(rows.length <= 500 && rows.every((x: any) => !x.kind.startsWith('alert.')), true);
 });
 
 t('se conserva SECURITY_LOG_DAYS aunque la cuenta ya no exista; lo más viejo se depura', async () => {
