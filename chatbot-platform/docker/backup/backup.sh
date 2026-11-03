@@ -75,7 +75,7 @@ need_passphrase() {
 # INF-11: cifrado autenticado (gpg simétrico, AES-256 con MDC: si alguien cambia un byte, no descifra). La clave va por
 # un descriptor, nunca en los argumentos.
 export GNUPGHOME="${GNUPGHOME:-${TMPDIR:-/tmp}/riverrun-gnupg}"
-mkdir -p -m 700 "$GNUPGHOME"
+mkdir -p "$GNUPGHOME" && chmod 700 "$GNUPGHOME"
 gpg_enc() { gpg --batch --yes --quiet --no-tty --pinentry-mode loopback --passphrase-fd 3 --symmetric --cipher-algo AES256 \
   --s2k-mode 3 --s2k-digest-algo SHA512 --s2k-count 65011712 --compress-algo none --output - 3< <(printf '%s' "$BACKUP_PASSPHRASE"); }
 gpg_dec() { gpg --batch --quiet --no-tty --pinentry-mode loopback --passphrase-fd 3 --decrypt --output - "$1" 3< <(printf '%s' "$BACKUP_PASSPHRASE") 2>/dev/null; }
@@ -131,7 +131,7 @@ make_backup() {
   local ts work out
   ts="$(date -u +%Y%m%d-%H%M%S)"
   work="${BACKUP_DIR:?}/.work"
-  rm -rf "${BACKUP_DIR:?}/.work"; mkdir -p -m 700 "$work" # (un intento anterior interrumpido deja restos aquí)
+  rm -rf "${BACKUP_DIR:?}/.work"; mkdir -p "$work" && chmod 700 "$work" # (un intento anterior interrumpido deja restos aquí)
   # Cada parte se cifra mientras se escribe: en el disco nunca queda en claro (INF-11).
   log "Respaldo $ts: bases de datos"
   for db in $DATABASES; do
