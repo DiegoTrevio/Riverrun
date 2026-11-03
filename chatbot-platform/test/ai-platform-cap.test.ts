@@ -120,3 +120,22 @@ t('un plan sin su propio tope lleva el de por omisión (PLAN_DEFAULT_AI_USD); co
     await pool.query(`UPDATE accounts SET plan = '' WHERE id = $1`, [h.accountId]);
   }
 });
+
+t('PAY-6: una cuenta sin cupo no transcribe audios ni empieza pedidos al Copiloto', async () => {
+  await pool.query(`UPDATE accounts SET status = 'active', plan = '' WHERE id = $1`, [h.accountId]);
+  assert.equal((await h.authed('PUT', `/api/accounts/${h.accountId}`, { ai_usd_override: 0.5, copilot_enabled: true })).statusCode, 200);
+  await h.addUser({ account_id: h.accountId, email: 'duena@sin-cupo.mx', name: 'Dueña', password: PASS, role: 'admin' });
+  const owner = await h.loginAs('duena@sin-cupo.mx', PASS);
+  const thread = (await owner('POST', '/api/copilot/threads', {})).json().id as string;
+  try {
+    await spend(0.45); // 90 % del tope: el Copiloto ya no empieza (no deja sin IA al agente)
+    const r = await owner('POST', `/api/copilot/threads/${thread}/messages`, { text: 'Hola' });
+    assert.equal(r.statusCode, 409, r.body);
+    assert.match(r.json().error, /presupuesto de IA/);
+    await spend(0.1);
+    await assert.rejects(accountAi(h.ai, h.accountId, h.botId, 'transcription').transcribe(Buffer.alloc(4000), 'audio/ogg', 2), (e: any) => e instanceof AiBudgetBlocked && e.code === 'platform_cap');
+  } finally {
+    await pool.query(`DELETE FROM ai_spend WHERE account_id = $1`, [h.accountId]);
+    assert.equal((await h.authed('PUT', `/api/accounts/${h.accountId}`, { ai_usd_override: null })).statusCode, 200);
+  }
+});
