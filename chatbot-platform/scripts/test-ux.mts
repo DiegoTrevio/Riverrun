@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import { chromium } from 'playwright';
 import { createHarness, pool, waitFor, evo, ext, zer } from '../test/harness.js';
 import { seedUxFixture } from './ux-fixture.mts';
+const store = await import('../src/store/index.js');
 
 assert.ok(process.env.TEST_DATABASE_URL, 'Define TEST_DATABASE_URL para una base de pruebas aislada; el arnés reinicia public.');
 const axe = fs.readFileSync(createRequire(import.meta.url).resolve('axe-core/axe.min.js'), 'utf8');
@@ -298,8 +299,10 @@ try {
   let setups = 0;
   await page.route(`**/api/channels/${telegram.id}/setup`, async (route) => {
     setups++;
+    // INF-7: en la base va cifrado; el almacén lo entrega en claro.
     const stored = (await pool.query("SELECT config->>'bot_token' AS token FROM channels WHERE id = $1", [telegram.id])).rows[0];
-    assert.equal(stored.token, 'TOKEN_FICTICIO_UX');
+    assert.match(stored.token, /^v[12]\./, 'el token se guarda cifrado');
+    assert.equal((await store.getChannel(telegram.id))!.config.bot_token, 'TOKEN_FICTICIO_UX');
     await new Promise((resolve) => setTimeout(resolve, 200));
     await route.fulfill({ json: { ok: true, message: 'Conexión simulada verificada' } });
   });
