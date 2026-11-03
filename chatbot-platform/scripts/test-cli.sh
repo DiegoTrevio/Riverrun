@@ -397,6 +397,11 @@ cp .env .env.keep
 printf 'DOMAIN=pms.ejemplo.mx\nEVOLUTION_IMAGE=evoapicloud/evolution-api:v2.3.7@sha256:abc\nSMTP_URL=smtp://avisos:clave@smtp.ejemplo.mx:587\nSUPERADMIN_EMAIL=dueno@ejemplo.mx\nHEARTBEAT_URL=https://hc-ping.com/0000\n' >> .env; chmod 600 .env
 grep -Eq "^HEALTH_TOKEN=.{16,}$" .env || { echo "ERROR: el .env de prueba no tiene HEALTH_TOKEN"; exit 1; }
 export RIVERRUN_PREFLIGHT_MEM_KB=2097152 RIVERRUN_PREFLIGHT_DISK_KB=20971520 RIVERRUN_PREFLIGHT_CPUS=2
+# Sin ./riverrun harden, preflight lo avisa; con su marca, no.
+mkdir -p "$work/pfetc"; export RIVERRUN_PREFLIGHT_ETC="$work/pfetc"
+set +e; ./riverrun preflight --offline > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" == 0 ]] && grep -q "no se ha endurecido: sudo ./riverrun harden" "$work/out" || { cat "$work/out"; echo "ERROR: preflight no avisó que falta harden"; exit 1; }
+echo "harden 2026-11-03T00:00:00Z" > "$work/pfetc/riverrun-harden"
 set +e; ./riverrun preflight --offline > "$work/out" 2>&1; rc=$?; set -e
 [[ "$rc" == 0 ]] && grep -q "SIN BLOQUEOS EN LO REVISADO" "$work/out" && grep -q "No verificado: último respaldo" "$work/out" && grep -q "Envíos reales habilitados" "$work/out" || { cat "$work/out"; echo "ERROR: con todo en orden debía pasar sin bloqueos"; exit 1; }
 ! grep -q "APROBADO\." "$work/out" || { echo "ERROR: no debe afirmar aprobación completa con comprobaciones sin verificar"; exit 1; }
@@ -518,5 +523,76 @@ printf 'ID=fedora\nVERSION_CODENAME=\n' > "$dk/etc/os-release"
 set +e; "${dkenv[@]}" ./riverrun install-docker > "$work/out" 2>&1; rc=$?; set -e
 [[ "$rc" != 0 ]] && grep -q "docs.docker.com/engine/install" "$work/out" || { cat "$work/out"; echo "ERROR: en otro sistema debía mandar a la guía"; exit 1; }
 ! grep -q "get.docker.com" "$here/riverrun" || { echo "ERROR: riverrun aún menciona get.docker.com"; exit 1; }
+
+echo "== INF-12: las llaves no se imprimen solas; ./riverrun keys las da solo a una terminal (o con --stdout)"
+set +e; ./riverrun keys > "$work/out" 2>&1; rc=$?; set -e
+bp="$(sed -n 's/^DATA_KEY=//p' .env | tail -n 1)"
+[[ "$rc" != 0 && -n "$bp" ]] && ! grep -qF "$bp" "$work/out" && grep -q "no es una terminal" "$work/out" || { cat "$work/out"; echo "ERROR: keys escribió las llaves fuera de una terminal"; exit 1; }
+./riverrun keys --stdout > "$work/out" 2>&1 && grep -qF "  DATA_KEY=$bp" "$work/out" || { cat "$work/out"; echo "ERROR: keys --stdout no mostró las llaves"; exit 1; }
+! grep -Eq 'say .*(BACKUP_PASSPHRASE|SESSION_SECRET|DATA_KEY)=\$\(env_get' "$here/riverrun" || { echo "ERROR: el instalador todavía imprime llaves"; exit 1; }
+# install --no-start sin terminal: la contraseña generada no sale en la salida.
+ins="$work/ins"; mkdir -p "$ins"; cp "$here/riverrun" "$here/.env.example" "$ins/"
+(cd "$ins" && RIVERRUN_ADMIN_EMAIL=dueno@ejemplo.mx ./riverrun install --non-interactive --no-start > "$work/out" 2>&1) || { cat "$work/out"; echo "ERROR: install --no-start falló"; exit 1; }
+ap="$(sed -n 's/^ADMIN_PASSWORD=//p' "$ins/.env" | tail -n 1)"
+[[ -n "$ap" ]] && ! grep -qF "$ap" "$work/out" && grep -q "no se muestra" "$work/out" || { cat "$work/out"; echo "ERROR: install imprimió la contraseña sin terminal"; exit 1; }
+! grep -qF "$(sed -n 's/^SESSION_SECRET=//p' "$ins/.env" | tail -n 1)" "$work/out" || { echo "ERROR: install imprimió SESSION_SECRET"; exit 1; }
+
+echo "== harden: actualizaciones, fail2ban, SSH solo con llave y firewall que también cubre a Docker"
+hd="$work/harden"; mkdir -p "$hd/bin" "$hd/root/etc/ssh" "$hd/root/etc/ufw" "$hd/root/root/.ssh"
+HLOG="$hd/log"; export HLOG; : > "$HLOG"
+printf 'ID=debian\nVERSION_CODENAME=bookworm\n' > "$hd/root/etc/os-release"
+printf 'Include /etc/ssh/sshd_config.d/*.conf\nPort 2222\n' > "$hd/root/etc/ssh/sshd_config"
+printf '*filter\n:ufw-after-input - [0:0]\nCOMMIT\n' > "$hd/root/etc/ufw/after.rules"; cp "$hd/root/etc/ufw/after.rules" "$hd/root/etc/ufw/after6.rules"
+for c in apt-get systemctl ufw; do printf '#!/usr/bin/env bash\necho "%s $*" >> "$HLOG"\n' "$c" > "$hd/bin/$c"; done
+cat > "$hd/bin/sshd" <<'SHIM'
+#!/usr/bin/env bash
+echo "sshd $*" >> "$HLOG"
+[[ "$1" == "-t" && -n "${FAKE_SSHD_BAD:-}" ]] && exit 1
+[[ "$1" == "-T" ]] && { echo "port 2222"; echo "passwordauthentication ${FAKE_PWAUTH:-no}"; }
+exit 0
+SHIM
+chmod +x "$hd/bin/"*
+hdenv=(env PATH="$hd/bin:$PATH" RIVERRUN_TEST=1 RIVERRUN_ROOT="$hd/root")
+cp .env .env.harden; printf 'COMPOSE_PROFILES=https\n' >> .env
+# Sin terminal y sin --yes: no hace nada.
+set +e; "${hdenv[@]}" ./riverrun harden > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" != 0 ]] && grep -q "confirma con --yes" "$work/out" && ! grep -Eq "^(apt-get|ufw|systemctl)" "$HLOG" || { cat "$work/out"; echo "ERROR: harden sin confirmar cambió algo"; exit 1; }
+# Sin llave autorizada: SSH se deja como está (no deja a nadie fuera); el resto sí se aplica.
+"${hdenv[@]}" ./riverrun harden --yes > "$work/out" 2>&1 || { cat "$work/out"; echo "ERROR: harden falló"; exit 1; }
+[[ ! -e "$hd/root/etc/ssh/sshd_config.d/01-riverrun.conf" ]] && grep -q "te dejaría fuera" "$work/out" || { cat "$work/out"; echo "ERROR: apagó contraseñas sin llave autorizada"; exit 1; }
+grep -q 'Unattended-Upgrade "1"' "$hd/root/etc/apt/apt.conf.d/20auto-upgrades" || { echo "ERROR: sin actualizaciones automáticas"; exit 1; }
+grep -q "^port = 2222$" "$hd/root/etc/fail2ban/jail.d/riverrun.local" || { echo "ERROR: fail2ban no vigila el puerto real de SSH"; exit 1; }
+grep -q "ufw limit 2222/tcp" "$HLOG" && grep -q "ufw allow 80/tcp" "$HLOG" && grep -q "ufw allow 443/tcp" "$HLOG" && grep -q "ufw default deny incoming" "$HLOG" && grep -q "ufw --force enable" "$HLOG" || { cat "$HLOG"; echo "ERROR: firewall incompleto"; exit 1; }
+# SSH se permite antes de encender el firewall.
+[[ "$(grep -n "ufw limit 2222" "$HLOG" | cut -d: -f1)" -lt "$(grep -n "ufw --force enable" "$HLOG" | cut -d: -f1)" ]] || { echo "ERROR: encendió el firewall antes de permitir SSH"; exit 1; }
+grep -q -- "-A DOCKER-USER -p tcp -m conntrack --ctorigdstport 443 --ctdir ORIGINAL -j RETURN" "$hd/root/etc/ufw/after.rules" && grep -q -- "-A DOCKER-USER -m conntrack --ctstate NEW -j DROP" "$hd/root/etc/ufw/after.rules" && grep -q ":ufw-after-input" "$hd/root/etc/ufw/after.rules" || { cat "$hd/root/etc/ufw/after.rules"; echo "ERROR: DOCKER-USER no cierra lo que publica Docker"; exit 1; }
+! grep -q -- "--ctorigdstport 3000" "$hd/root/etc/ufw/after.rules" || { echo "ERROR: abrió el panel hacia afuera"; exit 1; }
+grep -q -- "-s fc00::/7 -j RETURN" "$hd/root/etc/ufw/after6.rules" || { echo "ERROR: falta IPv6"; exit 1; }
+[[ -f "$hd/root/etc/riverrun-harden" ]] || { echo "ERROR: no dejó su marca"; exit 1; }
+# Con llave: SSH solo con llave; repetir no duplica el bloque; un puerto extra se agrega.
+echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample dueno@laptop" > "$hd/root/root/.ssh/authorized_keys"
+: > "$HLOG"
+"${hdenv[@]}" HARDEN_ALLOW_PORTS=8443 ./riverrun harden --yes > "$work/out" 2>&1 || { cat "$work/out"; echo "ERROR: harden con llave falló"; exit 1; }
+grep -q "^PasswordAuthentication no$" "$hd/root/etc/ssh/sshd_config.d/01-riverrun.conf" && grep -q "^PermitRootLogin prohibit-password$" "$hd/root/etc/ssh/sshd_config.d/01-riverrun.conf" && grep -q "SSH solo con llave" "$work/out" || { cat "$work/out"; echo "ERROR: SSH no quedó solo con llave"; exit 1; }
+grep -q "sshd -t" "$HLOG" && grep -q "systemctl reload ssh" "$HLOG" || { cat "$HLOG"; echo "ERROR: no validó ni recargó SSH"; exit 1; }
+[[ "$(grep -c "BEGIN riverrun DOCKER-USER" "$hd/root/etc/ufw/after.rules")" == 1 ]] && grep -q -- "--ctorigdstport 8443" "$hd/root/etc/ufw/after.rules" && grep -q "ufw allow 8443/tcp" "$HLOG" || { cat "$hd/root/etc/ufw/after.rules"; echo "ERROR: el bloque se duplicó o falta el puerto extra"; exit 1; }
+# Otro archivo vuelve a encender las contraseñas: se avisa, no se afirma.
+"${hdenv[@]}" FAKE_PWAUTH=yes ./riverrun harden --yes --skip-firewall > "$work/out" 2>&1 && grep -q "sigue aceptando contraseñas" "$work/out" || { cat "$work/out"; echo "ERROR: debía avisar que SSH sigue con contraseñas"; exit 1; }
+# Una configuración que sshd rechaza: se quita y no se recarga.
+: > "$HLOG"
+set +e; "${hdenv[@]}" FAKE_SSHD_BAD=1 ./riverrun harden --yes --skip-firewall > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" != 0 && ! -e "$hd/root/etc/ssh/sshd_config.d/01-riverrun.conf" ]] && ! grep -q "reload ssh" "$HLOG" || { cat "$work/out"; echo "ERROR: dejó una configuración de SSH inválida"; exit 1; }
+# Puerto inválido y otro sistema: no se toca nada.
+set +e; "${hdenv[@]}" HARDEN_ALLOW_PORTS="80;rm" ./riverrun harden --yes > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" != 0 ]] && grep -q "no es un puerto" "$work/out" || { cat "$work/out"; echo "ERROR: aceptó un puerto inválido"; exit 1; }
+printf 'ID=fedora\n' > "$hd/root/etc/os-release"
+set +e; "${hdenv[@]}" ./riverrun harden --yes > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" != 0 ]] && grep -q "solo conoce Debian y Ubuntu" "$work/out" || { cat "$work/out"; echo "ERROR: harden en otro sistema"; exit 1; }
+if [[ "$(id -u)" != 0 ]]; then
+  set +e; env PATH="$hd/bin:$PATH" RIVERRUN_ROOT="$hd/root" ./riverrun harden --yes > "$work/out" 2>&1; rc=$?; set -e
+  [[ "$rc" != 0 ]] && grep -q "requiere root" "$work/out" || { cat "$work/out"; echo "ERROR: RIVERRUN_ROOT sin RIVERRUN_TEST saltó el root"; exit 1; }
+fi
+mv .env.harden .env
+./riverrun help | grep -q "harden" || { echo "ERROR: la ayuda no menciona harden"; exit 1; }
 
 echo "OK: el flujo de actualización funciona"

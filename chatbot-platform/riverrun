@@ -16,6 +16,9 @@
 #   ./riverrun rotate-data-key cambia DATA_KEY, la llave de los datos cifrados (respaldo antes; nada se desconecta)
 #   ./riverrun db-roles    un usuario de PostgreSQL por servicio (lo hacen solos install, update y restore)
 #   ./riverrun admin-password [correo]   recupera el acceso del superadministrador: contraseña nueva y sesiones cerradas
+#   ./riverrun keys        muestra las llaves que hay que guardar fuera del servidor (solo en una terminal; --stdout)
+#   sudo ./riverrun harden firewall (también para lo que publica Docker), SSH solo con llave, fail2ban y actualizaciones
+#                          automáticas (Debian/Ubuntu; --yes, --skip-firewall, --skip-ssh; HARDEN_ALLOW_PORTS="8080,…")
 #
 # Opciones de update: --no-backup  --accept-db-image-change  --accept-evolution-change (confirma sin preguntar)
 #   --skip-ci-check (solo emergencias: aplica aunque el CI de GitHub no esté en verde)
@@ -365,6 +368,154 @@ cmd_install_docker() {
   ok "Docker instalado desde download.docker.com (llave verificada)"
 }
 
+# ------------------------------------------------------------------ servidor (etapa 9)
+# Endurece el servidor (Debian/Ubuntu, root): actualizaciones de seguridad automáticas, fail2ban para SSH, SSH solo con
+# llave (si ya hay una llave autorizada: nunca deja a nadie fuera) y firewall que también frena lo que Docker publica
+# (DOCKER-USER, que ufw no ve). Se puede repetir: reescribe sus propios archivos y nada más.
+HARDEN_BEGIN="# BEGIN riverrun DOCKER-USER (./riverrun harden)"
+HARDEN_END="# END riverrun DOCKER-USER"
+
+# Bloque para after.rules / after6.rules: de afuera solo entra a los contenedores lo publicado a propósito (80/443 y
+# HARDEN_ALLOW_PORTS); lo que sale de los contenedores y las respuestas siguen igual.
+harden_docker_rules() { # $1 = 4|6, $2… = puertos tcp
+  local v="$1" p nets; shift
+  if [[ "$v" == 6 ]]; then nets="fc00::/7 fe80::/10"; else nets="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16"; fi
+  printf '%s\n*filter\n:DOCKER-USER - [0:0]\n' "$HARDEN_BEGIN"
+  printf '%s\n' "-A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN"
+  for p in $nets; do printf '%s\n' "-A DOCKER-USER -s $p -j RETURN"; done
+  for p in "$@"; do printf '%s\n' "-A DOCKER-USER -p tcp -m conntrack --ctorigdstport $p --ctdir ORIGINAL -j RETURN"; done
+  [[ " $* " == *" 443 "* ]] && printf '%s\n' "-A DOCKER-USER -p udp -m conntrack --ctorigdstport 443 --ctdir ORIGINAL -j RETURN"
+  printf '%s\n' "-A DOCKER-USER -m conntrack --ctstate NEW -j DROP" "-A DOCKER-USER -j RETURN" "COMMIT" "$HARDEN_END"
+}
+
+# Reemplaza (o agrega) el bloque de riverrun en un archivo de reglas de ufw, sin tocar lo demás.
+harden_put_block() { # archivo contenido
+  local f="$1" block="$2" tmp
+  [[ -f "$f" ]] || return 0
+  tmp="$(mktemp)"
+  B1="$HARDEN_BEGIN" B2="$HARDEN_END" awk '$0 == ENVIRON["B1"] { skip = 1 } !skip { print } $0 == ENVIRON["B2"] { skip = 0 }' "$f" > "$tmp"
+  printf '%s\n' "$block" >> "$tmp"
+  cat "$tmp" > "$f"; rm -f "$tmp"
+}
+
+# ¿Alguien puede entrar por SSH con llave? Sin eso, apagar las contraseñas dejaría el servidor sin acceso.
+harden_has_ssh_key() { # raíz del sistema
+  local root="$1" f
+  for f in "$root"/root/.ssh/authorized_keys "$root"/home/*/.ssh/authorized_keys; do
+    [[ -f "$f" ]] && grep -Eq '^[[:space:]]*(ssh-|ecdsa-|sk-)' "$f" && return 0
+  done
+  return 1
+}
+
+cmd_harden() {
+  local yes=0 fw=1 ssh=1 a
+  for a in "$@"; do
+    case "$a" in
+      --yes) yes=1 ;;
+      --skip-firewall) fw=0 ;;
+      --skip-ssh) ssh=0 ;;
+      *) die "Opción desconocida: $a (uso: sudo ./riverrun harden [--yes] [--skip-firewall] [--skip-ssh])" ;;
+    esac
+  done
+  local root=""
+  if [[ "${RIVERRUN_TEST:-}" == "1" && -n "${RIVERRUN_ROOT:-}" ]]; then root="$RIVERRUN_ROOT"
+  else [[ "$(id -u)" == "0" ]] || die "Endurecer el servidor requiere root (sudo ./riverrun harden)"; fi
+  local etc="$root/etc"
+  [[ -r "$etc/os-release" ]] || die "No se reconoce el sistema: harden solo conoce Debian y Ubuntu."
+  local id like
+  id="$(sed -n 's/^ID=//p' "$etc/os-release" | tr -d '"' | head -n 1)"; like="$(sed -n 's/^ID_LIKE=//p' "$etc/os-release" | tr -d '"' | head -n 1)"
+  [[ "$id" == debian || "$id" == ubuntu || " $like " == *" debian "* || " $like " == *" ubuntu "* ]] || die "harden solo conoce Debian y Ubuntu ($id): endurece este servidor a mano (docs/produccion.md)."
+
+  # Puerto de SSH real (puede no ser el 22) y lo que se publica: 80/443 con dominio, más HARDEN_ALLOW_PORTS.
+  local sshp; sshp="$(sshd -T 2>/dev/null | awk '$1 == "port" { print $2; exit }' || true)"
+  [[ "$sshp" =~ ^[0-9]+$ ]] || sshp=22
+  local ports=() p extra
+  [[ "$(env_get COMPOSE_PROFILES)" == *https* ]] && ports+=(80 443)
+  extra="${HARDEN_ALLOW_PORTS:-$(env_get HARDEN_ALLOW_PORTS)}"
+  for p in ${extra//,/ }; do
+    [[ "$p" =~ ^[0-9]{1,5}$ ]] && (( p > 0 && p < 65536 )) || die "HARDEN_ALLOW_PORTS: «$p» no es un puerto."
+    ports+=("$p")
+  done
+  local keyok=0; harden_has_ssh_key "$root" && keyok=1
+
+  say "${B}Endurecer el servidor${N}"
+  say "  · Actualizaciones de seguridad automáticas (unattended-upgrades)."
+  say "  · fail2ban: bloquea una hora las IP que fallan 5 veces al entrar por SSH (puerto $sshp)."
+  if (( ssh && keyok )); then say "  · SSH solo con llave: sin contraseñas, root solo con llave, 3 intentos por conexión."
+  elif (( ssh )); then warn "  · SSH: se deja como está. No hay ninguna llave en authorized_keys: apagar las contraseñas te dejaría fuera."
+  fi
+  if (( fw )); then
+    say "  · Firewall (ufw): entra solo SSH ($sshp, con límite de intentos)${ports[*]:+ y ${ports[*]}}; también para lo que Docker publica."
+  fi
+  if (( ! yes )); then
+    [[ -t 0 ]] || die "Sin terminal: confirma con --yes."
+    local sure=""; read -r -p "¿Aplicar? Mantén abierta esta sesión de SSH y prueba entrar desde otra antes de cerrarla (s/n): " sure || true
+    [[ "$sure" =~ ^[sSyY] ]] || die "Cancelado: no se cambió nada."
+  fi
+
+  apt-get update -qq
+  local pkgs=(unattended-upgrades fail2ban python3-systemd)
+  (( fw )) && pkgs+=(ufw)
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${pkgs[@]}"
+
+  install -d -m 0755 "$etc/apt/apt.conf.d" "$etc/fail2ban/jail.d"
+  printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' > "$etc/apt/apt.conf.d/20auto-upgrades"
+  ok "Actualizaciones de seguridad automáticas"
+
+  printf '[sshd]\nenabled = true\nport = %s\nbackend = systemd\nmaxretry = 5\nfindtime = 10m\nbantime = 1h\n' "$sshp" > "$etc/fail2ban/jail.d/riverrun.local"
+  systemctl enable --now fail2ban >/dev/null 2>&1 || true
+  systemctl restart fail2ban || warn "fail2ban no arrancó: revisa con systemctl status fail2ban"
+  ok "fail2ban vigila SSH"
+
+  if (( ssh && keyok )); then
+    local conf="$etc/ssh/sshd_config.d/01-riverrun.conf"
+    # Va primero (01-…): en sshd gana el primer valor, y un 50-cloud-init.conf suele volver a encender las contraseñas.
+    grep -Eqi '^[[:space:]]*Include[[:space:]].*sshd_config\.d' "$etc/ssh/sshd_config" 2>/dev/null \
+      || warn "sshd_config no incluye sshd_config.d: agrega «Include /etc/ssh/sshd_config.d/*.conf» al principio para que esto aplique."
+    install -d -m 0755 "$etc/ssh/sshd_config.d"
+    printf '# ./riverrun harden: SSH solo con llave.\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPermitRootLogin prohibit-password\nMaxAuthTries 3\n' > "$conf"
+    if ! sshd -t; then rm -f "$conf"; die "La configuración de SSH no es válida: no se aplicó (SSH sigue como estaba)."; fi
+    systemctl reload ssh 2>/dev/null || systemctl reload sshd || warn "No se pudo recargar SSH: aplica al reiniciar el servicio."
+    if sshd -T 2>/dev/null | grep -qi '^passwordauthentication yes'; then
+      warn "SSH sigue aceptando contraseñas: otro archivo lo define antes. Revisa /etc/ssh/sshd_config y sshd_config.d."
+    else ok "SSH solo con llave"; fi
+  fi
+
+  if (( fw )); then
+    # ufw no ve lo que Docker publica (sus reglas van antes): las de DOCKER-USER sí.
+    harden_put_block "$etc/ufw/after.rules" "$(harden_docker_rules 4 "${ports[@]}")"
+    harden_put_block "$etc/ufw/after6.rules" "$(harden_docker_rules 6 "${ports[@]}")"
+    ufw default deny incoming >/dev/null
+    ufw default allow outgoing >/dev/null
+    ufw limit "$sshp/tcp" >/dev/null
+    for p in "${ports[@]}"; do ufw allow "$p/tcp" >/dev/null; done
+    [[ " ${ports[*]} " == *" 443 "* ]] && ufw allow 443/udp >/dev/null
+    ufw --force enable >/dev/null
+    ufw reload >/dev/null
+    ok "Firewall activo: entra SSH ($sshp)${ports[*]:+ y ${ports[*]}}; lo demás que Docker publique queda cerrado hacia afuera"
+  fi
+  printf 'harden %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$etc/riverrun-harden"
+  say; ok "Servidor endurecido. Antes de cerrar esta sesión, prueba entrar por SSH desde otra terminal."
+}
+
+# ------------------------------------------------------------------ llaves (INF-12)
+# Las llaves que hay que guardar fuera del servidor. No se imprimen en la instalación (quedarían en el historial de la
+# terminal o en los registros de quien la automatice): se piden aquí, a propósito.
+cmd_keys() {
+  local out=0 a
+  for a in "$@"; do case "$a" in --stdout) out=1 ;; *) die "Opción desconocida: $a (uso: ./riverrun keys [--stdout])" ;; esac; done
+  [[ -f "$ENV_FILE" ]] || die "No hay .env: primero ./riverrun install"
+  [[ -t 1 || "$out" == 1 ]] || die "La salida no es una terminal: las llaves no se escriben en archivos ni registros. Si de verdad quieres eso, usa --stdout."
+  say "${B}Guarda esto fuera del servidor (gestor de contraseñas) y limpia la pantalla después (clear):${N}"
+  local k v
+  for k in BACKUP_PASSPHRASE SESSION_SECRET DATA_KEY DATA_KEYS_OLD; do
+    v="$(env_get "$k")"; [[ -n "$v" ]] && say "  $k=$v"
+  done
+  say "Sin BACKUP_PASSPHRASE no se pueden restaurar los respaldos; sin DATA_KEY (y DATA_KEYS_OLD), lo cifrado en la base"
+  say "(2FA, calendarios, credenciales de canales) no se puede leer al restaurar en otro servidor."
+  return 0
+}
+
 cmd_install() {
   INTERACTIVE=1; START=1
   for a in "$@"; do case "$a" in --non-interactive) INTERACTIVE=0 ;; --no-start) START=0 ;; *) die "Opción desconocida: $a" ;; esac; done
@@ -462,7 +613,8 @@ cmd_install() {
 
   if (( ! START )); then
     say; ok "Listo (sin iniciar: usaste --no-start). Para arrancar: ./riverrun restart"
-    if [[ -n "$shown" ]]; then say "  Contraseña generada del administrador: ${B}$shown${N}"; fi
+    if [[ -n "$shown" && -t 1 ]]; then say "  Contraseña generada del administrador: ${B}$shown${N}"
+    elif [[ -n "$shown" ]]; then say "  Contraseña generada del administrador: en .env (ADMIN_PASSWORD); no se muestra porque la salida no es una terminal."; fi
     return 0
   fi
 
@@ -490,13 +642,13 @@ cmd_install() {
   say; say "${B}Todo listo.${N}"
   say "  Panel:      $(app_url)"
   say "  Usuario:    $email"
-  if [[ -n "$shown" ]]; then say "  Contraseña: ${B}$shown${N}  (cámbiala en el panel → Mi perfil)"
+  if [[ -n "$shown" && -t 1 ]]; then say "  Contraseña: ${B}$shown${N}  (cámbiala en el panel → Mi perfil)"
+  elif [[ -n "$shown" ]]; then say "  Contraseña: no se muestra (la salida no es una terminal). Crea una con ./riverrun admin-password"
   else say "  Contraseña: la que ya tenías (¿sin acceso? ./riverrun admin-password crea una nueva)"; fi
   say
-  say "${B}Guarda esto fuera del servidor (gestor de contraseñas):${N}"
-  say "  BACKUP_PASSPHRASE=$(env_get BACKUP_PASSPHRASE)"
-  say "  SESSION_SECRET=$(env_get SESSION_SECRET)"
-  say "  Sin la primera no se pueden restaurar los respaldos; sin la segunda, al restaurar en otro servidor hay que volver a conectar Google Calendar."
+  say "${B}Guarda las llaves fuera del servidor${N} (gestor de contraseñas): ./riverrun keys las muestra."
+  say "  Sin ellas no se pueden restaurar los respaldos ni leer lo cifrado en otro servidor."
+  say "${B}Endurece el servidor${N} (firewall, SSH solo con llave, fail2ban, actualizaciones): sudo ./riverrun harden"
   say
   [[ "$(app_url)" == http://127.0.0.1* ]] && say "Para abrir el panel desde tu computadora: ssh -L 3000:127.0.0.1:3000 usuario@este-servidor  →  http://localhost:3000"
   [[ -n "$domain" ]] && say "Recuerda abrir los puertos 80 y 443 del servidor y apuntar $domain a esta IP."
@@ -1028,6 +1180,8 @@ cmd_preflight() {
   else pf_warn "Sin HEARTBEAT_URL: si el servidor completo se cae, nadie avisa (crea un chequeo en healthchecks.io)."; fi
   local pb; pb="$(panel_bind_warning)"
   if [[ -n "$pb" ]]; then pf_warn "$pb"; else pf_ok "El panel solo escucha en el propio servidor (PANEL_BIND)"; fi
+  if [[ -f "${RIVERRUN_PREFLIGHT_ETC:-/etc}/riverrun-harden" ]]; then pf_ok "Servidor endurecido (./riverrun harden)"
+  else pf_warn "El servidor no se ha endurecido: sudo ./riverrun harden (firewall, SSH solo con llave, fail2ban, actualizaciones)."; fi
   if [[ -n "$(env_get HEALTH_TOKEN)" ]]; then pf_ok "HEALTH_TOKEN definido (/health/functional y /metrics activos)"
   else pf_warn "HEALTH_TOKEN vacío: /health/functional y /metrics no existen. Lo genera ./riverrun update."; fi
 
@@ -1070,6 +1224,8 @@ case "${1:-help}" in
   rotate-data-key) cmd_rotate_data_key ;;
   db-roles) cmd_db_roles ;;
   admin-password) shift; cmd_admin_password "$@" ;;
+  keys) shift; cmd_keys "$@" ;;
+  harden) shift; cmd_harden "$@" ;;
   preflight) shift; cmd_preflight "$@" ;;
   semantic) shift; cmd_semantic "$@" ;;
   help|-h|--help) usage ;;

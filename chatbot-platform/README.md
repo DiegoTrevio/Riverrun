@@ -93,7 +93,7 @@ git clone <este repo> && cd Riverrun/chatbot-platform
 ./riverrun install
 ```
 
-El instalador hace las preguntas mínimas (dominio, tu correo y la clave de OpenRouter), **genera solo todas las contraseñas y claves**, levanta los servicios, espera a que respondan y te imprime la dirección del panel, el usuario y la contraseña. También se puede instalar sin preguntas con variables (`RIVERRUN_DOMAIN`, `RIVERRUN_ADMIN_EMAIL`, `OPENROUTER_API_KEY`, `SMTP_URL`) y `--non-interactive`.
+El instalador hace las preguntas mínimas (dominio, tu correo y la clave de OpenRouter), **genera solo todas las contraseñas y claves**, levanta los servicios, espera a que respondan y te imprime la dirección del panel, el usuario y la contraseña (solo en una terminal). Las llaves que hay que guardar fuera del servidor no se imprimen solas: `./riverrun keys` las muestra. También se puede instalar sin preguntas con variables (`RIVERRUN_DOMAIN`, `RIVERRUN_ADMIN_EMAIL`, `OPENROUTER_API_KEY`, `SMTP_URL`) y `--non-interactive`.
 
 Un solo comando para todo lo que sigue:
 
@@ -106,6 +106,8 @@ Un solo comando para todo lo que sigue:
 | `./riverrun restore [archivo]` | Restaura el último respaldo, o un archivo (por ejemplo en un servidor nuevo) |
 | `./riverrun logs [servicio]` | Registros en vivo |
 | `./riverrun restart` | Aplica cambios hechos a `.env` (antes revisa que la configuración no tenga problemas críticos) |
+| `sudo ./riverrun harden` | Endurece el servidor (Debian/Ubuntu): firewall que también cubre lo que publica Docker, SSH solo con llave (si ya tienes una), fail2ban y actualizaciones de seguridad automáticas |
+| `./riverrun keys` | Muestra las llaves que hay que guardar fuera del servidor (`BACKUP_PASSPHRASE`, `SESSION_SECRET`, `DATA_KEY`) |
 | `./riverrun rotate-secret` | Cambia `SESSION_SECRET` (respaldo verificado antes, confirmación escrita; cierra sesiones y pide reconectar Google Calendar) |
 
 - Con dominio, `install` activa HTTPS automático (Caddy). Antes apunta el dominio (registro DNS tipo A) a la IP del servidor y abre los puertos 80 y 443. HTTPS es necesario para Telegram, Messenger, Instagram y el chat web.
