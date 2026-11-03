@@ -23,6 +23,7 @@ import { savePlatformSecret } from '../platform-secrets.js';
 import { countHit, ipLimitKey, limited, releaseHit } from '../identity/rate-limit.js';
 import { logEvent } from '../logs.js';
 import { parse } from './util.js';
+import { WEBHOOK_BODY_LIMIT } from './public.js';
 
 const PlanBody = z.object({
   key: z.string().regex(/^[a-z0-9_-]{1,40}$/, 'Clave: minúsculas, números, guion y guion bajo'),
@@ -104,7 +105,7 @@ export async function billingWebhooks(app: FastifyInstance) {
   });
 
   for (const name of Object.keys(providers) as ProviderName[]) {
-    app.post(`/webhook/billing/${name}`, async (req, reply) => {
+    app.post(`/webhook/billing/${name}`, { bodyLimit: WEBHOOK_BODY_LIMIT }, async (req, reply) => {
       const provider = providers[name];
       if (!provider.enabled()) return reply.code(404).send({ error: 'No configurado' });
       try {

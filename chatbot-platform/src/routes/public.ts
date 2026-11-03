@@ -1,5 +1,7 @@
 import { truncateChars } from '../engine/text.js';
-import { limited } from '../identity/rate-limit.js';
+import { ipLimitKey, limited } from '../identity/rate-limit.js';
+import net from 'node:net';
+import { isPrivateIp } from '../automation/automator.js';
 import { parsePayload } from '../automation/buttons.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -37,6 +39,36 @@ const ZERNIO_CONNECT_TTL_MS = 30 * 60_000;
 /** Consultas de mensajes por minuto y sesión del chat web (IN-22). Las pruebas que consultan muy seguido lo suben. */
 export const webchatLimits = { pollsPerMin: 120 };
 
+/** Tope del cuerpo de un webhook entrante (IN-3): los avisos de los proveedores son de unos KB; 10 MB (el general) no. */
+export const WEBHOOK_BODY_LIMIT = 1024 * 1024;
+const webhookRoute = { bodyLimit: WEBHOOK_BODY_LIMIT };
+/** Meta documenta avisos de hasta 3 MB (varios eventos juntos): uno más grande lo reintentaría hasta apagar el webhook. */
+export const META_WEBHOOK_BODY_LIMIT = 3 * 1024 * 1024;
+
+/**
+ * IN-2: con WEBHOOK_BASE_URL interna (en Docker, http://backend:3000), Evolution le habla al backend por la red interna,
+ * sin pasar por Caddy. Un aviso de WhatsApp que llega por el proxy (trae X-Forwarded-For) o desde una IP pública no viene
+ * de Evolution: con solo conocer el token de la URL se podrían inventar mensajes de cualquier cliente.
+ */
+export function internalWebhookBase(base = config.webhookBaseUrl): boolean {
+  try {
+    const host = new URL(base).hostname.replace(/^\[|\]$/g, '');
+    return host === 'localhost' || (net.isIP(host) ? isPrivateIp(host) : !host.includes('.'));
+  } catch {
+    return false;
+  }
+}
+const fromInternalNetwork = (req: FastifyRequest) =>
+  !req.headers['x-forwarded-for'] && !req.headers.forwarded && isPrivateIp(String(req.socket?.remoteAddress ?? ''));
+
+/** Un rechazo va a la bitácora, pero no más de 10 por minuto por conexión (IN-3): un ataque no la llena. */
+async function logRejected(req: FastifyRequest, kind: string, entry: Parameters<typeof logEvent>[0]) {
+  // Si la base no responde, no se registra (como antes con logEvent): la respuesta sigue siendo la del rechazo.
+  const over = await limited(ipLimitKey(`webhook-reject:${kind}`, req.ip), 10, 60_000).catch(() => true);
+  if (over) return;
+  await logEvent(entry);
+}
+
 export async function publicRoutes(app: FastifyInstance, service: ChatService) {
   /* ------------------------------ Webhooks ------------------------------ */
 
@@ -52,13 +84,18 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
   const handler = async (req: any, reply: FastifyReply) => {
     const channel = await store.getChannelByToken(req.params.token);
     if (!channel || channel.type === 'playground' || channel.type === 'webchat') {
-      await logEvent({ level: 'warn', source: 'webhook', message: 'Webhook con token inválido', details: { ip: req.ip } });
+      await logRejected(req, 'token', { level: 'warn', source: 'webhook', message: 'Webhook con token inválido', details: { ip: req.ip } });
+      return reply.code(404).send({ ok: false });
+    }
+    // Para quien llega de afuera, igual que un token que no existe: no confirma que el token sea de un WhatsApp.
+    if (channel.type === 'whatsapp' && internalWebhookBase() && !fromInternalNetwork(req)) {
+      await logRejected(req, 'external', { level: 'warn', source: 'webhook', message: 'WhatsApp: aviso desde fuera de la red interna; se rechaza (Evolution habla por la red interna)', accountId: channel.account_id, channelId: channel.id, details: { ip: req.ip } });
       return reply.code(404).send({ ok: false });
     }
     const adapter = adapterFor(channel.type);
     const webhookReq = { channel, headers: req.headers, query: req.query, body: req.body, rawBody: req.rawBody };
     if (adapter.verifyRequest && !adapter.verifyRequest(webhookReq)) {
-      await logEvent({ level: 'warn', source: 'webhook', message: `${adapter.label}: firma o secreto inválido; se rechaza`, accountId: channel.account_id, channelId: channel.id, details: { ip: req.ip } });
+      await logRejected(req, `sig:${channel.id}`, { level: 'warn', source: 'webhook', message: `${adapter.label}: firma o secreto inválido; se rechaza`, accountId: channel.account_id, channelId: channel.id, details: { ip: req.ip } });
       return reply.code(401).send({ ok: false });
     }
     // La recepción se guarda antes de responder; los workers de PostgreSQL la procesan.
@@ -90,17 +127,17 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
     if (adapter.acknowledge) void adapter.acknowledge(webhookReq).catch(() => undefined);
   };
   // Evolution puede agregar el nombre del evento al final de la URL (webhook_by_events); lo aceptamos.
-  app.post('/webhook/:token', handler);
-  app.post('/webhook/:token/:event', handler);
+  app.post('/webhook/:token', webhookRoute, handler);
+  app.post('/webhook/:token/:event', webhookRoute, handler);
 
   /**
    * Webhook único de Zernio para toda la plataforma. Firmado con el secreto derivado de la clave del servidor. Cada
    * evento se acepta una sola vez (por su id) y solo llega al canal del perfil que dice el evento; los mensajes se
    * guardan al momento y lo demás se procesa después (src/channels/zernio-events.ts).
    */
-  app.post('/zernio/events', async (req: any, reply) => {
+  app.post('/zernio/events', webhookRoute, async (req: any, reply) => {
     if (!verifySignature(req.headers, req.rawBody, [platformWebhookSecret()])) {
-      await logEvent({ level: 'warn', source: 'webhook', message: 'Zernio: firma inválida en el webhook de la plataforma; se rechaza', details: { ip: req.ip } });
+      await logRejected(req, 'zernio', { level: 'warn', source: 'webhook', message: 'Zernio: firma inválida en el webhook de la plataforma; se rechaza', details: { ip: req.ip } });
       return reply.code(401).send({ ok: false });
     }
     try {
@@ -135,9 +172,9 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
   });
 
   /** Mensajes de todas las páginas e Instagram conectados con el botón: cada evento va al canal de su página o cuenta. */
-  app.post('/meta/webhook', async (req: any, reply) => {
+  app.post('/meta/webhook', { bodyLimit: META_WEBHOOK_BODY_LIMIT }, async (req: any, reply) => {
     if (!verifyMetaSignature(req.headers['x-hub-signature-256'], req.rawBody)) {
-      await logEvent({ level: 'warn', source: 'webhook', message: 'Facebook: firma inválida en el webhook de la plataforma; se rechaza', details: { ip: req.ip } });
+      await logRejected(req, 'meta', { level: 'warn', source: 'webhook', message: 'Facebook: firma inválida en el webhook de la plataforma; se rechaza', details: { ip: req.ip } });
       return reply.code(401).send({ ok: false });
     }
     const object = String(req.body?.object ?? '');
