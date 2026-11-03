@@ -230,7 +230,11 @@ t('estadísticas: responde con los números del periodo', async () => {
 });
 
 t('horarios libres a partir de un día: solo de ese día en adelante, aunque esté a más de dos semanas', async () => {
-  const from = new Date(Date.now() + 20 * 86400_000).toLocaleDateString('en-CA', { timeZone: 'America/Mexico_City' });
+  // A 20 días o más, en un día entre semana: el negocio de la prueba no abre en fin de semana (si caía en domingo, fallaba).
+  let ahead = 20;
+  const weekday = (days: number) => new Date(Date.now() + days * 86400_000).toLocaleDateString('en-US', { timeZone: 'America/Mexico_City', weekday: 'short' });
+  while (['Sat', 'Sun'].includes(weekday(ahead))) ahead++;
+  const from = new Date(Date.now() + ahead * 86400_000).toLocaleDateString('en-CA', { timeZone: 'America/Mexico_City' });
   script([call('horarios_libres', { servicio_id: serviceId, desde: from }), 'Estos son.']);
   await ask(`¿Qué horarios hay a partir del ${from}?`);
   // La lista llega recortada para el modelo («… y N más» al final).
