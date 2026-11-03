@@ -22,7 +22,7 @@ Cada etapa es un PR con pruebas que fallan con el código anterior y pasan con e
 | 4. Abuso de entradas | Límites compartidos en la base, tamaños por ruta, firma del webhook de WhatsApp, adjuntos sin macros, PDF aislados, cuota de IA antes de transcribir (IN-2…IN-14, PAY-6) | 4′ ✅ (revisión del 31 de octubre: IN-17…IN-20, IN-22, IN-5, parte de IN-8…IN-14 y límites en la base); IN-2 e IN-3 ✅; IN-21 ✅ en la 6′; IN-6/7 ✅ en la 6″; PAY-6 ✅ en la 5″ |
 | 5. IA y Copiloto | Tarjetas de confirmación completas, costo de sub-llamados, notas de cotización, fuga de instrucciones (AI-5…AI-13) | 5′ ✅ (revisión del 31 de octubre: AI-14 y bajos de IA); 5″ ✅ (AI-5…AI-9 y PAY-6); AI-10…AI-13 sin descripción registrada: requieren una auditoría nueva |
 | 6. Secretos y datos | Claves separadas con rotación, credenciales de canales cifradas, retención en Evolution (INF-6…INF-8, INF-13) | 6′ ✅ (revisión del 31 de octubre: ZIP sin secretos, `HTTP_LOG` sin tokens, IN-21); 6″ ✅ (INF-6…INF-8, IN-6/7); INF-13 pendiente |
-| 7. Detección | Bitácora de seguridad, alertas, avisos al usuario | Pendiente |
+| 7. Detección | Bitácora de seguridad, alertas, avisos al usuario | ✅ Corregido (bitácora de seguridad, reglas con aviso al superadmin; los avisos al usuario ya estaban desde la 2a) |
 | 8. Contenedores | Roles de base de datos, Redis con clave, redes aisladas, límites, imágenes al día (INF-2, INF-3, INF-9, INF-10) | 8 ✅ (los altos: INF-2 e INF-3); INF-9 e INF-10 ✅ en la 6″ |
 | 9. Servidor | `./riverrun harden`: firewall (también `DOCKER-USER`), SSH con llave, fail2ban, actualizaciones automáticas, respaldos con cifrado autenticado (INF-11, INF-12) | 9′ ✅ (revisión del 31 de octubre: claves de ejemplo en producción); INF-11 ✅ en la 6″; `harden` e INF-12 pendientes |
 | 10. Cadena de suministro | Dependabot, versiones fijadas por SHA y digest, búsqueda de secretos, escaneos programados (INF-4, INF-15) | 10′ ✅ (revisión del 31 de octubre: Docker sin `curl \| sh`); INF-4 ✅ en la 6″; INF-15 pendiente |
@@ -326,6 +326,25 @@ IN-6/7 y PAY-6) sigue pendiente.
 - Almacenamiento: la cuota se revisa antes de guardar, sin candado: subidas simultáneas pueden pasarla por poco (a lo más 30 por hora).
 - Reservas: tres solicitudes pendientes con el correo de alguien le impiden reservar durante una hora; el tope de 20 por día por enlace cuenta cada solicitud.
 - Zernio: solo se juntan los avisos con el mismo cuerpo firmado; si Zernio reintentara con un cuerpo distinto, se procesaría dos veces.
+
+## Etapa 7: detección
+
+Hasta aquí nadie se enteraba si alguien probaba contraseñas, entraba como superadmin desde otro lado o se llevaba los
+datos: lo poco que quedaba estaba revuelto en la bitácora general, que se depura y se borra con la cuenta.
+
+| Qué | Cómo | Prueba |
+|---|---|---|
+| Bitácora de seguridad | `security_events` (migración 112), aparte de la bitácora general y sin llaves foráneas: se conserva `SECURITY_LOG_DAYS` (365) aunque la cuenta o la persona ya no existan. Anota: entradas al panel (con cómo y si pidió el código), contraseñas fallidas y accesos frenados por el límite, códigos de 2FA equivocados, cada aviso de seguridad que recibe una persona (contraseña, 2FA, dispositivo nuevo, rol, dueño, correo, retención), llaves de la API creadas o revocadas, cambio del secreto de los webhooks, descargas de datos (la cuenta en ZIP, los CSV, los datos de un contacto), contactos borrados y cuentas borradas. Lo que se escribe en el campo del correo y no es un correo no se guarda. Nunca rompe lo que se estaba haciendo. | `security-log.test.ts` |
+| Detección | Al anotar, unas reglas buscan lo que no es normal y avisan al superadmin por el canal de las alertas del sistema (correo y `ALERT_WEBHOOK_URL`), una vez por hora por regla y objetivo (aunque haya varios procesos): 20 contraseñas fallidas en 15 minutos desde una IP contra 5 o más correos (listas de contraseñas); 10 contra una persona (fuerza bruta); un superadmin que entra desde un dispositivo nuevo o cuyo 2FA se bloquea; 5 descargas de datos de una persona en una hora; 25 contactos borrados por una persona en una hora. Cada aviso también queda en la bitácora. | `security-log.test.ts` |
+| Quién la ve | El superadmin, toda (Sistema → Seguridad, con filtros y los avisos). Cada administrador, la de su cuenta (Ajustes → Actividad de seguridad): sin los avisos de la plataforma y sin la IP completa ni el navegador de otras personas. Los agentes, no. | `security-log.test.ts` |
+
+**Cambios que nota la gente:**
+- Sistema muestra la tarjeta «Seguridad» y Ajustes, «Actividad de seguridad».
+- Con `ALERT_WEBHOOK_URL` o `SUPERADMIN_EMAIL`, los avisos de seguridad llegan al momento (empiezan con 🔐).
+
+**Queda para después:**
+- Las reglas son umbrales fijos: no aprenden lo normal de cada cuenta.
+- No hay bloqueo automático de IP (el límite por IP ya frena los intentos; el aviso dice cuándo bloquearla en el firewall).
 
 ## Etapa 6″: los medios de secretos, datos, contenedores, respaldos y despliegue
 
