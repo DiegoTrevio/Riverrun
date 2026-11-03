@@ -94,7 +94,11 @@ declare module 'fastify' {
 }
 
 export async function buildApp(opts: { ai: AiProvider; transportFactory?: TransportFactory; logger?: boolean }) {
-  const app = Fastify({ logger: opts.logger ? httpLoggerOptions : false, bodyLimit: 10 * 1024 * 1024, trustProxy: (_addr: string, hop: number) => hop < config.trustProxyHops });
+  const app = Fastify({ logger: opts.logger ? httpLoggerOptions : false, bodyLimit: 10 * 1024 * 1024,
+    // IN-3: una petición tiene 5 minutos para llegar completa (antes, sin límite: conexiones lentas que nunca terminan).
+    // Alcanza para subir 8 MB a ~30 KB/s (una conexión móvil mala); solo cuenta la llegada, no la respuesta.
+    requestTimeout: 300_000,
+    trustProxy: (_addr: string, hop: number) => hop < config.trustProxyHops });
   const service = new ChatService(opts.ai, opts.transportFactory);
   // Llaves guardadas desde el panel (Zernio): disponibles desde el arranque y al día en todos los procesos.
   await loadPlatformSecrets();

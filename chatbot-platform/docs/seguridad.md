@@ -19,7 +19,7 @@ Cada etapa es un PR con pruebas que fallan con el código anterior y pasan con e
 | 3. Registro y cobros | Captcha → correo → 2FA → tarjeta, topes contra prueba de tarjetas (PAY-2), pruebas gratis por persona (PAY-3), sin IA en pausa (parte de PAY-6); disputas, plan del precio, códigos y cobros a clientes (PAY-4…PAY-16) | ✅ Corregido (3a registro, 3b cobros) |
 | 3b′. Cobros de la revisión del 31 de octubre | PAY-17…PAY-23 y bajos de cobros | ✅ Corregido |
 | 3c. Revisión del 31 de octubre | Los altos de [la revisión del 31 de octubre](revision-seguridad-2026-10-31.md): dos caídas del proceso, atajos para sacar o borrar datos, cobros del agente, la ficha en el Copiloto (IN-15, IN-16, ID-11…ID-14, AI-5 en parte) | ✅ Corregido |
-| 4. Abuso de entradas | Límites compartidos en la base, tamaños por ruta, firma del webhook de WhatsApp, adjuntos sin macros, PDF aislados, cuota de IA antes de transcribir (IN-2…IN-14, PAY-6) | 4′ ✅ (revisión del 31 de octubre: IN-17…IN-20, IN-22, IN-5, parte de IN-8…IN-14 y límites en la base); IN-2, IN-3, IN-6/7, IN-21 y PAY-6 pendientes |
+| 4. Abuso de entradas | Límites compartidos en la base, tamaños por ruta, firma del webhook de WhatsApp, adjuntos sin macros, PDF aislados, cuota de IA antes de transcribir (IN-2…IN-14, PAY-6) | 4′ ✅ (revisión del 31 de octubre: IN-17…IN-20, IN-22, IN-5, parte de IN-8…IN-14 y límites en la base); IN-2 e IN-3 ✅; IN-21 ✅ en la 6′; IN-6/7 ✅ en la 6″; PAY-6 pendiente |
 | 5. IA y Copiloto | Tarjetas de confirmación completas, costo de sub-llamados, notas de cotización, fuga de instrucciones (AI-5…AI-13) | 5′ ✅ (revisión del 31 de octubre: AI-14 y bajos de IA); AI-6…AI-13 pendientes |
 | 6. Secretos y datos | Claves separadas con rotación, credenciales de canales cifradas, retención en Evolution (INF-6…INF-8, INF-13) | 6′ ✅ (revisión del 31 de octubre: ZIP sin secretos, `HTTP_LOG` sin tokens, IN-21); 6″ ✅ (INF-6…INF-8, IN-6/7); INF-13 pendiente |
 | 7. Detección | Bitácora de seguridad, alertas, avisos al usuario | Pendiente |
@@ -436,6 +436,18 @@ Revisión independiente: encontró que la vuelta atrás dejaba al backend anteri
 - Límites de memoria y rotación de registros (INF-9) y el aviso de `PANEL_BIND=0.0.0.0` (INF-10).
 - Se probó con PostgreSQL real y con un Docker simulado; en esta revisión no hubo Docker real: conviene una prueba en un servidor de staging antes de producción.
 
+## IN-2 e IN-3: webhooks entrantes
+
+| # | Hallazgo | Arreglo | Prueba |
+|---|---|---|---|
+| IN-2 | El webhook de Evolution no tenía firma (solo el token en la URL) y su ruta era pública en Caddy: con el token se podían inventar mensajes de cualquier cliente de WhatsApp. | Con `WEBHOOK_BASE_URL` interna (en Docker, `http://backend:3000`), Evolution le habla al backend por la red interna, sin Caddy. Un aviso de WhatsApp que llega por el proxy (trae `X-Forwarded-For`) o desde una IP pública se responde como un token que no existe (404) y no se procesa. | `webhook-hardening.test.ts` |
+| IN-3 | Los webhooks aceptaban cuerpos de hasta 10 MB antes de verificar la firma; cada rechazo escribía en la bitácora; las peticiones no tenían tiempo máximo. | Tope de 1 MB en los webhooks (`/webhook/…`, Zernio, Stripe y Mercado Pago; los avisos reales son de unos KB) y de 3 MB en el de Meta (lo que documenta para un lote). A lo más 10 rechazos por minuto y conexión llegan a la bitácora (si la base no responde, no se registra y la respuesta no cambia). Una petición tiene 5 minutos para llegar completa (`requestTimeout`; solo cuenta la llegada, no la respuesta). | `webhook-hardening.test.ts` |
+
+**Queda para después:**
+- Un Evolution externo (fuera de Docker) con `WEBHOOK_BASE_URL` pública sigue dependiendo del token de la URL: Evolution no firma sus avisos.
+- La revisión de IN-2 confía en que el proxy agregue `X-Forwarded-For` (Caddy lo hace siempre). Una instalación fuera de Docker con otro proxy delante (nginx, etc.) debe configurarlo para que lo agregue; si no, sus peticiones parecerían internas.
+- La firma de cada proveedor se sigue revisando con el cuerpo ya leído (hasta 1 MB): no se puede firmar lo que aún no llega.
+
 ## Hallazgos pendientes por etapa
 
 Abreviaturas: ID identidad, PAY cobros, IN entradas, AI IA y Copiloto, INF servidor.
@@ -444,12 +456,10 @@ Abreviaturas: ID identidad, PAY cobros, IN entradas, AI IA y Copiloto, INF servi
 Ninguno: INF-2 e INF-3 se corrigieron en la etapa 8.
 
 ### Medios
-Los cuatro que siguen ya tienen arreglo en ramas aparte (PAY-6 y AI-5…AI-9 en la etapa 5″; IN-2 e IN-3 en su propia rama): salen de esta lista al fusionarlas.
+Los que siguen ya tienen arreglo en la etapa 5″ (rama aparte): salen de esta lista al fusionarla.
 
 - **PAY-6** Cuentas sin cupo siguen gastando IA (transcripción, Copiloto, herramientas con IA); las que están en pausa ya no, desde la 3a.
 - **AI-5…AI-9** (AI-14 corregido en la 5′) Nombre del contacto en el prompt del Copiloto sin marcar como texto de cliente; tarjetas de confirmación que recortan lo que se ejecuta; notas de cotización sin verificar; sin detector de fuga de instrucciones; sub-llamados de IA fuera del tope de costo.
-- **IN-2** El webhook de Evolution no tiene firma (solo el token en la URL) y su ruta es pública en Caddy.
-- **IN-3** Cuerpo de hasta 10 MB que se lee completo antes de verificar firmas; cada rechazo escribe en la bitácora; sin tiempo máximo de petición.
 
 ### Bajos
 AI-10…AI-13, IN-8…IN-14 (calendario `.ics` sin escapar, asunto
