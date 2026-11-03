@@ -8,6 +8,7 @@ import { queryOne } from '../db.js';
 import type { AiProvider, AnyMessage, ToolCall } from '../ai/provider.js';
 import { AiError } from '../ai/provider.js';
 import { accountAi, AiBudgetBlocked } from '../ai/budget.js';
+import { trackSubSpend, type SubSpend } from '../ai/sub-spend.js';
 import { insertAiRun } from '../store/index.js';
 import { logEvent } from '../logs.js';
 import type { User } from '../types.js';
@@ -16,7 +17,7 @@ import { allowed, toolSpec, type Ctx, type ToolDef } from './registry.js';
 import { assessRisk } from './risk.js';
 import { forModel } from './summarize.js';
 import { describePage } from './page.js';
-import { accountSnapshot, systemMessage } from './prompt.js';
+import { accountSnapshot, systemMessage, touchesCustomers } from './prompt.js';
 import { buildHistory, FULL_TURNS } from './history.js';
 import * as cs from './store.js';
 
@@ -75,10 +76,15 @@ function errorText(e: unknown): string {
 const err = (code: string, mensaje: string) => JSON.stringify({ error: code, mensaje });
 
 /** Tarjeta de confirmación de una herramienta sin vista previa propia: lo que se pidió, campo por campo. */
+/**
+ * Tarjeta de una herramienta sin vista propia: todos sus argumentos, completos (AI-6). Recortarlos dejaba que lo que se
+ * confirma no fuera todo lo que se ejecuta (una instrucción escondida después del corte). El panel los muestra con
+ * desplazamiento.
+ */
 export function genericPreview(def: ToolDef, args: unknown): cs.Preview {
-  const fmt = (v: unknown): string => (typeof v === 'string' ? `«${v.slice(0, 400)}»`
-    : Array.isArray(v) ? v.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(', ').slice(0, 400)
-    : v && typeof v === 'object' ? JSON.stringify(v).slice(0, 400) : String(v));
+  const fmt = (v: unknown): string => (typeof v === 'string' ? `«${v}»`
+    : Array.isArray(v) ? v.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(', ')
+    : v && typeof v === 'object' ? JSON.stringify(v) : String(v));
   const lines = Object.entries((args ?? {}) as Record<string, unknown>).filter(([, v]) => v !== undefined).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${fmt(v)}`);
   return { title: def.label(args).replace(/…$/, ''), lines };
 }
@@ -116,6 +122,9 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
     const specs = defs.map(toolSpec);
     const snapshot = await accountSnapshot(ctx.call);
     const [stored, actions] = await Promise.all([cs.threadMessages(thread.id), cs.threadActions(thread.id)]);
+    // AI-5: los títulos de las acciones sobre clientes (con sus nombres) entran al prompt; el turno cuenta como contaminado.
+    const listed = [...actions.filter((a) => a.risk !== 'read').slice(-12), ...(await cs.actionsByIds(req.refs, thread.id))];
+    if (listed.some(touchesCustomers)) ctx.tainted = true;
     const system = systemMessage({ model: limits.model, user, accountName: account.name, timezone: ctx.timezone, snapshot, page, actions });
     const history: AnyMessage[] = buildHistory(stored, actions);
     const ai = accountAi(deps.ai, thread.account_id, null, 'copilot');
@@ -140,7 +149,23 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
       return res;
     };
 
+    // AI-9: la IA que gastan las herramientas por dentro (editar instrucciones, diseñar un flujo, importar…) cuenta para el
+    // tope del pedido y para el del día de la cuenta, igual que la del propio Copiloto.
+    const sub: SubSpend = { usd: 0, calls: 0 };
+    let subCounted = 0;
     const runTool = async (call: ToolCall): Promise<string> => {
+      try {
+        return await trackSubSpend(sub, () => runToolInner(call));
+      } finally {
+        const delta = sub.usd - subCounted;
+        if (delta > 0) {
+          subCounted = sub.usd;
+          cost += delta;
+          await cs.addSubCost(turn.id, delta).catch(() => undefined);
+        }
+      }
+    };
+    const runToolInner = async (call: ToolCall): Promise<string> => {
       toolCalls++;
       await cs.countToolCall(turn.id);
       if (toolCalls > limits.maxToolCalls) { limitHit = 'herramientas'; return err('limite', 'Llegué al máximo de acciones por pedido.'); }

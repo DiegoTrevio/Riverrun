@@ -3,6 +3,7 @@
  * guardó, con la sesión de quien confirma), descartarla y deshacer lo que ya se hizo (solo si el registro sigue como
  * lo dejó la acción). Cada resultado queda como aviso en el hilo para que el Copiloto lo sepa en el siguiente turno.
  */
+import { trackSubSpend, type SubSpend } from '../ai/sub-spend.js';
 import { HttpError } from '../access.js';
 import { config } from '../config.js';
 import { logEvent } from '../logs.js';
@@ -53,7 +54,15 @@ export async function confirmAction(deps: RunnerDeps, o: { action: cs.Action; us
   }
   const ctx: Ctx = { ...(await ctxFor(deps, claimed, user, o.cookie, o.ip)), proposal: claimed.preview ?? undefined };
   try {
-    const r = await def.execute(parsed.data, ctx);
+    // AI-9: lo que la herramienta gasta en IA por dentro (cambiar instrucciones, diseñar un flujo…) cuenta para el tope
+    // del día del Copiloto, en el pedido que la propuso.
+    const sub: SubSpend = { usd: 0, calls: 0 };
+    let r: Awaited<ReturnType<typeof def.execute>>;
+    try {
+      r = await trackSubSpend(sub, () => def.execute(parsed.data, ctx));
+    } finally {
+      if (sub.usd > 0 && action.turn_id) await cs.addSubCost(action.turn_id, sub.usd).catch(() => undefined);
+    }
     const title = r.title ?? claimed.title;
     const updated = (await cs.updateAction(action.id, {
       status: 'done', title, result: r.data ?? null, links: r.links ?? claimed.links, before: r.before ?? null, after: r.after ?? null, undo: r.undo ?? null,

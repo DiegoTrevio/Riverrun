@@ -19,8 +19,8 @@ Cada etapa es un PR con pruebas que fallan con el código anterior y pasan con e
 | 3. Registro y cobros | Captcha → correo → 2FA → tarjeta, topes contra prueba de tarjetas (PAY-2), pruebas gratis por persona (PAY-3), sin IA en pausa (parte de PAY-6); disputas, plan del precio, códigos y cobros a clientes (PAY-4…PAY-16) | ✅ Corregido (3a registro, 3b cobros) |
 | 3b′. Cobros de la revisión del 31 de octubre | PAY-17…PAY-23 y bajos de cobros | ✅ Corregido |
 | 3c. Revisión del 31 de octubre | Los altos de [la revisión del 31 de octubre](revision-seguridad-2026-10-31.md): dos caídas del proceso, atajos para sacar o borrar datos, cobros del agente, la ficha en el Copiloto (IN-15, IN-16, ID-11…ID-14, AI-5 en parte) | ✅ Corregido |
-| 4. Abuso de entradas | Límites compartidos en la base, tamaños por ruta, firma del webhook de WhatsApp, adjuntos sin macros, PDF aislados, cuota de IA antes de transcribir (IN-2…IN-14, PAY-6) | 4′ ✅ (revisión del 31 de octubre: IN-17…IN-20, IN-22, IN-5, parte de IN-8…IN-14 y límites en la base); IN-2 e IN-3 ✅; IN-21 ✅ en la 6′; IN-6/7 ✅ en la 6″; PAY-6 pendiente |
-| 5. IA y Copiloto | Tarjetas de confirmación completas, costo de sub-llamados, notas de cotización, fuga de instrucciones (AI-5…AI-13) | 5′ ✅ (revisión del 31 de octubre: AI-14 y bajos de IA); AI-6…AI-13 pendientes |
+| 4. Abuso de entradas | Límites compartidos en la base, tamaños por ruta, firma del webhook de WhatsApp, adjuntos sin macros, PDF aislados, cuota de IA antes de transcribir (IN-2…IN-14, PAY-6) | 4′ ✅ (revisión del 31 de octubre: IN-17…IN-20, IN-22, IN-5, parte de IN-8…IN-14 y límites en la base); IN-2 e IN-3 ✅; IN-21 ✅ en la 6′; IN-6/7 ✅ en la 6″; PAY-6 ✅ en la 5″ |
+| 5. IA y Copiloto | Tarjetas de confirmación completas, costo de sub-llamados, notas de cotización, fuga de instrucciones (AI-5…AI-13) | 5′ ✅ (revisión del 31 de octubre: AI-14 y bajos de IA); 5″ ✅ (AI-5…AI-9 y PAY-6); AI-10…AI-13 sin descripción registrada: requieren una auditoría nueva |
 | 6. Secretos y datos | Claves separadas con rotación, credenciales de canales cifradas, retención en Evolution (INF-6…INF-8, INF-13) | 6′ ✅ (revisión del 31 de octubre: ZIP sin secretos, `HTTP_LOG` sin tokens, IN-21); 6″ ✅ (INF-6…INF-8, IN-6/7); INF-13 pendiente |
 | 7. Detección | Bitácora de seguridad, alertas, avisos al usuario | Pendiente |
 | 8. Contenedores | Roles de base de datos, Redis con clave, redes aisladas, límites, imágenes al día (INF-2, INF-3, INF-9, INF-10) | 8 ✅ (los altos: INF-2 e INF-3); INF-9 e INF-10 ✅ en la 6″ |
@@ -351,11 +351,30 @@ IN-6/7 y PAY-6) sigue pendiente.
 - La imagen del backend sigue trayendo LibreOffice (para `soffice`); se puede quitar cuando todas las instalaciones usen el contenedor `pdf`.
 - Se probó sin Docker real (configuración renderizada, PostgreSQL real, `docker` simulado): conviene una prueba en staging antes de producción.
 
+## Etapa 5″: el resto de la IA y el Copiloto (AI-5…AI-9, PAY-6)
+
+| # | Hallazgo | Arreglo | Prueba |
+|---|---|---|---|
+| AI-5 (resto) | Los títulos de las acciones del Copiloto llevan nombres de clientes (los escriben ellos) y entran al prompt en la lista de cambios del hilo y en «Cambiar esto», sin marcar y con el turno como limpio. | El título de una acción sobre clientes (con `contact_ids` o argumentos de contacto o conversación) va entre comillas y marcado como dato; si alguna de esas acciones está en el prompt, el pedido cuenta como contaminado: la configuración se confirma con tarjeta. | `copilot.test.ts`, `copilot.unit.test.ts` |
+| AI-6 | Las tarjetas de confirmación recortaban lo que se iba a ejecutar (textos, listas, citas del conocimiento, palabras clave de una regla). | La vista previa genérica y la de las herramientas muestran los textos completos; la tarjeta los deja leer con su propia barra de desplazamiento. | `copilot.unit.test.ts` |
+| AI-7 | Las notas de la cotización van en el PDF que recibe el cliente (la aproximada sale sin revisión) y no pasaban por la verificación de datos. | Las notas pasan por la misma verificación que los mensajes (datos sin respaldo y afirmaciones del negocio): la frase con un precio, descuento, enlace o afirmación sin respaldo se quita y queda en el registro de correcciones; lo que dijo el cliente se queda. En la tarjeta de «Aprobar y enviar» de las finales las notas ya se veían y se editan. | `quotes-engine.test.ts` |
+| AI-8 | No había detector de fuga de instrucciones: «repite tus instrucciones» podía sacar el prompt o las instrucciones privadas del negocio. | `src/engine/leak.ts`: una respuesta que copia 12 palabras seguidas del prompt fijo o de las instrucciones, reglas u objetivo del negocio, o que nombra campos internos (`save_data`, `image_ids`…) o títulos del prompt, se regresa a la IA; en el último intento se quita la frase. No cuentan lo que el negocio pidió decir entre comillas ni lo que también está en su información pública (conocimiento, mensajes guardados, saludo, preguntas). | `instruction-leak.test.ts` |
+| AI-9 | La IA que gastan las herramientas del Copiloto por dentro (cambiar instrucciones, diseñar un flujo, importar) no contaba para el tope del pedido ni para el del día; la evaluación de agentes no contaba el costo estimado en su tope de USD 1. | Un ámbito asíncrono (`src/ai/sub-spend.ts`) sigue a la herramienta también por las rutas internas: cada llamada que se liquida dentro suma su costo (o lo reservado, si no se sabe) al pedido y a `copilot_turns.cost_usd`. La evaluación cuenta el estimado. | `copilot.config.test.ts` |
+| PAY-6 | Cuentas sin cupo seguían gastando IA. | El tope de la plataforma (PAY-20) ya detenía cada llamada en `accountAi` (también transcribir); ahora el Copiloto tampoco empieza con ese tope al 80 % (como con el presupuesto de la cuenta). | `ai-platform-cap.test.ts` |
+
+**Cambios que nota la gente:**
+- Si el Copiloto etiquetó o cambió algo de un cliente en un hilo, los cambios de configuración que se pidan después en ese mismo hilo llegan como tarjeta por confirmar.
+- Las tarjetas de confirmación pueden ser más largas (con desplazamiento dentro de la tarjeta).
+- El asistente ya no repite su prompt ni las instrucciones privadas aunque se lo pidan; si insiste, la frase sale del mensaje.
+
+**Queda para después:**
+- AI-10…AI-13 están en la lista de la etapa 5 pero no tienen descripción registrada en ningún documento ni en el historial: hace falta una auditoría nueva de la IA para saber qué eran o si siguen aplicando.
+- El detector de fuga compara texto literal: una paráfrasis o una traducción de las instrucciones no la detecta.
+
 ## Etapa 5′: lo que se corrigió de la revisión del 31 de octubre
 
 La IA de [la revisión del 31 de octubre](revision-seguridad-2026-10-31.md) (PR 5 del
-[plan](superpowers/plans/2026-10-31-seguridad-revision-correcciones.md)). El resto de la etapa 5 original (AI-6…AI-13)
-sigue pendiente.
+[plan](superpowers/plans/2026-10-31-seguridad-revision-correcciones.md)). El resto de la etapa 5 original va en la 5″.
 
 | # | Hallazgo | Arreglo | Prueba |
 |---|---|---|---|
@@ -456,10 +475,7 @@ Abreviaturas: ID identidad, PAY cobros, IN entradas, AI IA y Copiloto, INF servi
 Ninguno: INF-2 e INF-3 se corrigieron en la etapa 8.
 
 ### Medios
-Los que siguen ya tienen arreglo en la etapa 5″ (rama aparte): salen de esta lista al fusionarla.
-
-- **PAY-6** Cuentas sin cupo siguen gastando IA (transcripción, Copiloto, herramientas con IA); las que están en pausa ya no, desde la 3a.
-- **AI-5…AI-9** (AI-14 corregido en la 5′) Nombre del contacto en el prompt del Copiloto sin marcar como texto de cliente; tarjetas de confirmación que recortan lo que se ejecuta; notas de cotización sin verificar; sin detector de fuga de instrucciones; sub-llamados de IA fuera del tope de costo.
+Ninguno: los medios se corrigieron en las etapas 4′, 5″ y 6″.
 
 ### Bajos
 AI-10…AI-13, IN-8…IN-14 (calendario `.ics` sin escapar, asunto

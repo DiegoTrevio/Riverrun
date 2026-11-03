@@ -271,7 +271,7 @@ export const agregarConocimiento = defineTool({
   targets: (a) => [{ kind: 'bot', id: a.agente_id }],
   async preview(a, ctx) {
     const bot = await botOf(ctx, a.agente_id);
-    return { title: `Agregar «${a.titulo}» al conocimiento de ${bot.name}`, lines: ['El agente lo usa al contestar a los clientes.'], quote: a.contenido.slice(0, 1500) };
+    return { title: `Agregar «${a.titulo}» al conocimiento de ${bot.name}`, lines: ['El agente lo usa al contestar a los clientes.'], quote: a.contenido };
   },
   async execute(a, ctx) {
     const bot = await botOf(ctx, a.agente_id);
@@ -308,7 +308,7 @@ export const editarConocimiento = defineTool({
     return {
       title: `Editar «${item.title}» en el conocimiento de ${bot.name}`,
       lines: [...(a.titulo ? [`Título nuevo: «${a.titulo}»`] : []), ...(a.categoria ? [`Categoría: ${a.categoria}`] : []), ...(a.activo !== undefined ? [a.activo ? 'Se activa.' : 'Se desactiva.'] : [])],
-      ...(a.contenido ? { quote: a.contenido.slice(0, 1500) } : {}),
+      ...(a.contenido ? { quote: a.contenido } : {}),
     };
   },
   async execute(a, ctx) {
@@ -347,7 +347,7 @@ export const borrarConocimiento = defineTool({
   async preview(a, ctx) {
     const { bot, item } = await knowledgeItem(ctx, a.agente_id, a.conocimiento_id);
     if (!item) throw new ToolError('no_encontrado', 'Esa información no es de este agente');
-    return { title: `Borrar «${item.title}» del conocimiento de ${bot.name}`, lines: ['El agente deja de usar esta información al contestar.'], quote: String(item.content).slice(0, 400) };
+    return { title: `Borrar «${item.title}» del conocimiento de ${bot.name}`, lines: ['El agente deja de usar esta información al contestar.'], quote: String(item.content) };
   },
   async execute(a, ctx) {
     const { bot, item } = await knowledgeItem(ctx, a.agente_id, a.conocimiento_id);

@@ -379,6 +379,7 @@ export class Engine {
       lastInput = {
         raw, bot, images: aiImages, sentImageIds, customerText, scheduledImages: scheduledBefore.map((x) => x.image), automaticImages: images, currentFlowStep: conv.flow_step ?? 0, goalAlreadyCompleted: !!conv.goal_completed_at,
         groundingSources: ctx.groundingSources,
+        leak: ctx.leak,
         claimSources: ctx.claimSources,
         customerSources: ctx.customerSources,
         // Solo lo que dijo en esta solicitud: una respuesta de una solicitud anterior (la fecha de la reserva pasada) no

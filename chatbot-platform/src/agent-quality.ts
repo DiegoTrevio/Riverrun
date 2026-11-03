@@ -103,7 +103,8 @@ async function executeAgentTests(runId:string,bot:Chatbot,draft:AgentDraft,cases
   };
   const record=(response:{model:string;usage?:{input_tokens:number;output_tokens:number};input_tokens?:number;cost_usd?:number;cost_estimated?:boolean})=>{
     models.add(response.model);inputTokens+=response.usage?.input_tokens??response.input_tokens??0;outputTokens+=response.usage?.output_tokens??0;
-    if(response.cost_usd!==undefined&&!response.cost_estimated){cost+=response.cost_usd;hasCost=true;}
+    // AI-9: el estimado (proveedor sin costo informado) también cuenta para el tope de USD 1 de la evaluación.
+    if(response.cost_usd!==undefined&&Number.isFinite(response.cost_usd)){cost+=response.cost_usd;if(!response.cost_estimated)hasCost=true;}
   };
   const provider:AiProvider={transcribe:(...args)=>service.aiProvider.transcribe(...args),async complete(request) {
     guardRequest();

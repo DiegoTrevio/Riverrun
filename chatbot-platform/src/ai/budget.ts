@@ -6,6 +6,7 @@ import { notifyUsers } from '../automation/store.js';
 import { HttpError } from '../access.js';
 import type { AiProvider, CompletionRequest, CompletionResult, EmbeddingResult } from './provider.js';
 import { assertAiAllowed } from './gate.js';
+import { recordSubSpend } from './sub-spend.js';
 
 const Money=z.number().finite().min(0).max(1000000).nullable();
 const Rate=z.number().finite().min(0).max(10000).refine(n=>n===0||n>=0.000001,'La tarifa positiva mínima es 0.000001 USD');
@@ -127,6 +128,8 @@ async function settle(accountId:string,reservation:Awaited<ReturnType<typeof res
   await client.query(`UPDATE ai_spend SET state=$2,charged_usd=$3,cost_source=$4,input_tokens=$5,output_tokens=$6,models=$7,quote=quote||jsonb_build_object('model_mismatch',$8::boolean),finished_at=now() WHERE id=$1 AND state IN ('reserved','uncertain') AND cost_source<>'confirmed'`,[reservation.id,charged===null||unexpected?'uncertain':'settled',charged,validReport?'reported':charged!==null?'estimated':'unknown',input,output,known?[known]:[...new Set([...spec.models,model])],unexpected]);
  });
  if(unexpected||charged===null||(reservation.amount!==null&&charged>reservation.amount+0.00000001))await notice(accountId,'cost_review');
+ // AI-9: dentro de un pedido del Copiloto (u otro ámbito) el costo cuenta para su tope; sin costo conocido, lo reservado.
+ recordSubSpend(charged??reservation.amount);
  return validReport?null:estimate;
 }
 async function invoke<T extends CompletionResult|EmbeddingResult|string>(accountId:string,botId:string|null,spec:Spec,fn:(r:Awaited<ReturnType<typeof reserve>>)=>Promise<T>):Promise<T> {
@@ -143,6 +146,7 @@ async function invoke<T extends CompletionResult|EmbeddingResult|string>(account
  catch(e:any){
   const rejected=e?.notDispatched===true||([400,401,403,404,422,429].includes(e?.status)&&e?.definiteRejection!==false);
   await query(`UPDATE ai_spend SET state=$2,charged_usd=$3,cost_source='unknown',finished_at=now() WHERE id=$1 AND state='reserved'`,[held.id,rejected?'rejected':'uncertain',rejected?0:null]).catch(()=>undefined);
+  if(!rejected)recordSubSpend(held.amount);
   throw e;
  }
 }

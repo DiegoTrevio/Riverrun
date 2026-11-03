@@ -54,7 +54,9 @@ body.cp-docked .copilot { top: 8px; right: 8px; bottom: 8px; border: 1px solid v
 .cp-card.is-undone .cp-card-title { color: var(--muted); text-decoration: line-through; }
 .cp-card.is-declined .cp-card-title, .cp-card.is-expired .cp-card-title { color: var(--muted); }
 .cp-lines { margin: 0; padding-left: 18px; font-size: 13px; }
-.cp-quote { margin: 0; padding: 8px 10px; border-left: 3px solid var(--accent-track); border-radius: 0 6px 6px 0; background: var(--raised); white-space: pre-wrap; overflow-wrap: anywhere; }
+.cp-quote { margin: 0; padding: 8px 10px; border-left: 3px solid var(--accent-track); border-radius: 0 6px 6px 0; background: var(--raised); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 20em; overflow-y: auto; }
+/* La tarjeta muestra todo lo que se ejecuta (AI-6): lo largo se desplaza en vez de recortarse. */
+.cp-lines li { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 12em; overflow-y: auto; }
 /* Más compactos que los desplegables del panel (44 px), sin bajar de un objetivo cómodo al tacto. */
 .cp-diff > summary, .cp-reads > summary { min-height: 32px; padding: 6px 0; }
 .cp-diff summary { width: fit-content; font-size: 13px; cursor: pointer; }

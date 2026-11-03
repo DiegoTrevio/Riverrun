@@ -8,7 +8,7 @@ import { HttpError, notFound } from '../access.js';
 import { cookieName } from '../auth.js';
 import { config } from '../config.js';
 import { query } from '../db.js';
-import { budgetPolicy, normalize } from '../ai/budget.js';
+import { budgetPolicy, normalize, platformAiCap } from '../ai/budget.js';
 import { assertAiAllowed } from '../ai/gate.js';
 import * as store from '../store/index.js';
 import { parse } from '../routes/util.js';
@@ -58,6 +58,17 @@ async function budgetTight(accountId: string): Promise<boolean> {
       [accountId, cap.period, cap.model],
     );
     if (Number(row.used) >= cap.limit * 0.8) return true;
+  }
+  // PAY-6: el tope de la plataforma (plan, prueba o excepción de la cuenta) también: una cuenta sin cupo no usa el Copiloto.
+  const platform = await platformAiCap(accountId);
+  if (platform !== null) {
+    if (platform <= 0) return true;
+    const [row] = await query<{ used: string }>(
+      `SELECT coalesce(sum(coalesce(charged_usd, reserved_usd)), 0) AS used FROM ai_spend
+        WHERE account_id = $1 AND created_at >= date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AND state <> 'rejected'`,
+      [accountId],
+    );
+    if (Number(row.used) >= platform * 0.8) return true;
   }
   return false;
 }

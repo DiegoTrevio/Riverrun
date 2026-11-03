@@ -11,6 +11,7 @@ import { GENERAL_RULES } from './agent-rules.js';
 import type { ConversationRequest } from '../store/index.js';
 import { contactNameKey, questionList, questionProgress, type Question, type QuestionProgress } from './questions.js';
 import { keywords } from './text.js';
+import { leakDetector, type LeakDetector } from './leak.js';
 
 export interface ContextInput {
   bot: Chatbot;
@@ -89,6 +90,8 @@ export interface BuiltContext {
   /** Textos del cliente (sirven para repetir sus propios datos, no para precios). */
   customerSources: string[];
   isFirstContact: boolean;
+  /** AI-8: detector de respuestas que copian el prompt o las instrucciones privadas. */
+  leak: LeakDetector;
 }
 
 const CHANNEL_NAMES: Record<ChannelType, string> = {
@@ -193,7 +196,7 @@ function fieldLine(f: DataField) {
  */
 
 /** Bloque A: idéntico para todos los agentes y todos los turnos (no debe depender de nada configurable). */
-const FIXED_PROMPT = [
+export const FIXED_PROMPT = [
   '# Quién eres',
   'Atiendes por chat a los clientes de un negocio: por WhatsApp, redes sociales, el sitio web o correo. Más abajo están la "Configuración del agente" (tu nombre, el negocio y sus instrucciones), la "Información del negocio" y, al final, el "Estado de la conversación".',
   '',
@@ -693,7 +696,20 @@ export function buildContext(input: ContextInput): BuiltContext {
     input.contact.notes?.join('\n') ?? '',
   ];
 
-  return { messages, knowledge, groundingSources, claimSources, customerSources, isFirstContact };
+  // AI-8: lo que no debe salir copiado (el prompt fijo y las instrucciones privadas) y lo que el negocio publica o pidió decir.
+  const leak = leakDetector(
+    [FIXED_PROMPT, bot.personality.prompt, bot.rules.custom_rules.join('\n'), bot.flow.goal, bot.flow.steps.map((s) => `${s.title} ${s.description}`).join('\n')],
+    [
+      ...groundingSources.slice(0, knowledge.length),
+      bot.rules.handoff_message, bot.rules.fallback_message, bot.flow.greeting, bot.personality.style_examples.join('\n'),
+      questionList(bot).map((q) => q.question).join('\n'),
+      bot.saved_messages.filter((m) => m.active).map((m) => m.text).join('\n'),
+      ...input.history.filter((m) => m.direction === 'out' && m.sender === 'human').map((m) => m.content),
+      ...customerSources,
+    ],
+  );
+
+  return { messages, knowledge, groundingSources, claimSources, customerSources, isFirstContact, leak };
 }
 
 const TYPE_LABEL: Record<Question['type'], string> = { text: 'texto', name: 'nombre', email: 'correo', phone: 'teléfono', date: 'fecha', number: 'número', option: 'opción' };
