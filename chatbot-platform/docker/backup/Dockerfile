@@ -1,4 +1,4 @@
-FROM postgres:16-alpine
+FROM postgres:18-alpine
 # pg_dump/pg_restore 16 (misma versión que el servidor), cifrado autenticado con gpg (openssl para abrir los de antes) y copia a la nube con rclone.
 RUN apk add --no-cache bash coreutils tar gzip openssl gnupg rclone tzdata curl
 # redis-cli para copiar las claves de las sesiones de WhatsApp (Alpine ya no empaqueta Redis): el de la misma imagen
