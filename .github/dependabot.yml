@@ -8,12 +8,26 @@ updates:
     groups:
       menores:
         update-types: [minor, patch]
+    # Las versiones mayores de TypeScript y de los tipos de Node se cambian a mano (junto con la versión de Node).
+    ignore:
+      - dependency-name: typescript
+        update-types: [version-update:semver-major]
+      - dependency-name: "@types/node"
+        update-types: [version-update:semver-major]
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
+  # Node y PostgreSQL solo dentro de su versión mayor: subir de mayor es una migración (la base y el contenedor de
+  # respaldos deben ir en la misma versión de PostgreSQL), no una actualización de rutina.
   - package-ecosystem: docker
     directory: /chatbot-platform
     schedule: { interval: weekly }
+    ignore:
+      - dependency-name: node
+        update-types: [version-update:semver-major]
   - package-ecosystem: docker
     directory: /chatbot-platform/docker/backup
     schedule: { interval: weekly }
+    ignore:
+      - dependency-name: postgres
+        update-types: [version-update:semver-major]
