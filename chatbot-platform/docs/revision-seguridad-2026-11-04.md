@@ -10,6 +10,9 @@ se volvió a comprobar en el código; el de las plantillas DOCX, además, reprod
 distinto de OpenRouter); 7 medios o medio-bajos y unos 20 bajos. **Ninguna regresión**: ID-1…ID-17, IN-1…IN-22,
 PAY-1…PAY-23, AI-1…AI-14 e INF-1…INF-15 siguen corregidos en el código. La numeración sigue la de `seguridad.md`.
 
+**Plan de corrección:** [`superpowers/plans/2026-11-04-seguridad-revision-correcciones.md`](superpowers/plans/2026-11-04-seguridad-revision-correcciones.md)
+(seis PR, con las decisiones que quedan del dueño).
+
 ## Herramientas automáticas
 
 | Qué | Resultado |
@@ -78,7 +81,7 @@ PAY-1…PAY-23, AI-1…AI-14 e INF-1…INF-15 siguen corregidos en el código. L
 | ID-19 | `POST /api/conversations/:cid/report/send` manda la transcripción completa a correos o teléfonos externos sin verificación reciente (`src/routes/conversations.ts:287-296`); el resto de las salidas de datos (CSV, reglas con webhook o destinos externos) sí lo pide (ID-14). | `assertRecentMfa(req)` cuando hay `emails` o `phones`. |
 | ID-20 | Una llave de API de **solo lectura** gasta IA y escribe: `GET /api/v1/conversations/:id/export?refresh=true` llama a `service.summarize` (`src/routes/api-v1.ts:450-453`). | Ignorar `refresh` si la llave no es de escritura. |
 | ID-21 | El tope de invitaciones a un correo (`invite-email:<correo>`, 3 por día) es de toda la plataforma (`src/routes/invitations.ts:108`): una cuenta de prueba agota el cupo de un correo ajeno y otro negocio no puede invitar a esa persona durante 24 h. | Incluir la cuenta en la clave, o contar solo las que salen. |
-| PAY-26 | El límite de redes sociales (`social_accounts`) se revisa sin candado: `src/routes/social.ts:90`, `src/channels/zernio-connect.ts:212,235`, `src/channels/zernio-accounts.ts:73` (los canales ya usan `assertWithinLimitLocked`). Altas simultáneas pasan el límite. | La variante con candado dentro de la transacción del alta. |
+| ~~PAY-26~~ | **Descartado al planear las correcciones.** Se reportó que el límite de redes sociales (`social_accounts`) se revisa sin candado (`src/routes/social.ts:90`, `src/channels/zernio-connect.ts:212,235`, `src/channels/zernio-accounts.ts:73`), pero esas son revisiones previas: cada alta pasa después por `trimSocialOverLimit` (`src/channels/zernio-connect.ts:225`), que desconecta la que sobra si dos llegan a la vez. | — |
 | PAY-27 | Bajar de plan se revisa solo al pedirlo: un cambio programado (anual → mensual en Stripe) entra meses después sin volver a revisar, y la revisión no incluye `storage_mb` ni `messages_per_month`. | Revisar otra vez al aplicar el plan programado (y avisar si no cabe). |
 | PAY-28 | Subir el precio de un plan hace que cada aviso de los suscriptores viejos dispare una alerta urgente de «precio sin plan» (`planFromPrice`, `planFromPreapproval`): no pierde dinero, pero ahoga las alertas reales. | Comparar con el monto contratado de esa suscripción. |
 | PAY-29 | El filtro de texto del agente en cobros (`assertAgentText`, `src/routes/receivables.ts:189`) usa `\d`: dígitos de ancho completo («０１２…») pasan. Lo frena la aprobación del administrador antes de que salga el recordatorio. | Normalizar con NFKC antes de revisar. |
