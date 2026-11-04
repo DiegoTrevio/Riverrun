@@ -24,7 +24,7 @@ Cada etapa es un PR con pruebas que fallan con el código anterior y pasan con e
 | 6. Secretos y datos | Claves separadas con rotación, credenciales de canales cifradas, retención en Evolution (INF-6…INF-8, INF-13) | 6′ ✅ (revisión del 31 de octubre: ZIP sin secretos, `HTTP_LOG` sin tokens, IN-21); 6″ ✅ (INF-6…INF-8, IN-6/7); INF-13 pendiente |
 | 7. Detección | Bitácora de seguridad, alertas, avisos al usuario | ✅ Corregido (bitácora de seguridad, reglas con aviso al superadmin; los avisos al usuario ya estaban desde la 2a) |
 | 8. Contenedores | Roles de base de datos, Redis con clave, redes aisladas, límites, imágenes al día (INF-2, INF-3, INF-9, INF-10) | 8 ✅ (los altos: INF-2 e INF-3); INF-9 e INF-10 ✅ en la 6″ |
-| 9. Servidor | `./riverrun harden`: firewall (también `DOCKER-USER`), SSH con llave, fail2ban, actualizaciones automáticas, respaldos con cifrado autenticado (INF-11, INF-12) | 9′ ✅ (revisión del 31 de octubre: claves de ejemplo en producción); INF-11 ✅ en la 6″; `harden` e INF-12 pendientes |
+| 9. Servidor | `./riverrun harden`: firewall (también `DOCKER-USER`), SSH con llave, fail2ban, actualizaciones automáticas, respaldos con cifrado autenticado (INF-11, INF-12) | 9′ ✅ (revisión del 31 de octubre: claves de ejemplo en producción); INF-11 ✅ en la 6″; 9 ✅ (`harden` e INF-12) |
 | 10. Cadena de suministro | Dependabot, versiones fijadas por SHA y digest, búsqueda de secretos, escaneos programados (INF-4, INF-15) | 10′ ✅ (revisión del 31 de octubre: Docker sin `curl \| sh`); INF-4 ✅ en la 6″; INF-15 pendiente |
 
 ## Etapa 1: lo que se corrigió
@@ -333,6 +333,27 @@ IN-6/7 y PAY-6) sigue pendiente.
 - Reservas: tres solicitudes pendientes con el correo de alguien le impiden reservar durante una hora; el tope de 20 por día por enlace cuenta cada solicitud.
 - Zernio: solo se juntan los avisos con el mismo cuerpo firmado; si Zernio reintentara con un cuerpo distinto, se procesaría dos veces.
 
+## Etapa 9: el servidor (`./riverrun harden` e INF-12)
+
+Riverrun se instalaba sobre el servidor tal como venía: SSH con contraseña, sin firewall, sin parches automáticos. Y
+Docker publica sus puertos por encima de ufw, así que un firewall puesto a mano no frenaba lo que publicaran los
+contenedores.
+
+| Qué | Cómo | Prueba |
+|---|---|---|
+| `sudo ./riverrun harden` | En Debian y Ubuntu, como root, con confirmación (o `--yes`). Se puede repetir: solo reescribe sus archivos. **Actualizaciones de seguridad** automáticas (`unattended-upgrades`; Docker no se actualiza solo, para no reiniciar los servicios). **Puertos de SSH**: los que dice `sshd -T`, los que están abiertos (`ss`; con `ssh.socket`, Ubuntu 24.04 no usa el `Port` de `sshd_config`) y el de la sesión actual; si no se sabe ninguno, no toca nada. **fail2ban** en esos puertos (5 intentos en 10 minutos, una hora fuera), sin bloquear nunca la IP de quien corre `harden`. **SSH solo con llave** (`01-riverrun.conf`, que va antes que `50-cloud-init.conf`: sin contraseñas, root solo con llave; `ChallengeResponseAuthentication` en OpenSSH anterior a 8.7): solo si la cuenta de quien corre `harden` (`SUDO_USER`, o root) tiene una llave válida (`ssh-keygen -l`); la de otra persona no cuenta. Se valida con `sshd -t` antes de recargar (si no es válida, se quita) y después con `sshd -T -C`, que también evalúa los bloques `Match`. **Firewall** (ufw): entra SSH con límite de intentos y, con dominio, 80 y 443 (TCP y UDP para HTTP/3), más `HARDEN_ALLOW_PORTS`. SSH se permite antes de encender el firewall. | `scripts/test-cli.sh` |
+| Lo que publica Docker | Reglas en la cadena `DOCKER-USER` (que ufw no ve), en `after.rules` y `after6.rules` entre marcas propias: de afuera solo entra a los contenedores lo de la lista; lo que sale de los contenedores (por su puente, `docker0` o `br-…`: no por rango de IP, así otra máquina de la red privada del proveedor tampoco pasa), entre ellos y las respuestas sigue igual. Con `PANEL_BIND=0.0.0.0` por error, el puerto 3000 queda cerrado hacia afuera (y se avisa). Se guarda copia de cada archivo, un bloque a medias no se toca, y antes de encender el firewall `iptables-restore --test` revisa los archivos (si no pasan, se restauran y no se enciende). | `scripts/test-cli.sh` |
+| `preflight` | Avisa si el servidor no se ha endurecido (la marca `/etc/riverrun-harden`). | `scripts/test-cli.sh` |
+| INF-12 | El instalador imprimía `BACKUP_PASSPHRASE`, `SESSION_SECRET` y la contraseña del administrador: quedaban en el historial de la terminal y en los registros de quien lo automatiza (cloud-init, CI). Ahora no imprime ninguna llave: `./riverrun keys` las muestra a propósito (también `DATA_KEY` y `DATA_KEYS_OLD`, que antes ni se mencionaban) y solo a una terminal (`--stdout` para quien de verdad lo quiera en un archivo). La contraseña inicial solo se muestra a una terminal; si no, se dice cómo crear una. | `scripts/test-cli.sh` |
+
+**Cambios que nota la gente:**
+- Al terminar, `install` dice que las llaves se guardan con `./riverrun keys` y que se corra `sudo ./riverrun harden`.
+- Después de `harden`, hay que entrar por SSH con llave. Antes de cerrar la sesión, conviene probar entrar desde otra terminal.
+
+**Queda para después:**
+- Otros sistemas (Fedora, Alma…) se endurecen a mano: `harden` se niega a adivinar.
+- `./riverrun admin-password` sigue mostrando la contraseña nueva: es lo que se pidió, en la consola del servidor.
+
 ## Etapa 7: detección
 
 Hasta aquí nadie se enteraba si alguien probaba contraseñas, entraba como superadmin desde otro lado o se llevaba los
@@ -507,6 +528,6 @@ Ninguno: los medios se corrigieron en las etapas 4′, 5″ y 6″.
 ### Bajos
 AI-10…AI-13, IN-8…IN-14 (calendario `.ics` sin escapar, asunto
 reflejado, textos de la URL en el panel, plazos de descarga; las reservas como relé, `unsafe-inline` y el analizador JSON
-ya se corrigieron en la 4′), INF-12…INF-15 (secretos impresos por el instalador, cuerpos de correo en la bitácora sin
+ya se corrigieron en la 4′), INF-13…INF-15 (INF-12, los secretos impresos por el instalador, ✅ en la 9; cuerpos de correo en la bitácora sin
 SMTP —los tokens ya van ocultos desde la 2b—, `.gitignore`, acciones por etiqueta). `privacy.md` y `terms.md` (sitio de GitHub Pages) dicen «Viralize» y prometen
 «encriptamos todos los datos»: lo revisa el dueño o su abogado.
