@@ -1,4 +1,4 @@
-import { listSecurityEvents, loginFingerprint, recordSecurity, recordSecurityOnce } from '../security-log.js';
+import { actor, listSecurityEvents, loginFingerprint, recordSecurity, recordSecurityOnce } from '../security-log.js';
 import { partialIp } from '../identity/notices.js';
 import { cleanAlertPrefs } from '../automation/alert-groups.js';
 import type { AlertPrefs } from '../types.js';
@@ -169,12 +169,14 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   api.delete('/api/me/sessions/:id', async (req: any) => {
     if (!z.string().uuid().safeParse(req.params.id).success || !(await store.revokeUserSessions(req.user.id, { only: req.params.id }))) throw notFound('Sesión no encontrada');
     await logEvent({ level: 'info', source: 'admin', message: `Sesión cerrada desde Mi perfil por ${req.user.email}`, accountId: req.user.account_id ?? undefined });
+    await recordSecurity({ kind: 'session.revoked', accountId: req.user.account_id ?? null, ...actor(req), details: { current: req.params.id === req.sessionId } });
     return { ok: true, current: req.params.id === req.sessionId };
   });
   api.post('/api/me/sessions/revoke-others', stepUp, async (req: any) => {
     const closed = await store.revokeUserSessions(req.user.id, { except: req.sessionId });
     await forgetTrustedDevices(req.user.id);
     await logEvent({ level: 'info', source: 'admin', message: `${req.user.email} cerró sus otras ${closed} sesiones`, accountId: req.user.account_id ?? undefined });
+    await recordSecurity({ kind: 'session.revoked_others', accountId: req.user.account_id ?? null, ...actor(req), details: { closed } });
     return { ok: true, closed };
   });
 
@@ -587,6 +589,13 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     if (updated.active && target.active && updated.account_id !== target.account_id) await offboard(target, req.user);
     else if (updated.active && target.active && target.role === 'admin' && updated.role !== 'admin') await offboard(target, req.user, { leaving: false });
     if (updated.role !== target.role) await notifyUser(updated, 'role_changed', { by: req.user.name || req.user.email, role: ROLE_NAMES[updated.role] });
+    // Bitácora de seguridad: quién dio de baja (o volvió a dar de alta) a quién. El cambio de rol ya queda como aviso.
+    if (updated.active !== target.active) {
+      await recordSecurity({ kind: updated.active ? 'user.reactivated' : 'user.deactivated', accountId: target.account_id ?? null, ...actor(req), target: target.email, details: { user_id: target.id, role: target.role } });
+    }
+    if (updated.account_id !== target.account_id) {
+      await recordSecurity({ kind: 'user.moved', accountId: target.account_id ?? null, ...actor(req), target: target.email, details: { user_id: target.id, to_account: updated.account_id } });
+    }
     if (updated.role !== target.role || updated.account_id !== target.account_id) {
       await logEvent({ level: 'info', source: 'admin', message: `Permisos de usuario actualizados: ${updated.email}`, accountId: updated.account_id ?? target.account_id ?? undefined,
         details: { actor_id: req.user.id, user_id: updated.id, previous_role: target.role, role: updated.role, previous_account_id: target.account_id, account_id: updated.account_id } });
@@ -617,6 +626,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     await offboard(target, req.user);
     const deleted = await store.deleteUser(target.id, req.user.role === 'superadmin' ? undefined : scopeAccount(req.user)!);
     if (!deleted) throw notFound('Usuario no encontrado');
+    await recordSecurity({ kind: 'user.deleted', accountId: target.account_id ?? null, ...actor(req), target: target.email, details: { user_id: target.id, role: target.role } });
     return { ok: true };
   });
 

@@ -3,7 +3,7 @@
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHarness, dbAvailable, pool } from './harness.js';
+import { createHarness, dbAvailable, pool, waitFor } from './harness.js';
 
 const ok = await dbAvailable();
 const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && 'PostgreSQL de pruebas no disponible' }, fn);
@@ -144,6 +144,34 @@ t('el administrador ve los intentos fallidos contra su gente (sin la IP completa
   assert.ok(r);
   assert.match(r.ip, /…$/);
   assert.equal(rows.length <= 500 && rows.every((x: any) => !x.kind.startsWith('alert.')), true);
+});
+
+t('sesiones, invitaciones, altas y bajas del equipo y restablecer la contraseña quedan en la bitácora', async () => {
+  const owner = await h.loginAs('duena@seguridad.mx', PASS);
+  // Cerrar las otras sesiones (pide verificación reciente: la de loginAs ya lo es).
+  assert.equal((await owner('POST', '/api/me/sessions/revoke-others')).statusCode, 200);
+  assert.ok((await events(`kind = 'session.revoked_others' AND account_id = $1`, [h.accountId])).length >= 1);
+  // Invitar y cancelar.
+  const inv = await owner('POST', '/api/invitations', { email: 'nuevo@seguridad.mx', role: 'agent' });
+  assert.equal(inv.statusCode, 200, inv.body);
+  assert.equal((await owner('DELETE', `/api/invitations/${inv.json().id}`)).statusCode, 200);
+  const invites = await events(`kind LIKE 'invite.%' AND target = 'nuevo@seguridad.mx'`);
+  assert.deepEqual(invites.map((r) => r.kind), ['invite.created', 'invite.revoked']);
+  assert.equal(invites[0].email, 'duena@seguridad.mx', 'quién invitó');
+  // Dar de baja, volver a dar de alta y eliminar a una persona.
+  const temp = await h.addUser({ account_id: h.accountId, email: 'temporal@seguridad.mx', name: 'Temporal', password: PASS, role: 'agent' });
+  assert.equal((await owner('PUT', `/api/users/${temp.id}`, { active: false })).statusCode, 200);
+  assert.equal((await owner('PUT', `/api/users/${temp.id}`, { active: true })).statusCode, 200);
+  assert.equal((await owner('DELETE', `/api/users/${temp.id}`)).statusCode, 200);
+  assert.deepEqual((await events(`kind LIKE 'user.%' AND target = 'temporal@seguridad.mx'`)).map((r) => r.kind), ['user.deactivated', 'user.reactivated', 'user.deleted']);
+  // Pedir restablecer la contraseña (solo si es una cuenta) y un enlace inválido.
+  await h.app.inject({ method: 'POST', url: '/api/forgot-password', remoteAddress: '10.9.7.1', payload: { email: 'agente@seguridad.mx' } });
+  await h.app.inject({ method: 'POST', url: '/api/forgot-password', remoteAddress: '10.9.7.1', payload: { email: 'nadie@seguridad.mx' } });
+  await waitFor(async () => (await events(`kind = 'password_reset.requested' AND email = 'agente@seguridad.mx'`)).length === 1);
+  assert.equal((await events(`kind = 'password_reset.requested' AND email = 'nadie@seguridad.mx'`)).length, 0);
+  const bad = await h.app.inject({ method: 'POST', url: '/api/reset-password', remoteAddress: '10.9.7.2', payload: { token: 'enlace-que-no-existe-123', password: 'Pz-555-Qx-556-Kv' } });
+  assert.equal(bad.statusCode, 400);
+  assert.equal((await events(`kind = 'password_reset.failed' AND ip = '10.9.7.2'`)).length, 1);
 });
 
 t('se conserva SECURITY_LOG_DAYS aunque la cuenta ya no exista; lo más viejo se depura', async () => {

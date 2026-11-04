@@ -20,6 +20,7 @@ import { BUSINESS_TYPES } from '../templates/business.js';
 import { assertCaptcha, captchaEnabled, DISPOSABLE_MESSAGE, GOOGLE_PASS_COOKIE, googlePassCookie, googleSignupPass, isDisposableEmail, readGoogleSignupPass, recordTermsAcceptance, termsVersion } from '../signup-guard.js';
 import { query } from '../db.js';
 import { parse } from './util.js';
+import { recordSecurity, recordSecurityOnce } from '../security-log.js';
 
 const HOUR = 3600_000;
 const redirectUri = () => `${config.publicBaseUrl}/oauth/google/login/callback`;
@@ -53,9 +54,18 @@ export async function googleLoginRoutes(app: FastifyInstance) {
 
   app.get('/oauth/google/login/callback', async (req: any, reply) => {
     const fail = (code: string) => reply.redirect(`/#/login?google=${code}`);
+    // Bitácora de seguridad: por qué no entró (y quién, si ya se sabe).
+    // `reason` queda en la bitácora; `shown` es lo que ve la pantalla de entrada (por omisión, el mismo código).
+    const rejected = async (reason: string, who?: { id?: string; email?: string; account_id?: string | null } | null, shown = reason) => {
+      const e = { kind: 'login.google_rejected' as const, userId: who?.id ?? null, accountId: who?.account_id ?? null, email: who?.email, ip: req.ip, userAgent: String(req.headers['user-agent'] ?? ''), details: { reason } };
+      // Sin cuenta detrás (un enlace de regreso inventado), una fila por IP cada 15 minutos: no se llena la bitácora.
+      if (who) await recordSecurity(e);
+      else await recordSecurityOnce(ipLimitKey(`google:${reason}`, req.ip), 15, e);
+      return fail(shown);
+    };
     const nonce = String(req.cookies?.g_nonce ?? '');
     reply.clearCookie('g_nonce', { path: '/oauth/google' });
-    if (!nonce || !readState(String(req.query.state ?? ''), nonce)) return fail('error');
+    if (!nonce || !readState(String(req.query.state ?? ''), nonce)) return rejected('estado', null, 'error');
     if (req.query.error || !req.query.code) return fail('cancelado');
     try {
       const t = await tokenRequest({ grant_type: 'authorization_code', code: String(req.query.code), redirect_uri: redirectUri() });
@@ -64,7 +74,7 @@ export async function googleLoginRoutes(app: FastifyInstance) {
       // Emitido por Google para esta aplicación (bajos de la 2c): otro emisor u otro cliente no entran.
       if (!GOOGLE_ISSUERS.includes(String(claims.iss ?? '')) || claims.aud !== process.env.GOOGLE_CLIENT_ID) {
         await logEvent({ level: 'warn', source: 'system', message: `Inicio de sesión con Google rechazado: el id_token no es de Google para esta aplicación (iss ${String(claims.iss ?? '—').slice(0, 80)})` });
-        return fail('error');
+        return rejected('token-ajeno', null, 'error');
       }
       const sub = String(claims.sub ?? '');
       const email = String(claims.email ?? '').toLowerCase();
@@ -77,17 +87,17 @@ export async function googleLoginRoutes(app: FastifyInstance) {
       if (!user) {
         const byEmail = await store.getUserForLogin(email);
         if (byEmail) {
-          if (byEmail.role === 'superadmin') return fail('solo-contrasena');
-          if (byEmail.google_sub) return fail('otra-cuenta');
-          if (!byEmail.email_verified_at) return fail('sin-verificar');
+          if (byEmail.role === 'superadmin') return rejected('solo-contrasena', byEmail);
+          if (byEmail.google_sub) return rejected('otra-cuenta', byEmail);
+          if (!byEmail.email_verified_at) return rejected('sin-verificar', byEmail);
           await query(`UPDATE users SET google_sub = $2 WHERE id = $1 AND google_sub IS NULL`, [byEmail.id, sub]);
           user = { ...byEmail, google_sub: sub };
         }
       }
       if (user) {
-        if (!user.active || (user.account_id && !user.account_active)) return fail('desactivada');
+        if (!user.active || (user.account_id && !user.account_active)) return rejected('desactivada', user);
         // El superadministrador solo entra con su contraseña.
-        if (user.role === 'superadmin') return fail('solo-contrasena');
+        if (user.role === 'superadmin') return rejected('solo-contrasena', user);
         // Google es otro primer paso: falta el código de la app (o configurarla).
         const begin = await beginLogin(reply, user, 'google');
         await logEvent({ level: 'info', source: 'admin', message: `Acceso con Google: ${email}`, accountId: user.account_id, details: { ip: req.ip } });

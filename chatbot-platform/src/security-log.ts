@@ -23,6 +23,8 @@ export type SecurityKind =
   | 'login.failed' | 'login.blocked' | 'login.ok' | 'mfa.failed'
   | `notice.${string}`
   | `export.${string}`
+  | 'login.google_rejected'
+  | `session.${string}` | `user.${string}` | `invite.${string}` | `password_reset.${string}`
   | 'contact.erased' | 'account.deleted'
   | 'apikey.created' | 'apikey.revoked' | 'webhook_secret.rotated'
   | `alert.${string}`;
