@@ -9,7 +9,7 @@ import { path, ToolError } from '../executor.js';
 import { defineTool, type Ctx } from '../registry.js';
 import { stableJson, type Preview } from '../store.js';
 import { links, when } from '../summarize.js';
-import { botOf, editList, fromPaths, Id, snapshot } from './common.js';
+import { applyWeek, botOf, DateStr, editList, fromPaths, Id, snapshot, Week, weekDays, weekOut } from './common.js';
 
 const Text = (max: number) => z.string().trim().min(1).max(max);
 const Items = (len = 300) => z.array(Text(len)).max(10);
@@ -371,12 +371,7 @@ export const borrarConocimiento = defineTool({
   },
 });
 
-const DAYS = { lunes: 'mon', martes: 'tue', miercoles: 'wed', jueves: 'thu', viernes: 'fri', sabado: 'sat', domingo: 'sun' } as const;
-type DayName = keyof typeof DAYS;
-const DAY_OUT: Record<string, string> = Object.fromEntries(Object.entries(DAYS).map(([es, en]) => [en, es]));
-const Range = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/, 'Usa HH:MM-HH:MM (ej. 09:00-18:00)');
-const Day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Usa AAAA-MM-DD');
-const Week = z.object(Object.fromEntries(Object.keys(DAYS).map((d) => [d, z.array(Range).max(4).optional()])) as Record<DayName, z.ZodOptional<z.ZodArray<typeof Range>>>);
+const Day = DateStr;
 
 export const cambiarHorario = defineTool({
   name: 'cambiar_horario',
@@ -392,9 +387,8 @@ export const cambiarHorario = defineTool({
   risk: () => 'reversible',
   async execute(a, ctx) {
     const s = await ctx.call.get<any>('/api/settings');
-    const hours = { ...s.business_hours };
-    const days = (Object.keys(a.horario ?? {}) as DayName[]).filter((d) => a.horario?.[d]);
-    for (const d of days) hours[DAYS[d]] = a.horario![d]!.map((r) => r.split('-'));
+    const hours = applyWeek(s.business_hours, a.horario ?? {});
+    const days = weekDays(a.horario);
     const drop = new Set(a.quitar_dias_cerrados ?? []);
     const holidays = [...new Set([...(s.holidays ?? []).filter((d: string) => !drop.has(d)), ...(a.agregar_dias_cerrados ?? [])])].sort();
     const saved = await ctx.call.send<any>('PUT', '/api/settings', { business_hours: hours, holidays });
@@ -407,7 +401,7 @@ export const cambiarHorario = defineTool({
       after,
       undo: { label: 'Deshacer', check: { url: '/api/settings', pick: ['business_hours', 'holidays'], expect: after }, steps: [{ method: 'PUT', url: '/api/settings', body: before }] },
       data: {
-        horario: Object.fromEntries(Object.entries(saved.business_hours as Record<string, string[][]>).map(([d, r]) => [DAY_OUT[d] ?? d, r.length ? r.map((x) => x.join('-')) : 'cerrado'])),
+        horario: weekOut(saved.business_hours),
         dias_cerrados: saved.holidays,
       },
     };

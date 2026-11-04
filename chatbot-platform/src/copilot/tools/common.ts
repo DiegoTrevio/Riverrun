@@ -4,6 +4,33 @@ import { path, ToolError } from '../executor.js';
 import type { Ctx } from '../registry.js';
 
 export const Id = z.string().uuid();
+export const Text = (max: number) => z.string().trim().min(1).max(max);
+export const DateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Usa AAAA-MM-DD');
+export const Money = z.number().positive().max(1_000_000_000).describe('En pesos (o la moneda indicada), con hasta 2 decimales');
+export const cents = (n: number) => Math.round(n * 100);
+export const money = (c: number | string | null | undefined, cur = 'MXN') => (c == null ? 'por confirmar' : `$${(Number(c) / 100).toLocaleString('es-MX', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} ${cur}`);
+
+// --- Horario de la semana (negocio, servicios y equipo) ---------------------------------------------------------------
+
+export const DAYS = { lunes: 'mon', martes: 'tue', miercoles: 'wed', jueves: 'thu', viernes: 'fri', sabado: 'sat', domingo: 'sun' } as const;
+export type DayName = keyof typeof DAYS;
+export const DAY_OUT: Record<string, string> = Object.fromEntries(Object.entries(DAYS).map(([es, en]) => [en, es]));
+const Range = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/, 'Usa HH:MM-HH:MM (ej. 09:00-18:00)');
+/** Franjas por día (lista vacía = cerrado); solo los días que se mandan cambian. */
+export const Week = z.object(Object.fromEntries(Object.keys(DAYS).map((d) => [d, z.array(Range).max(4).optional()])) as Record<DayName, z.ZodOptional<z.ZodArray<typeof Range>>>);
+export type WeekArgs = z.infer<typeof Week>;
+type Hours = Record<string, string[][]>;
+
+/** El horario con los días pedidos cambiados (los demás como estaban). */
+export function applyWeek(base: Hours, week: WeekArgs): Hours {
+  const hours: Hours = { ...base };
+  for (const d of Object.keys(week) as DayName[]) if (week[d]) hours[DAYS[d]] = week[d]!.map((r) => r.split('-'));
+  return hours;
+}
+/** Días del horario que se piden cambiar. */
+export const weekDays = (week: WeekArgs | null | undefined) => (Object.keys(week ?? {}) as DayName[]).filter((d) => week?.[d]);
+/** El horario en palabras: { lunes: ['09:00-18:00'], domingo: 'cerrado' }. */
+export const weekOut = (hours: Hours | null | undefined) => (hours ? Object.fromEntries(Object.entries(hours).map(([d, r]) => [DAY_OUT[d] ?? d, r.length ? r.map((x) => x.join('-')) : 'cerrado'])) : null);
 
 export const nameOf = (c: { name?: string | null; push_name?: string | null; phone?: string | null } | null | undefined) =>
   c?.name || c?.push_name || c?.phone || 'Sin nombre';
