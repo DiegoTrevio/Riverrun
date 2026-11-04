@@ -6,6 +6,7 @@ import { imageAbsolutePath, sleep, type OutgoingButton, type OutgoingFile, type 
 import { safeEqual } from '../secret.js';
 import { ChannelConfigSchemas, type Channel, type ImageAsset } from '../types.js';
 import type { ChannelAdapter, InboundMessage } from './types.js';
+import { INBOUND_MEDIA_MAX_BYTES, readCapped } from './media.js';
 
 /** Cliente mínimo de la Bot API de Telegram. https://core.telegram.org/bots/api */
 export class TelegramClient {
@@ -28,7 +29,10 @@ export class TelegramClient {
   async download(filePath: string): Promise<Buffer> {
     const res = await fetch(`${this.base}/file/bot${this.token}/${filePath}`, { signal: AbortSignal.timeout(30000) });
     if (!res.ok) throw new Error(`Telegram: no se pudo descargar el archivo (${res.status})`);
-    return Buffer.from(await res.arrayBuffer());
+    // Telegram entrega hasta 20 MB a los bots; lo que pase del tope de lo que se guarda no entra a memoria.
+    const buf = await readCapped(res, INBOUND_MEDIA_MAX_BYTES);
+    if (!buf) throw new Error('Telegram: el archivo es demasiado grande');
+    return buf;
   }
 }
 

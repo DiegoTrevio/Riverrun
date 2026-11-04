@@ -23,7 +23,14 @@ export function metaConnectButton({ chatbotId = null, accountId = null, label = 
 /** Regreso de Facebook: páginas de la cuenta con su Instagram para elegir y el agente que las atenderá. */
 export async function viewMetaConnect(root, sessionId, params) {
   root.append(h('h1', {}, 'Conectar Facebook e Instagram'));
-  const error = params.get('error');
+  // La URL solo trae un código (cualquiera puede armar el enlace): el texto es siempre uno de estos.
+  const ERRORS = {
+    cancelado: 'Se canceló la conexión con Facebook o no se aceptaron los permisos.',
+    navegador: 'Abre la conexión desde el mismo navegador donde pulsaste «Conectar con Facebook».',
+    vencido: 'El enlace de conexión venció o ya se usó. Vuelve a pulsar «Conectar con Facebook».',
+    fallo: 'Facebook no completó la conexión. Vuelve a intentarlo y acepta todos los permisos.',
+  };
+  const error = params.get('error') ? (ERRORS[params.get('error')] ?? ERRORS.fallo) : '';
   if (!sessionId || error) {
     return root.append(h('div', { class: 'card' },
       h('p', { class: 'banner danger', role: 'alert' }, error || 'No se completó la conexión con Facebook.'),

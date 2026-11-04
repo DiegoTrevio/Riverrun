@@ -178,7 +178,7 @@ export async function selfServicePages(root: FastifyInstance) {
         if (captcha === 'invalid') return html(reply, 400, contactForm({ brand, values, error: CAPTCHA_MESSAGE }));
         if (captcha === 'unavailable') return html(reply, 503, contactForm({ brand, values, error: 'No pudimos comprobar el captcha: intenta en un momento.' }));
         const to = supportInbox();
-        if (to) await sendMail({ to, replyTo: b.data.email, subject: `Contacto: ${b.data.name}`, text: `${b.data.name} <${b.data.email}> escribió desde ${brand.name} (/contacto):\n\n${b.data.message}` });
+        if (to) await sendMail({ to, replyTo: b.data.email, subject: `Mensaje desde /contacto de ${brand.name}`, text: `${b.data.name} <${b.data.email}> escribió desde ${brand.name} (/contacto):\n\n${b.data.message}` });
         await logEvent({ level: to ? 'info' : 'warn', source: 'system', message: to ? `Mensaje de contacto de ${b.data.email}` : `Mensaje de contacto de ${b.data.email} sin buzón de soporte (define SUPERADMIN_EMAIL)`, details: to ? undefined : { message: b.data.message.slice(0, 2000) } });
       }
       return html(reply, 200, page({ title: 'Mensaje enviado', brand, body: '<h1>¡Gracias!</h1><p>Recibimos tu mensaje y te responderemos a tu correo lo antes posible.</p>' }));

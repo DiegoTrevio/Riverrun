@@ -35,11 +35,18 @@ t('redactTokens oculta el token de cada enlace y deja lo demás', async () => {
   assert.match(out, /#\/registro-google\/\[oculto\]/);
 });
 
-t('sin SMTP, la bitácora guarda el texto sin el token y el buzón de pruebas lo guarda completo', async () => {
-  await deliverMail({ to: 'ana@bitacora.mx', subject: 'Restablece tu contraseña', text: 'Abre https://p.mx/#/restablecer?token=SECRETO-123 (vence en 1 hora)' });
+t('sin SMTP, la bitácora no guarda el cuerpo del correo (INF-13); el buzón de pruebas sí', async () => {
+  await deliverMail({ to: 'ana@bitacora.mx', subject: 'Restablece tu contraseña', text: 'Hola Ana López, tu pedido 4471. Abre https://p.mx/#/restablecer?token=SECRETO-123 (vence en 1 hora)' });
   const row = (await pool.query(`SELECT details FROM event_logs WHERE message = 'Correo (sin SMTP) para ana@bitacora.mx: Restablece tu contraseña' ORDER BY id DESC LIMIT 1`)).rows[0];
   assert.ok(row, 'quedó en la bitácora');
-  assert.doesNotMatch(row.details.text, /SECRETO-123/);
-  assert.match(row.details.text, /token=\[oculto\]/);
+  assert.doesNotMatch(JSON.stringify(row.details), /SECRETO-123|pedido 4471|Ana López/);
+  assert.ok(row.details.chars > 0);
   assert.match(outbox.at(-1)!.text, /SECRETO-123/);
+});
+
+t('el asunto es una sola línea: sin saltos ni caracteres de control y con largo razonable', async () => {
+  await deliverMail({ to: 'ana@bitacora.mx', subject: 'Hola\r\nBcc: todos@victima.mx\u0007  y más', text: 'x' });
+  assert.equal(outbox.at(-1)!.subject, 'Hola Bcc: todos@victima.mx y más');
+  await deliverMail({ to: 'ana@bitacora.mx', subject: 'a'.repeat(400), text: 'x' });
+  assert.equal(outbox.at(-1)!.subject.length, 150);
 });

@@ -38,6 +38,26 @@ export function verifyQuoteSignature(quoteId: string, exp: string, sig: string) 
 /** Tamaño máximo de una foto o documento del cliente (WhatsApp limita las fotos a 16 MB). Lo que pesa más no se descarga. */
 export const INBOUND_MEDIA_MAX_BYTES = 16 * 1024 * 1024;
 
+/**
+ * El cuerpo de una respuesta de fetch() con tope: se corta al pasarlo aunque el servidor no mande Content-Length (un
+ * envío en trozos no se guarda entero en memoria antes de medirlo). null si se pasa.
+ */
+export async function readCapped(res: Response, max: number): Promise<Buffer | null> {
+  if (Number(res.headers.get('content-length') ?? 0) > max) { await res.body?.cancel().catch(() => undefined); return null; }
+  if (!res.body) return Buffer.alloc(0);
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > max) { await reader.cancel().catch(() => undefined); return null; }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks);
+}
+
 /** Archivo de un cliente ya guardado en disco, con lo necesario para comprobarlo después. */
 export interface StoredMedia {
   kind: 'image' | 'document' | 'video';

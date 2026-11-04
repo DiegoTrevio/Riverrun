@@ -81,7 +81,8 @@ async function viewTeam(root, params) {
   const status = params.get('calendario');
   if (status === 'ok') toast('Calendario conectado');
   else if (status === 'cancelado') toast('No se conectó el calendario', true);
-  else if (status === 'error') toast(`No se pudo conectar el calendario${params.get('msg') ? `: ${params.get('msg')}` : ''}`, true);
+  // Solo mensajes fijos: un texto de la URL lo puede poner cualquiera que arme el enlace.
+  else if (status === 'error') toast('No se pudo conectar el calendario. El motivo quedó en Registros; vuelve a intentarlo.', true);
   const [team, mine] = await Promise.all([api('GET', withAcct('/api/team/agenda')), api('GET', '/api/me/calendar').catch(() => null)]);
   root.append(h('div', { class: 'card' }, h('p', { class: 'muted', style: 'margin:0' },
     'Cada persona tiene su horario y sus días libres: el asistente solo ofrece horarios en los que alguien que atiende el servicio está disponible. ',

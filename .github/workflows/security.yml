@@ -1,0 +1,60 @@
+# INF-15: búsqueda de secretos en lo que cambia (cada PR y cada push a main) y, cada semana, en todo el historial y en
+# las dependencias (avisos nuevos aunque nadie toque el código).
+name: Seguridad
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GITLEAKS_VERSION: 8.21.2
+  GITLEAKS_SHA256: 5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba
+
+jobs:
+  secrets:
+    name: Secretos en el código
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: gitleaks (descarga verificada por su suma)
+        run: |
+          curl -fsSL -o gl.tgz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gl.tgz" | sha256sum -c -
+          tar xzf gl.tgz gitleaks && rm gl.tgz
+      - name: Buscar secretos
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          case "$EVENT" in
+            pull_request) range="$BASE..$HEAD" ;;
+            push) if [[ "$BEFORE" =~ ^0+$ ]]; then range="$AFTER~1..$AFTER"; else range="$BEFORE..$AFTER"; fi ;;
+            *) range="" ;;
+          esac
+          if [[ -n "$range" ]]; then ./gitleaks git --no-banner --redact -v --log-opts="$range" .
+          else ./gitleaks git --no-banner --redact -v .; fi
+
+  audit:
+    name: Dependencias con avisos
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: chatbot-platform
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - run: npm audit --omit=dev --audit-level=high

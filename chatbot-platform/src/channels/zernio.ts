@@ -6,7 +6,7 @@ import { toPlainText } from '../engine/text.js';
 import { sleep, type OutgoingButton, type OutgoingFile, type OutgoingTemplate, type Transport } from '../engine/transport.js';
 import { decryptSecret, hmac, safeEqual } from '../secret.js';
 import { ChannelConfigSchemas, type Channel, type ImageAsset } from '../types.js';
-import { INBOUND_MEDIA_MAX_BYTES, signedImageUrl } from './media.js';
+import { INBOUND_MEDIA_MAX_BYTES, readCapped, signedImageUrl } from './media.js';
 import type { ChannelAdapter, InboundMessage, ParseResult, WebhookRequest } from './types.js';
 import { platformSecret } from '../platform-secrets.js';
 import { drainZernioBudget, noteZernioLimit, takeZernioAccountBudget, takeZernioBudget, type ZernioPriority } from './zernio-budget.js';
@@ -298,9 +298,9 @@ async function download(channel: Channel, url: string | undefined): Promise<{ bu
   if (parsed.origin === new URL(config.zernioApiUrl).origin) {
     // Sin seguir redirecciones (la llave no viaja a otro lado) y con el mismo tope de tamaño que lo demás.
     const res = await fetch(url, { headers: { authorization: `Bearer ${zernioKey(channel)}` }, redirect: 'manual', signal: AbortSignal.timeout(30000) });
-    if (!res.ok || Number(res.headers.get('content-length') ?? 0) > INBOUND_MEDIA_MAX_BYTES) return null;
-    const buffer = Buffer.from(await res.arrayBuffer());
-    if (buffer.length > INBOUND_MEDIA_MAX_BYTES) return null;
+    if (!res.ok) return null;
+    const buffer = await readCapped(res, INBOUND_MEDIA_MAX_BYTES);
+    if (!buffer) return null;
     return { buffer, mimeType: (res.headers.get('content-type') ?? 'application/octet-stream').split(';')[0] };
   }
   // Cualquier otra dirección: solo https y sin llegar a la red interna del servidor.
