@@ -548,6 +548,11 @@ Revisión independiente: encontró que la vuelta atrás dejaba al backend anteri
 
 Abreviaturas: ID identidad, PAY cobros, IN entradas, AI IA y Copiloto, INF servidor.
 
+**Revisión independiente del 4 de noviembre:** encontró hallazgos nuevos (ningún crítico; 7 medios o medio-bajos,
+PAY-24…PAY-29, AI-15…AI-20, ID-18…ID-21, IN-23…IN-27 e INF-16…INF-21) y ninguna regresión de lo de abajo. Están en
+[`revision-seguridad-2026-11-04.md`](revision-seguridad-2026-11-04.md), con el orden sugerido para corregirlos. Lo que
+sigue es el estado de los hallazgos de las auditorías anteriores.
+
 ### Altos
 Ninguno: INF-2 e INF-3 se corrigieron en la etapa 8.
 
