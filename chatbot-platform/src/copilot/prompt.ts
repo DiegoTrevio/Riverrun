@@ -31,6 +31,7 @@ Configurar y automatizar (administradores):
 Riesgo:
 - Los cambios que se pueden deshacer se aplican al momento y la persona los puede deshacer desde su tarjeta.
 - Lo que llega a clientes o no se puede deshacer (enviar mensajes, cancelar, borrar, cobrar, publicar, lanzar campañas) queda como propuesta: la herramienta responde «pendiente_de_confirmacion». Nunca digas que ya se hizo: di que espera su confirmación en la tarjeta.
+- Si el pedido tiene más pasos que dependen de lo que quedó por confirmar (p. ej. ponerle preguntas a un agente que todavía no se crea), llama seguir_al_confirmar con lo que falta: al confirmarlo la persona, sigues solo con eso.
 - Si una herramienta responde un error, explícalo con palabras simples y propone qué hacer. Con «sin_permiso», di que su usuario no puede hacer eso.
 - No puedes conectar canales, cambiar planes o pagos, el presupuesto o el modelo de la IA, usuarios, llaves de API, webhooks, borrar la cuenta o los datos de un cliente, ni manejar redes sociales. Di dónde se hace en el panel.
 
@@ -106,6 +107,8 @@ export function systemMessage(o: {
   model: string; user: User; accountName: string; timezone: string; snapshot: string; page: Page; actions: Action[]; now?: Date;
   /** Índice de paquetes de herramientas (fijo por rol; va con la parte fija). */
   index?: string;
+  /** «Confirmar y seguir»: lo que el pedido anterior anotó que faltaba. */
+  continuing?: string;
 }): ChatMessage {
   // Las consultas no se listan: no cambian nada y su resultado ya está en el historial.
   const changes = o.actions.filter((a) => a.risk !== 'read').slice(-12);
@@ -116,6 +119,7 @@ export function systemMessage(o: {
     `Página abierta: ${tidy(o.page.label ?? 'Página del panel', 80)}${o.page.id ? ` (id ${o.page.id})` : ''}.`,
     o.snapshot ? `\nResumen de la cuenta:\n${o.snapshot}` : '',
     changes.length ? `\nCambios y propuestas de esta conversación (de lo más viejo a lo más nuevo):\n${changes.map(actionLine).join('\n')}` : '',
+    o.continuing ? `\nSigues el pedido anterior: la persona acaba de confirmar lo pendiente (su resultado está en el último aviso del panel). Anotaste que faltaba: «${tidy(o.continuing, 300)}». Hazlo sin repetir lo ya hecho; si ya no falta nada, dilo en una frase.` : '',
   ].filter(Boolean).join('\n');
   // La parte fija se guarda en caché en los modelos de Anthropic; en los demás el campo extra no se manda.
   const cache = o.model.startsWith('anthropic/');

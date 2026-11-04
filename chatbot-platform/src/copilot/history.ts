@@ -5,6 +5,7 @@
  */
 import type { AnyMessage } from '../ai/provider.js';
 import { actionLine, tidy } from './prompt.js';
+import { forModel } from './summarize.js';
 import type { Action, Message } from './store.js';
 
 /** Turnos que se repiten completos (con los resultados de sus herramientas). */
@@ -21,9 +22,17 @@ function userText(m: Message, actions: Map<string, Action>): string {
   return refs.length ? `${text}\n\n[Se refiere a estas acciones]\n${refs.map(actionLine).join('\n')}` : text;
 }
 
+/** Aviso del panel; si es de una propuesta confirmada, con su resultado (el id de lo creado, para seguir trabajando). */
+function noticeText(m: Message, actions: Map<string, Action>): string {
+  if (m.redacted) return `${NOTICE} (borrado)`;
+  const a = m.refs?.length ? actions.get(m.refs[0]) : undefined;
+  const result = a && a.status === 'done' && a.result != null ? `\nResultado: ${forModel(a.result, 1200)}` : '';
+  return `${NOTICE} ${tidy(m.content, 300)}${result}`;
+}
+
 function toModel(m: Message, actions: Map<string, Action>, toolMax = MAX_TOOL): AnyMessage | null {
   if (m.role === 'user') return { role: 'user', content: userText(m, actions) };
-  if (m.role === 'event') return { role: 'user', content: `${NOTICE} ${m.redacted ? '(borrado)' : tidy(m.content, 300)}` };
+  if (m.role === 'event') return { role: 'user', content: noticeText(m, actions) };
   if (m.role === 'assistant') {
     if (m.tool_calls?.length) return { role: 'assistant', content: m.content || null, tool_calls: m.tool_calls };
     return m.content ? { role: 'assistant', content: m.content } : null;

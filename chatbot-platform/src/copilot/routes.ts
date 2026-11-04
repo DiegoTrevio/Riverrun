@@ -8,8 +8,10 @@ import { HttpError, notFound } from '../access.js';
 import { cookieName } from '../auth.js';
 import { config } from '../config.js';
 import { query } from '../db.js';
-import { budgetPolicy, normalize, platformAiCap } from '../ai/budget.js';
 import { assertAiAllowed } from '../ai/gate.js';
+import { turnAllowance } from './allowance.js';
+import { maybeContinue } from './continue.js';
+import { tidy } from './prompt.js';
 import * as store from '../store/index.js';
 import { parse } from '../routes/util.js';
 import { confirmAction, declineAction, undoAction, undoTurn } from './actions.js';
@@ -41,38 +43,6 @@ function sessionCookie(req: FastifyRequest): string {
   return `${name}=${value}`;
 }
 
-/** ¿El gasto de IA ya pasó el 80 % de un límite? Así el Copiloto no deja sin IA al agente que atiende a los clientes. */
-async function budgetTight(accountId: string): Promise<boolean> {
-  const { settings } = await budgetPolicy(accountId);
-  const model = normalize(config.copilot.model);
-  const caps = [
-    ...(settings.monthly_usd !== null ? [{ period: 'month', limit: settings.monthly_usd, model: null as string | null }] : []),
-    ...(settings.daily_usd !== null ? [{ period: 'day', limit: settings.daily_usd, model: null as string | null }] : []),
-    ...settings.models.filter((m) => normalize(m.model) === model).map((m) => ({ period: m.period, limit: m.limit_usd, model })),
-  ];
-  for (const cap of caps) {
-    if (cap.limit <= 0) return true;
-    const [row] = await query<{ used: string }>(
-      `SELECT coalesce(sum(coalesce(charged_usd, reserved_usd)), 0) AS used FROM ai_spend
-        WHERE account_id = $1 AND created_at >= date_trunc($2, now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AND ($3::text IS NULL OR $3 = ANY(models)) AND state <> 'rejected'`,
-      [accountId, cap.period, cap.model],
-    );
-    if (Number(row.used) >= cap.limit * 0.8) return true;
-  }
-  // PAY-6: el tope de la plataforma (plan, prueba o excepción de la cuenta) también: una cuenta sin cupo no usa el Copiloto.
-  const platform = await platformAiCap(accountId);
-  if (platform !== null) {
-    if (platform <= 0) return true;
-    const [row] = await query<{ used: string }>(
-      `SELECT coalesce(sum(coalesce(charged_usd, reserved_usd)), 0) AS used FROM ai_spend
-        WHERE account_id = $1 AND created_at >= date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AND state <> 'rejected'`,
-      [accountId],
-    );
-    if (Number(row.used) >= platform * 0.8) return true;
-  }
-  return false;
-}
-
 // --- Lo que ve el panel ----------------------------------------------------------------------------------------------
 
 function messageOut(m: cs.Message) {
@@ -93,7 +63,11 @@ function actionOut(a: cs.Action) {
 
 function turnOut(t: cs.Turn | null) {
   if (!t) return null;
-  return { id: t.id, status: t.status, step_label: t.step_label, error: t.error, started_at: t.started_at, finished_at: t.finished_at, steps: t.steps, tool_calls: t.tool_calls, rev: Number(t.rev) };
+  return {
+    id: t.id, status: t.status, step_label: t.step_label, error: t.error, started_at: t.started_at, finished_at: t.finished_at, steps: t.steps, tool_calls: t.tool_calls, rev: Number(t.rev),
+    // «Confirmar y seguir»: si sigue solo de otro pedido y lo que anotó que falta (para la tarjeta).
+    origin: t.origin, continue_plan: t.continue_plan ? tidy(t.continue_plan, 300) : '',
+  };
 }
 
 const maxRev = (...lists: { rev: string }[][]) => lists.flat().reduce((n, x) => Math.max(n, Number(x.rev)), 0);
@@ -174,20 +148,13 @@ export async function copilotRoutes(api: FastifyInstance, deps: RunnerDeps) {
     }), req.body);
     await cs.sweepStale(thread.id);
     await cs.sweepStaleUser(req.user.id);
-    const used = await cs.recentTurns(req.user.id, thread.account_id);
-    if (used.user_hour >= config.copilot.turnsPerHour) throw new HttpError(429, 'Llegaste al límite de pedidos al Copiloto por hora; intenta en un rato');
-    if (used.account_day >= config.copilot.accountTurnsPerDay) throw new HttpError(429, 'La cuenta llegó al límite de pedidos al Copiloto de hoy');
-    const dayCap = config.copilot.accountUsdPerDay;
-    if (dayCap > 0 && used.account_day_usd >= dayCap) throw new HttpError(429, 'La cuenta llegó al tope de gasto del Copiloto de las últimas 24 horas; intenta más tarde');
-    if (await budgetTight(thread.account_id)) throw new HttpError(409, 'El presupuesto de IA de la cuenta está por acabarse: el Copiloto se pausa para no dejar sin IA a tu agente. Revísalo en Consumo de IA.');
+    const { maxUsd } = await turnAllowance(req.user.id, thread.account_id);
     const refs = (await cs.actionsByIds(b.refs, thread.id)).map((a) => a.id);
     const cookie = sessionCookie(req);
     const turn = await cs.startTurn(thread, parsePage(b.page.hash), config.copilot.model);
     if (!turn) throw new HttpError(409, 'Todavía estoy trabajando en tu pedido anterior');
     const message = await cs.addMessage({ thread_id: thread.id, turn_id: turn.id, role: 'user', content: b.text, refs });
     await cs.touchThread(thread.id, b.text.slice(0, 60));
-    // Un pedido no gasta más de lo que le queda a la cuenta en el día.
-    const maxUsd = dayCap > 0 ? dayCap - used.account_day_usd : undefined;
     void startTurnInBackground(deps, { thread, turn, user: req.user, cookie, ip: req.ip, refs, maxUsd });
     return reply.code(202).send({ turn: turnOut(turn), message: messageOut(message) });
   });
@@ -210,8 +177,12 @@ export async function copilotRoutes(api: FastifyInstance, deps: RunnerDeps) {
 
   api.post('/api/copilot/actions/:id/confirm', async (req: any) => {
     const action = await ownAction(req);
-    const b = parse(z.object({ seen_hash: z.string().min(1).max(64) }), req.body);
-    return actionOut(await confirmAction(deps, { action, user: req.user, cookie: sessionCookie(req), ip: req.ip, seenHash: b.seen_hash }));
+    const b = parse(z.object({ seen_hash: z.string().min(1).max(64), seguir: z.boolean().default(false) }), req.body);
+    const cookie = sessionCookie(req);
+    const done = await confirmAction(deps, { action, user: req.user, cookie, ip: req.ip, seenHash: b.seen_hash });
+    // «Confirmar y seguir»: si el pedido anotó lo que faltaba, el Copiloto sigue solo (con los mismos límites).
+    const continued = b.seguir && done.status === 'done' ? await maybeContinue(deps, { action: done, user: req.user, cookie, ip: req.ip }) : null;
+    return { ...actionOut(done), continued_turn: turnOut(continued) };
   });
 
   api.post('/api/copilot/actions/:id/decline', async (req: any) => {

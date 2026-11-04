@@ -63,6 +63,8 @@ export interface Ctx {
   packs?: Set<Pack>;
   /** Carga paquetes en este pedido; devuelve los nombres de las herramientas que quedaron disponibles. */
   loadPacks?: (packs: Pack[]) => string[];
+  /** «Confirmar y seguir»: anota lo que falta para cuando se confirme lo propuesto; false si no hay nada por confirmar. */
+  planContinuation?: (faltan: string) => Promise<boolean>;
 }
 
 export interface ExecResult {

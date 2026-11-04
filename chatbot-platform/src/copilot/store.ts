@@ -20,6 +20,8 @@ export interface Turn {
   started_at: Date; finished_at: Date | null; rev: string;
   /** Paquetes de herramientas que tuvo cargados (el siguiente pedido los conserva; migración 115). */
   packs: string[];
+  /** «Confirmar y seguir» (migración 116): de dónde salió, de qué pedido sigue y lo que anotó que faltaba. */
+  origin: 'user' | 'continuation'; parent_turn_id: string | null; chain_depth: number; continue_plan: string;
 }
 export interface StoredToolCall { id: string; name: string; arguments: string }
 export interface Message {
@@ -102,11 +104,16 @@ export async function deleteThread(id: string) {
 // --- Turnos ----------------------------------------------------------------------------------------------------------
 
 /** Abre un turno; `null` si ya hay uno en curso en ese hilo o de esa persona (índices únicos parciales). */
-export async function startTurn(thread: Thread, page: Page, model: string): Promise<Turn | null> {
+export async function startTurn(
+  thread: Thread, page: Page, model: string,
+  follow?: { parent: Pick<Turn, 'id' | 'chain_depth' | 'contact_ids'> },
+): Promise<Turn | null> {
   try {
     return await queryOne<Turn>(
-      `INSERT INTO copilot_turns (thread_id, account_id, user_id, page, model) VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [thread.id, thread.account_id, thread.user_id, JSON.stringify(page), model],
+      `INSERT INTO copilot_turns (thread_id, account_id, user_id, page, model, origin, parent_turn_id, chain_depth, contact_ids)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      [thread.id, thread.account_id, thread.user_id, JSON.stringify(page), model,
+        follow ? 'continuation' : 'user', follow?.parent.id ?? null, follow ? follow.parent.chain_depth + 1 : 0, follow?.parent.contact_ids ?? []],
     );
   } catch (e: any) {
     if (e?.code === '23505') return null;
@@ -150,6 +157,16 @@ export async function markTurn(id: string, o: { tainted?: boolean; contactIds?: 
             packs = CASE WHEN $4::text[] IS NULL THEN packs ELSE $4::text[] END WHERE id = $1`,
     [id, !!o.tainted, o.contactIds ?? [], o.packs ?? null],
   );
+}
+
+/** Lo que el pedido anotó que falta para cuando se confirme su propuesta («Confirmar y seguir»). */
+export async function setContinuePlan(id: string, plan: string) {
+  await query(`UPDATE copilot_turns SET continue_plan = $2 WHERE id = $1`, [id, plan.slice(0, 300)]);
+}
+
+/** Propuestas de ese pedido que siguen esperando confirmación. */
+export async function pendingProposals(turnId: string): Promise<number> {
+  return (await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM copilot_actions WHERE turn_id = $1 AND status = 'proposed' AND expires_at > now()`, [turnId]))!.n;
 }
 
 /** Paquetes que tuvo cargados el pedido anterior del hilo (el nuevo los conserva). */

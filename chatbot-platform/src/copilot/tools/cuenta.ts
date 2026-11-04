@@ -25,6 +25,29 @@ export const usarHerramientas = defineTool({
   },
 });
 
+/**
+ * «Confirmar y seguir»: cuando un pedido de varios pasos queda esperando una confirmación, anota lo que falta; al
+ * confirmarse, el Copiloto sigue solo con eso (con el resultado de lo confirmado a la vista).
+ */
+export const seguirAlConfirmar = defineTool({
+  name: 'seguir_al_confirmar',
+  area: 'cuenta',
+  pack: 'base',
+  meta: true,
+  roles: ['admin', 'agent'],
+  description: 'Si dejaste algo por confirmar y el pedido tiene más pasos, anota lo que falta: al confirmarse, sigues solo con eso.',
+  schema: z.object({ faltan: z.string().trim().min(3).max(300) }),
+  label: () => 'Anotando lo que sigue…',
+  risk: () => 'read',
+  async execute(a, ctx) {
+    const ok = (await ctx.planContinuation?.(a.faltan)) ?? false;
+    return {
+      title: 'Anoté lo que sigue',
+      data: ok ? { estado: 'anotado', nota: 'Al confirmarse lo pendiente, sigo con esto.' } : { estado: 'sin_pendientes', nota: 'Primero deja la propuesta por confirmar; después anota lo que falta.' },
+    };
+  },
+});
+
 export const contextoCuenta = defineTool({
   name: 'contexto_cuenta',
   area: 'cuenta',
@@ -54,4 +77,4 @@ export const contarEtiquetas = defineTool({
   },
 });
 
-export const ACCOUNT_TOOLS = [contextoCuenta, contarEtiquetas, usarHerramientas];
+export const ACCOUNT_TOOLS = [contextoCuenta, contarEtiquetas, usarHerramientas, seguirAlConfirmar];

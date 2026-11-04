@@ -618,3 +618,73 @@ t('paquetes: la página carga su área; una herramienta de otra área se carga s
     assert.match(toolMsg, /Ya cargué su esquema/);
   });
 });
+
+t('«Confirmar y seguir»: al confirmar la última propuesta, el Copiloto sigue solo con lo que anotó (con el resultado a la vista)', async () => {
+  await withLimits({ turnsPerHour: 1000 }, async () => {
+    const id = await thread(owner);
+    h.copilotCalls.length = 0;
+    script([
+      call('enviar_mensaje', { conversacion_id: ana.id, texto: 'Hola Ana, ya quedó tu pedido.' }),
+      call('seguir_al_confirmar', { faltan: 'Etiquetar a Ana como «avisada»' }),
+      'Te dejé el mensaje para confirmar; luego la etiqueto.',
+      // Lo que hace la continuación:
+      call('etiquetar', { contacto_ids: [ana.contact_id], agregar: ['avisada'] }),
+      'Listo: la etiqueté como avisada.',
+    ]);
+    const r = await ask(owner, id, 'Avísale a Ana que ya quedó su pedido y luego etiquétala como avisada');
+    assert.equal(r.turn.continue_plan, 'Etiquetar a Ana como avisada', JSON.stringify(r.turn));
+    assert.equal(r.actions.filter((a: any) => a.tool === 'seguir_al_confirmar').length, 0, 'anotar no deja tarjeta');
+    const p = r.actions.find((a: any) => a.tool === 'enviar_mensaje');
+    const c = await owner('POST', `/api/copilot/actions/${p.id}/confirm`, { seen_hash: p.seen_hash, seguir: true });
+    assert.equal(c.statusCode, 200, c.body);
+    const continued = c.json().continued_turn;
+    assert.ok(continued, 'arrancó la continuación');
+    assert.equal(continued.origin, 'continuation');
+    await waitFor(async () => (await owner('GET', `/api/copilot/threads/${id}`)).json().turn?.status !== 'running', 8000);
+    const after = (await owner('GET', `/api/copilot/threads/${id}`)).json();
+    assert.equal(after.turn.id, continued.id);
+    assert.ok(after.actions.some((a: any) => a.tool === 'etiquetar' && a.status === 'done'), 'siguió y etiquetó');
+    assert.ok((await contact(ana.contact_id)).tags.includes('avisada'));
+    const row = (await pool.query(`SELECT parent_turn_id, chain_depth FROM copilot_turns WHERE id = $1`, [continued.id])).rows[0];
+    assert.equal(row.parent_turn_id, r.turn.id);
+    assert.equal(row.chain_depth, 1);
+    // La continuación vio lo que anotó y el resultado de lo confirmado.
+    const first = h.copilotCalls.find((x: any) => JSON.stringify(x.messages).includes('Sigues el pedido anterior')) as any;
+    assert.ok(first, 'las instrucciones dicen que sigue el pedido anterior');
+    const last = first.messages.at(-1);
+    assert.equal(last.role, 'user');
+    assert.match(String(last.content), /Confirmaste: .*Resultado: /s);
+  });
+});
+
+t('«Confirmar y seguir»: no sigue sin «seguir», con otra propuesta pendiente, ni pasado el tope de continuaciones', async () => {
+  await withLimits({ turnsPerHour: 1000 }, async () => {
+    const proposeTwo = async () => {
+      const id = await thread(owner);
+      script([
+        { tool_calls: [{ name: 'enviar_mensaje', arguments: { conversacion_id: ana.id, texto: 'Uno' } }, { name: 'enviar_mensaje', arguments: { conversacion_id: beto.id, texto: 'Dos' } }] },
+        call('seguir_al_confirmar', { faltan: 'Etiquetar a los dos' }),
+        'Revisa las tarjetas.',
+      ]);
+      const r = await ask(owner, id, 'Manda los dos mensajes y etiquétalos');
+      return r.actions.filter((a: any) => a.tool === 'enviar_mensaje');
+    };
+    const [a, b] = await proposeTwo();
+    const first = (await owner('POST', `/api/copilot/actions/${a.id}/confirm`, { seen_hash: a.seen_hash, seguir: true })).json();
+    assert.equal(first.continued_turn, null, 'queda otra propuesta pendiente: todavía no sigue');
+    const second = (await owner('POST', `/api/copilot/actions/${b.id}/decline`, {})).json();
+    assert.equal(second.status, 'declined');
+
+    const [c, d] = await proposeTwo();
+    await owner('POST', `/api/copilot/actions/${c.id}/decline`, {});
+    const noFollow = (await owner('POST', `/api/copilot/actions/${d.id}/confirm`, { seen_hash: d.seen_hash })).json();
+    assert.equal(noFollow.continued_turn, null, 'sin «seguir» no sigue');
+
+    const [e, f] = await proposeTwo();
+    await owner('POST', `/api/copilot/actions/${e.id}/decline`, {});
+    await withLimits({ maxContinuations: 0 }, async () => {
+      const capped = (await owner('POST', `/api/copilot/actions/${f.id}/confirm`, { seen_hash: f.seen_hash, seguir: true })).json();
+      assert.equal(capped.continued_turn, null, 'con el tope en 0 no sigue');
+    });
+  });
+});

@@ -256,7 +256,8 @@ async function act(a, path, body, done) {
   s.busy.add(a.id); render();
   try {
     const updated = await api('POST', url(`/actions/${a.id}/${path}`), body || {});
-    merge({ actions: [updated] });
+    merge({ actions: [updated], ...(updated.continued_turn ? { turns: [updated.continued_turn] } : {}) });
+    if (updated.continued_turn) setStatus('Siguiendo con tu pedido…');
     if (done) toast(done(updated), updated.status === 'failed');
     schedule(600);
   } catch (e) {
@@ -268,7 +269,7 @@ async function act(a, path, body, done) {
 }
 
 const handlers = {
-  confirm: (a) => act(a, 'confirm', { seen_hash: a.seen_hash }, (u) => (u.status === 'done' ? `Hecho: ${u.title}` : `No se pudo: ${u.error || u.title}`)),
+  confirm: (a, seguir = false) => act(a, 'confirm', { seen_hash: a.seen_hash, seguir }, (u) => (u.status === 'done' ? `Hecho: ${u.title}` : `No se pudo: ${u.error || u.title}`)),
   decline: (a) => act(a, 'decline', {}, () => 'Propuesta descartada'),
   undo: (a) => act(a, 'undo', {}, () => 'Se deshizo el cambio'),
   change: (a) => {
@@ -358,13 +359,16 @@ function timeline() {
   ].sort((x, y) => x.at - y.at || (x.kind === y.kind ? x.order - y.order : x.kind === 'm' ? -1 : 1));
   const undoable = new Map();
   for (const a of s.actions.values()) if (a.can_undo) undoable.set(a.turn_id, (undoable.get(a.turn_id) || 0) + 1);
+  // «Confirmar y seguir»: en la única propuesta pendiente del último pedido, si anotó lo que falta (el servidor lo vuelve a revisar).
+  const pending = [...s.actions.values()].filter((a) => a.status === 'proposed' && a.turn_id === s.turn?.id);
+  const follow = s.turn?.status === 'done' && s.turn.continue_plan && pending.length === 1 ? s.turn.continue_plan : '';
   const out = [];
   let reads = [];
   const flush = () => { if (reads.length) out.push(readsGroup(reads)); reads = []; };
   for (const it of items) {
     if (it.kind === 'a' && it.a.risk === 'read') { reads.push(it.a); continue; }
     flush();
-    if (it.kind === 'a') { out.push(actionCard(it.a, handlers, s.busy.has(it.a.id))); continue; }
+    if (it.kind === 'a') { out.push(actionCard(it.a, handlers, s.busy.has(it.a.id), it.a.id === pending[0]?.id ? follow : '')); continue; }
     const m = it.m;
     if (m.role === 'user') {
       const refs = (m.refs || []).map((id) => s.actions.get(id)).filter(Boolean);

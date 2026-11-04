@@ -62,13 +62,15 @@ function diffBlock(diff, key) {
  * Tarjeta de una acción: qué hizo (o qué propone), y sus botones. `on` trae confirm, decline, undo, change (agrega la
  * referencia «Cambiar esto») y visit (al abrir un enlace).
  */
-export function actionCard(a, on, busy = false) {
+export function actionCard(a, on, busy = false, follow = '') {
   const [label, tone] = STATUS[a.status] || [a.status, ''];
   const p = a.preview || {};
   const proposed = a.status === 'proposed';
   const buttons = [];
   if (proposed) {
-    buttons.push(h('button', { type: 'button', class: 'primary small', disabled: busy, 'data-key': `confirm:${a.id}`, 'aria-label': `Confirmar: ${a.title}`, onclick: () => on.confirm(a) }, 'Confirmar'));
+    // «Confirmar y seguir»: el pedido anotó lo que falta; al confirmar, el Copiloto sigue solo con eso.
+    const seguir = !!follow;
+    buttons.push(h('button', { type: 'button', class: 'primary small', disabled: busy, 'data-key': `confirm:${a.id}`, 'aria-label': `${seguir ? 'Confirmar y seguir' : 'Confirmar'}: ${a.title}`, onclick: () => on.confirm(a, seguir) }, seguir ? 'Confirmar y seguir' : 'Confirmar'));
     buttons.push(h('button', { type: 'button', class: 'small', disabled: busy, 'data-key': `decline:${a.id}`, 'aria-label': `Descartar: ${a.title}`, onclick: () => on.decline(a) }, 'Descartar'));
   }
   for (const l of (a.links || []).filter((x) => safeHref(x.href))) {
@@ -84,6 +86,7 @@ export function actionCard(a, on, busy = false) {
     proposed && p.warning ? h('p', { class: 'cp-warning' }, p.warning) : null,
     proposed && a.reasons?.length ? a.reasons.map((r) => h('p', { class: 'cp-reason' }, r)) : null,
     a.error && (a.status === 'failed' || a.status === 'unknown') ? h('p', { class: 'cp-error' }, a.error) : null,
+    proposed && follow ? h('p', { class: 'help cp-follow' }, `Después: ${follow}`) : null,
     proposed && a.expires_at ? h('p', { class: 'help' }, `Caduca a las ${timeOf(a.expires_at)}.`) : null,
     buttons.length ? h('div', { class: 'cp-card-actions' }, buttons) : null);
 }

@@ -24,7 +24,11 @@ import * as cs from './store.js';
 
 export interface RunnerDeps { ai: AiProvider; inject: Inject; tools: ToolDef[] }
 /** `maxUsd`: lo que le queda a la cuenta del tope diario del Copiloto (el pedido no gasta más que eso). */
-export interface TurnRequest { thread: cs.Thread; turn: cs.Turn; user: User; cookie: string; ip?: string; refs: string[]; maxUsd?: number }
+export interface TurnRequest {
+  thread: cs.Thread; turn: cs.Turn; user: User; cookie: string; ip?: string; refs: string[]; maxUsd?: number;
+  /** Pedido que sigue solo después de confirmar («Confirmar y seguir»), con lo que el anterior anotó que faltaba. */
+  continuation?: { plan: string };
+}
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const inflight = new Set<Promise<void>>();
@@ -137,7 +141,10 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
     // AI-5: los títulos de las acciones sobre clientes (con sus nombres) entran al prompt; el turno cuenta como contaminado.
     const listed = [...actions.filter((a) => a.risk !== 'read').slice(-12), ...(await cs.actionsByIds(req.refs, thread.id))];
     if (listed.some(touchesCustomers)) ctx.tainted = true;
-    const system = systemMessage({ model: limits.model, user, accountName: account.name, timezone: ctx.timezone, snapshot, page, actions, index: limits.toolPacks ? packIndex(all) : '' });
+    const system = systemMessage({
+      model: limits.model, user, accountName: account.name, timezone: ctx.timezone, snapshot, page, actions,
+      index: limits.toolPacks ? packIndex(all) : '', continuing: req.continuation?.plan,
+    });
     const history: AnyMessage[] = buildHistory(stored, actions);
     const ai = accountAi(deps.ai, thread.account_id, null, 'copilot');
     const fallback = limits.fallbackModels.length ? limits.fallbackModels : 'none' as const;
@@ -150,6 +157,12 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
     // Cambios y propuestas ya hechos en este pedido (no se repiten); las consultas se olvidan al cambiar algo.
     const done = new Map<string, string>();
     const reads = new Map<string, string>();
+    // «Confirmar y seguir»: solo si este pedido dejó algo por confirmar.
+    ctx.planContinuation = async (faltan) => {
+      if (!proposals) return false;
+      await cs.setContinuePlan(turn.id, faltan);
+      return true;
+    };
 
     const ask = async (toolChoice: 'auto' | 'none') => {
       const res = await ai.complete({

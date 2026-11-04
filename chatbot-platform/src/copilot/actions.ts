@@ -27,8 +27,9 @@ async function ctxFor(deps: RunnerDeps, action: cs.Action, user: User, cookie: s
   return contextFor({ deps, user, accountId: action.account_id, cookie, ip, threadId: action.thread_id, turnId: action.turn_id, page: {}, actionId: action.id });
 }
 
-// Va con el turno de la acción: si se borran los datos del cliente, el aviso (que lleva su nombre) se borra con él.
-const note = (action: cs.Action, content: string) => cs.addMessage({ thread_id: action.thread_id, turn_id: action.turn_id, role: 'event', content });
+// Va con el turno de la acción: si se borran los datos del cliente, el aviso (que lleva su nombre) se borra con él. Lleva
+// la acción como referencia: el historial le agrega su resultado (el id de lo que se creó, para seguir con lo demás).
+const note = (action: cs.Action, content: string) => cs.addMessage({ thread_id: action.thread_id, turn_id: action.turn_id, role: 'event', content, refs: [action.id] });
 
 function toolFor(deps: RunnerDeps, action: cs.Action, user: User) {
   const def = deps.tools.find((t) => t.name === action.tool);

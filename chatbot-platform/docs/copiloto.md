@@ -201,6 +201,35 @@ Cómo funciona:
 - La página abierta es contexto: «este contacto» se entiende sin decir cuál. El nombre del registro lo busca el
   servidor con permisos; no se confía en lo que manda el panel.
 
+## Confirmar y seguir
+
+Un pedido de varios pasos («crea el agente, ponle preguntas y hazle un flujo») se detiene en la primera propuesta,
+porque lo que sigue necesita lo que se crea al confirmarla (migración 116, `src/copilot/continue.ts`).
+
+**Cómo funciona:**
+- Si el pedido tiene más pasos, el Copiloto anota lo que falta con `seguir_al_confirmar({faltan})`. Esa herramienta no
+  deja tarjeta y solo vale si el pedido dejó algo por confirmar.
+- La tarjeta de la única propuesta pendiente de ese pedido dice **Confirmar y seguir** y «Después: …».
+- Al confirmar (`POST …/confirm` con `seguir: true`) arranca solo un pedido de continuación (`origin = 'continuation'`,
+  hijo del anterior, `chain_depth` + 1).
+  - No lleva texto nuevo.
+  - Ve el aviso «Confirmaste…» con el **resultado** de lo confirmado (el id de lo que se creó) y lo que anotó que
+    faltaba.
+- El aviso de cada confirmación lleva la acción como referencia, y el historial le agrega su resultado (hasta 1 200
+  caracteres).
+
+**Cuándo no sigue solo:**
+- si se descartó, falló o caducó;
+- si queda otra propuesta pendiente de ese pedido (sigue al confirmar la última);
+- si ya hay un pedido más nuevo o en curso;
+- si se llegó a `COPILOT_MAX_CONTINUATIONS` continuaciones seguidas (4; 0 = nunca).
+
+**Límites:**
+- La continuación cuenta para los mismos límites que un pedido escrito (`turnAllowance`): por hora, por día, el tope de
+  USD del día y el presupuesto de IA.
+- Si un límite lo impide, queda el aviso «No seguí solo: … escríbeme «sigue»».
+- Solo arranca por el clic de una persona, así que no hay ciclos.
+
 ## Catálogo
 
 54 herramientas (`src/copilot/tools/`): 28 para agentes del equipo y todas para administradores. Riesgo: R = leer,
