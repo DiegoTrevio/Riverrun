@@ -282,10 +282,13 @@ function addDays(isoDate: string, days: number): string {
 
 async function insertLines(db: Queryable, quoteId: string, priced: PricedQuote, src: NewQuote['lines'], edited = false) {
   for (const [i, l] of priced.lines.entries()) {
+    // La línea solo se liga a un concepto de la lista de precios de la misma cuenta que la cotización: un id de otra
+    // cuenta se guarda vacío (si esa cuenta borrara su concepto, no tocaría cotizaciones ajenas).
     await db.query(
       `INSERT INTO quote_lines (quote_id, position, price_item_id, code, name, description, unit, qty, price_mode, price_min,
          price_max, iva_mode, amount_min, amount_max, edited_by_team)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+       VALUES ($1, $2, (SELECT p.id FROM price_items p JOIN quotes q ON q.account_id = p.account_id WHERE p.id = $3 AND q.id = $1),
+         $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
       [quoteId, i + 1, src[i].price_item_id ?? null, l.code ?? '', l.name, l.description ?? '', l.unit ?? 'servicio', l.qty,
         l.price_mode, l.price_min, l.price_max, l.iva_mode, l.amount_min, l.amount_max, edited],
     );
