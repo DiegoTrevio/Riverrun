@@ -18,5 +18,6 @@ CREATE TABLE copilot_files (
 CREATE INDEX copilot_files_thread_idx ON copilot_files (thread_id, created_at);
 CREATE INDEX copilot_files_account_idx ON copilot_files (account_id, expires_at);
 CREATE INDEX copilot_files_expires_idx ON copilot_files (expires_at);
+CREATE INDEX copilot_files_user_idx ON copilot_files (user_id);
 
 ALTER TABLE copilot_messages ADD COLUMN files uuid[] NOT NULL DEFAULT '{}';

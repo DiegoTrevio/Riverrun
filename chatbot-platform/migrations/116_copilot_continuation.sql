@@ -6,3 +6,4 @@ ALTER TABLE copilot_turns
   ADD COLUMN parent_turn_id uuid REFERENCES copilot_turns(id) ON DELETE SET NULL,
   ADD COLUMN chain_depth int NOT NULL DEFAULT 0,
   ADD COLUMN continue_plan text NOT NULL DEFAULT '';
+CREATE INDEX copilot_turns_parent_idx ON copilot_turns (parent_turn_id);
