@@ -134,10 +134,12 @@ PAY-1…PAY-23, AI-1…AI-14 e INF-1…INF-15 siguen corregidos en el código. L
 
 ## Pruebas
 
-`npm run check:frontend` y `node --check public/app.js` pasan (60 módulos). La suite completa (`npm test`) contra
-PostgreSQL 16 local, **sin pgvector**, está corriendo al escribir esto; las dos pruebas de búsqueda semántica
-(`knowledge-preparation.test.ts`) fallan por la falta de la extensión («La base de datos no está lista para búsqueda
-semántica»), no por el código: en el CI corren con `pgvector/pgvector`.
+`npm run check:frontend` y `node --check public/app.js` pasan (60 módulos). La suite completa (`npm test`, 19 minutos)
+contra PostgreSQL 16 local **sin pgvector**: **1 848 de 1 884 pasan**, 23 se saltan y 13 fallan, todas de búsqueda
+semántica (`architecture-recovery`, `knowledge-monitor` y `operations`): sin la extensión no existe `knowledge_chunks`
+(migración 011) y responden «La base de datos no está lista para búsqueda semántica». En el CI corren con
+`pgvector/pgvector`. Todas las pruebas de identidad, sesiones, límites, aislamiento, webhooks, cobros, Copiloto y bitácora
+de seguridad pasan.
 
 ## Orden sugerido
 
