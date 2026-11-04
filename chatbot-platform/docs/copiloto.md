@@ -151,8 +151,8 @@ Resultados que ve el modelo:
 
 **Confirmar con código (`code`, migración 117)**
 
-Es para lo que en el panel pide el código de verificación. Hoy: reglas que mandan datos de clientes a números de fuera.
-Después se suman el equipo, los webhooks, borrar un contacto, la retención y la exportación.
+Es para lo que en el panel pide el código de verificación. Hoy: reglas que mandan datos de clientes a números de fuera,
+borrar un contacto, cambiar la retención de datos y exportar a CSV. Después se suman el equipo y los webhooks.
 - El código va en la **tarjeta**, nunca en el chat. Un mensaje que es solo un código, con una propuesta `code`
   pendiente, se rechaza (`code_in_chat`), y el modelo tiene dicho que nunca lo pida.
 - `POST …/confirm` con `code` (también sirve un código de recuperación):
@@ -175,6 +175,18 @@ Después se suman el equipo, los webhooks, borrar un contacto, la retención y l
     persona.
 - **Después:** queda `copilot.code_confirmed` en la bitácora de seguridad. Lo confirmado con código no se deshace desde
   la tarjeta, porque deshacerlo también sería una acción delicada.
+- **Descargas** (`download` de la herramienta, fase 2): exportar a CSV y los datos de un contacto no pasan por el
+  Copiloto ni por `app.inject`.
+  - Al confirmar, `confirmAction` arma la ruta con los argumentos guardados (con `account_id` para el superadmin) y la
+    revisa contra una lista fija (`safeDownload`: `/api/export/{contacts,conversations,messages,quotes}.csv?…` y
+    `/api/contacts/:id/data`). El panel vuelve a revisarla con la misma lista.
+  - Queda en el resultado de la acción (`download_href`). La tarjeta muestra **Descargar** y el panel baja el archivo
+    con la sesión de la persona.
+  - Si la propuesta era `code`, el código que se acaba de escribir en la tarjeta cuenta como la verificación reciente de
+    esa sesión (`user_sessions.mfa_at = now()`), igual que el diálogo del panel (`POST /api/2fa/step-up`). Así la
+    exportación, que pide el código, pasa sin pedirlo otra vez. Pasados los 15 minutos, «Descargar» lo vuelve a pedir
+    con el diálogo del panel.
+  - El modelo solo ve que quedó lista (y la ruta), nunca el contenido.
 - **Interruptor:** `COPILOT_CODE_ACTIONS=false` hace que el Copiloto no proponga estas acciones.
 
 **Propuestas (`confirm`):**
@@ -261,9 +273,10 @@ porque lo que sigue necesita lo que se crea al confirmarla (migración 116, `src
 
 ## Catálogo
 
-54 herramientas (`src/copilot/tools/`): 28 para agentes del equipo y todas para administradores. Riesgo: R = leer,
-V = reversible (con «Deshacer»), C = confirmar. «dyn» = pasa a C con las reglas de [Riesgo](#riesgo). Después de leer
-texto de clientes, todo cambio de configuración (agente, automatizaciones, horario) pasa a C.
+125 herramientas (`src/copilot/tools/`; 2 son del propio Copiloto): 44 para agentes del equipo y todas para
+administradores. Riesgo: R = leer, V = reversible (con «Deshacer»), C = confirmar, K = confirmar con el código en la
+tarjeta. «dyn» = pasa a C con las reglas de [Riesgo](#riesgo). Después de leer texto de clientes, todo cambio de
+configuración (agente, automatizaciones, horario) pasa a C.
 
 **Cuenta, contactos y conversaciones** (`cuenta.ts`, `contactos.ts`, `conversaciones.ts`; admin y agente):
 
@@ -350,9 +363,48 @@ volver a proponerla.
 La pestaña abierta del agente carga su paquete: Conocimiento y Fotos cargan `conocimiento`, Conexiones carga
 `canales`, y Probar y Empezar cargan `agentes`.
 
+**Lo que hace el panel (fase 2):** «Q» = quién (A = administrador, E = también agentes).
+
+| Archivo (paquete) | Herramientas | Q | Riesgo |
+|---|---|---|---|
+| `agenda.ts` (`agenda`) | `ver_agenda` (zona, servicios, disponibilidad del equipo, enlaces para reservar) | E | R |
+| | `guardar_servicio` (crear o cambiar; deshacer = borrarlo o regresarlo) | A | V; C si pide anticipo |
+| | `cambiar_disponibilidad` (horario, días libres y videollamada de una persona; el agente, la suya) | E | V |
+| | `enlace_para_reservar` (crear o cambiar) | A | V |
+| | `borrar_de_la_agenda` (servicio o enlace) | A | C |
+| `atencion.ts` (`conversaciones`) | `resumir_conversacion` (con IA; el resumen va en `datos_del_cliente`) | E | R |
+| | `enviar_reporte` (al equipo; correos o WhatsApp de fuera, solo A, con aviso en la tarjeta), `enviar_a_app`, `reiniciar_memoria`, `enviar_plantilla` (la tarjeta muestra el texto con sus variables y a quién) | E | C |
+| | `recuperar_envios` (reintentar o dar por atendido; se atiende hasta el último mensaje que se vio) | A | C |
+| `plantillas.ts` (`plantillas`) | `ver_plantillas` | E | R |
+| | `crear_plantilla` (va a revisión de Meta), `borrar_plantilla` | A | C |
+| | `sincronizar_plantillas` (espejo de Meta, sin deshacer) | A | V |
+| `clientes.ts` (`contactos`) | `campo_de_contacto` (crear o cambiar), `ordenar_campos_de_contacto` | A | V |
+| | `borrar_campo_de_contacto`, `importar_contactos` (CSV adjunto: la tarjeta dice cuántos y qué columnas se leen; se importa ese mismo archivo) | A | C |
+| | `vistas_de_contactos` (ver, guardar o borrar las tuyas) | E | R / V |
+| | `borrar_tarea` | E | C |
+| | `descargar_datos_de_contacto` (deja «Descargar») | A | C |
+| | `borrar_contacto` (la tarjeta lo nombra; el título y lo que queda no) | A | K |
+| `embudos.ts` (`oportunidades`) | `guardar_embudo` (crear o cambiar; las columnas conservan su id por nombre) | A | V; C si quita columnas con oportunidades o le quita agentes a otro embudo |
+| | `borrar_embudo` | A | C |
+| `automatizacion.ts` | `duplicar_flujo` (copia en borrador; deshacer = quitarla si sigue igual) | A | V |
+| `avisos.ts` (`avisos`) | `ver_avisos` (lo que dicen va en `datos_del_cliente`) | E | R |
+| | `marcar_avisos_leidos` (sin deshacer) | E | V |
+| | `avisar_al_equipo` (la tarjeta nombra a quién le llega) | A | C |
+| `cotizaciones.ts` (`cotizaciones`) | `ajustes_de_cotizacion` (sin cambios, los muestra) | A | R / V |
+| | `borrar_precio`, `formatos_de_cotizacion` (subir un .docx adjunto o archivar; «ver» es R) | A | C |
+| `cobros.ts` (`cobros`) | `aprobar_cobro`, `borrar_cobro`, `decidir_pago_recurrente` (aprobar o borrar) | A | C |
+| | `ver_pagos_recurrentes` | E | R |
+| | `guardar_pago_recurrente` | E | C al crearlo activo (o si lo crea un agente: avisa a los administradores), al cambiar monto, moneda o enlace, o al reanudarlo; si no, V |
+| | `ajustes_de_cobro` (sin cambios, los muestra) | A | R / V; C si cambian las instrucciones de pago |
+| `negocio.ts` (`cuenta`, `datos`) | `ajustes_del_negocio` (avisos, desconexión, reparto, consentimiento, bajas, tope de envíos, zona; sin cambios, los muestra) | A | R / V; C si agrega correos o teléfonos de fuera; K si cambia la retención (con `grants: ['PUT /api/settings']`; sigue siendo solo de la persona dueña) |
+| | `exportar_datos` (contactos, conversaciones, mensajes o cotizaciones, con filtros; deja «Descargar») | A | K |
+
+Páginas que cargan estos paquetes: Datos de tus clientes → `contactos`, Avisos → `avisos`, Plantillas de WhatsApp →
+`plantillas` (además de las que ya cargaban agenda, cotizaciones, cobros y Horario y avisos).
+
 **Fuera del Copiloto** (dice dónde hacerlo):
 - pagar, cambiar o cancelar el plan de la plataforma, el método de pago y los datos fiscales;
-- exportar o borrar toda la cuenta, y transferir el dueño;
+- exportar (el ZIP de toda la cuenta) o borrar toda la cuenta, y transferir el dueño;
 - la contraseña, la verificación en dos pasos, las sesiones y los dispositivos de alguien;
 - llaves de API, secretos y su rotación;
 - escanear el QR de WhatsApp o dar permisos de Facebook, Instagram o calendarios (lo hace la persona; el Copiloto
