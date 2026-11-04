@@ -22,7 +22,7 @@ import { parse } from '../routes/util.js';
 import { confirmAction, declineAction, undoAction, undoTurn } from './actions.js';
 import { parsePage } from './page.js';
 import { startTurnInBackground, type RunnerDeps } from './runner.js';
-import { safeLink } from './summarize.js';
+import { safeDownload, safeLink } from './summarize.js';
 import * as cs from './store.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -59,11 +59,14 @@ function messageOut(m: cs.Message) {
 
 function actionOut(a: cs.Action) {
   const undoable = a.status === 'done' && !!a.undo && (!a.undo_until || new Date(a.undo_until).getTime() > Date.now());
+  // Una exportación confirmada: la tarjeta trae «Descargar» (solo rutas de descarga conocidas).
+  const download = a.status === 'done' ? (a.result as { download_href?: unknown } | null)?.download_href : undefined;
   return {
     id: a.id, turn_id: a.turn_id, tool: a.tool, risk: a.risk, status: a.status, title: a.title, preview: a.preview ? { ...a.preview, meta: undefined } : null,
     links: (a.links ?? []).filter((l) => l && typeof l.href === 'string' && safeLink(l.href)).slice(0, 4),
     error: a.error, reasons: a.risk_reasons ?? [], can_undo: undoable, undo_label: undoable ? a.undo?.label ?? 'Deshacer' : null,
     ...(a.status === 'proposed' ? { seen_hash: a.args_hash, expires_at: a.expires_at } : {}),
+    ...(safeDownload(download) ? { download_href: download } : {}),
     created_at: a.created_at, rev: Number(a.rev),
   };
 }

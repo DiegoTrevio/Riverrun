@@ -74,16 +74,36 @@ export const links = {
   quote: (id: string, label = 'Ver cotización'): Link => ({ label, href: `#/cotizaciones/historial?id=${id}` }),
   prices: (label = 'Ver lista de precios'): Link => ({ label, href: '#/cotizaciones/precios' }),
   agenda: (label = 'Ver agenda'): Link => ({ label, href: '#/agenda/citas' }),
+  /** Pestañas de la agenda: servicios, equipo (disponibilidad) y enlaces para reservar. */
+  agendaTab: (tab: 'servicios' | 'equipo' | 'enlaces', label: string): Link => ({ label, href: `#/agenda/${tab}` }),
   receivables: (contactId?: string, label = 'Ver cobros'): Link => ({ label, href: contactId ? `#/cobros?contact=${contactId}` : '#/cobros' }),
+  receivablesTab: (tab: 'recurrentes' | 'ajustes', label: string): Link => ({ label, href: `#/cobros?tab=${tab}` }),
+  quotesTab: (tab: 'formatos' | 'ajustes', label: string): Link => ({ label, href: `#/cotizaciones/${tab}` }),
   stats: (label = 'Ver estadísticas'): Link => ({ label, href: '#/estadisticas' }),
+  contactFields: (label = 'Ver datos de tus clientes'): Link => ({ label, href: '#/datos-clientes' }),
+  contacts: (label = 'Ver contactos'): Link => ({ label, href: '#/contacts' }),
+  notifications: (label = 'Ver avisos'): Link => ({ label, href: '#/notifications' }),
+  waTemplates: (socialAccountId: string, label = 'Ver plantillas'): Link => ({ label, href: `#/redes/whatsapp/${socialAccountId}` }),
 };
+
+/**
+ * Descargas que una acción confirmada puede ofrecer en su tarjeta (`download_href`): las exportaciones CSV y los datos de
+ * un contacto, con su consulta. El panel vuelve a revisarla con la misma lista antes de pintar «Descargar».
+ */
+const DOWNLOADS = [
+  /^\/api\/export\/(contacts|conversations|messages|quotes)\.csv(\?[a-z_]+=[\w%.-]{1,120}(&[a-z_]+=[\w%.-]{1,120})*)?$/,
+  /^\/api\/contacts\/[0-9a-f-]{36}\/data(\?account_id=[0-9a-f-]{36})?$/,
+];
+export function safeDownload(href: unknown): href is string {
+  return typeof href === 'string' && href.length <= 400 && DOWNLOADS.some((r) => r.test(href));
+}
 
 /** ¿Es un enlace que el panel puede abrir sin riesgo? (el panel vuelve a revisarlo antes de pintarlo) */
 export function safeLink(href: string): boolean {
   if (!href.startsWith('#/') || href.length > 200) return false;
   const [path, query = ''] = href.slice(2).split('?');
   const parts = path.split('/');
-  const known = new Set(['contact', 'conversation', 'bot', 'automation', 'pipeline', 'cotizaciones', 'agenda', 'cobros', 'contacts', 'conversations', 'consumo', 'plan', 'users', 'integraciones', 'agentes', 'ajustes', 'estadisticas', 'negocio', 'datos-clientes']);
+  const known = new Set(['contact', 'conversation', 'bot', 'automation', 'pipeline', 'cotizaciones', 'agenda', 'cobros', 'contacts', 'conversations', 'consumo', 'plan', 'users', 'integraciones', 'agentes', 'ajustes', 'estadisticas', 'negocio', 'datos-clientes', 'notifications', 'redes']);
   if (!known.has(parts[0])) return false;
   if (!parts.every((p) => /^[a-z0-9-]{0,60}$/i.test(p) || UUID.test(p))) return false;
   return /^([a-z_]+=[0-9a-z-]{1,60}(&[a-z_]+=[0-9a-z-]{1,60})*)?$/i.test(query);

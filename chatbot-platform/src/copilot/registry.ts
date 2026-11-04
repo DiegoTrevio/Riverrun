@@ -127,6 +127,13 @@ export interface ToolDef<A = any> {
   grants?: string[];
   /** Cuántas peticiones a esas rutas hace al ejecutarse (por omisión, 1). */
   grantUses?: number;
+  /**
+   * Descarga que deja la acción al confirmarse (una exportación CSV, los datos de un contacto): la ruta la arma el servidor
+   * con los argumentos validados y solo vale si pasa `safeDownload`. El archivo no pasa por el Copiloto: la tarjeta trae
+   * «Descargar» y lo baja el panel con la sesión de la persona. Si la propuesta era `code`, el código escrito en la
+   * tarjeta cuenta como la verificación reciente de esa sesión (como el diálogo del panel).
+   */
+  download?: (args: A) => string;
 }
 
 /** Un evento que dispararía un cambio: el tipo de disparador de las reglas y su valor (etiqueta, campo, etapa…). */

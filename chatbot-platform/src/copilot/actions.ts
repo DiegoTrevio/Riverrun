@@ -6,14 +6,16 @@
 import { trackSubSpend, type SubSpend } from '../ai/sub-spend.js';
 import { HttpError } from '../access.js';
 import { config } from '../config.js';
+import { query } from '../db.js';
 import { logEvent } from '../logs.js';
 import { recordSecurity } from '../security-log.js';
 import { mintCopilotGrant, revokeCopilotGrant } from '../identity/copilot-grant.js';
 import { verifySessionCode } from '../identity/mfa.js';
 import type { User } from '../types.js';
 import { ToolError } from './executor.js';
-import { allowed, type Ctx } from './registry.js';
+import { allowed, type Ctx, type ToolDef } from './registry.js';
 import { contextFor, type RunnerDeps } from './runner.js';
+import { safeDownload } from './summarize.js';
 import * as cs from './store.js';
 
 /** Valor en una ruta con puntos («contact.tags»). */
@@ -46,6 +48,22 @@ async function checkCode(user: User, sessionId: string | null | undefined, code:
   if (check.result === 'locked') throw new HttpError(429, LOCKED);
   if (check.result === 'no_user') throw new HttpError(401, 'Inicia sesión');
   if (check.result !== 'ok') throw new HttpError(400, 'El código no es correcto', undefined, { code: 'bad_code' });
+}
+
+/**
+ * La descarga que deja una acción confirmada (exportar a CSV, los datos de un contacto). El archivo no pasa por el
+ * Copiloto: la tarjeta trae «Descargar» y lo baja el panel con la sesión de la persona. Con una propuesta `code`, el código
+ * que se acaba de escribir en la tarjeta cuenta como la verificación reciente de esa sesión (lo mismo que hace el diálogo
+ * del panel, `POST /api/2fa/step-up`): así la descarga, que pide el código, pasa sin pedirlo otra vez.
+ */
+async function downloadFor(def: ToolDef, args: unknown, user: User, accountId: string, codeSession: string | null | undefined): Promise<string | null> {
+  if (!def.download) return null;
+  let href = def.download(args);
+  // El superadmin descarga de la cuenta del hilo.
+  if (user.role === 'superadmin') href += `${href.includes('?') ? '&' : '?'}account_id=${accountId}`;
+  if (!safeDownload(href)) return null;
+  if (codeSession) await query(`UPDATE user_sessions SET mfa_at = now() WHERE id = $1 AND user_id = $2`, [codeSession, user.id]);
+  return href;
 }
 
 // Va con el turno de la acción: si se borran los datos del cliente, el aviso (que lleva su nombre) se borra con él. Lleva
@@ -102,8 +120,10 @@ export async function confirmAction(deps: RunnerDeps, o: {
     const title = r.title ?? claimed.title;
     // Lo que se confirmó con código no se deshace desde la tarjeta: deshacerlo también sería una acción delicada.
     const undo = withCode ? null : r.undo ?? null;
+    const download = await downloadFor(def, parsed.data, user, action.account_id, withCode ? o.sessionId : null);
+    const result = download ? { ...(r.data && typeof r.data === 'object' ? r.data : {}), download_href: download } : r.data ?? null;
     const updated = (await cs.updateAction(action.id, {
-      status: 'done', title, result: r.data ?? null, links: r.links ?? claimed.links, before: r.before ?? null, after: r.after ?? null, undo,
+      status: 'done', title, result, links: r.links ?? claimed.links, before: r.before ?? null, after: r.after ?? null, undo,
       undo_until: undo ? new Date(Date.now() + config.copilot.undoDays * 86400_000) : null, executed_at: new Date(),
       ...(r.preview ? { preview: r.preview } : {}),
       contact_ids: [...new Set([...claimed.contact_ids, ...(r.contactIds ?? [])])],

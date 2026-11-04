@@ -344,6 +344,12 @@ const handlers = {
     el.input.focus();
   },
   visit: () => { if (phone.matches) closeCopilot(false); },
+  // La exportación ya se confirmó con el código en la tarjeta; si pasaron más de 15 minutos, el panel lo vuelve a pedir.
+  download: async (href) => {
+    if (!href.startsWith('/api/export/')) { location.href = href; return; }
+    const { stepUpDownload } = await import('./mfa.js');
+    stepUpDownload(href);
+  },
 };
 
 async function undoTurn(turnId) {

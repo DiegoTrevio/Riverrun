@@ -4,7 +4,7 @@ import { h } from './core.js';
 import { icon } from './icons.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const ROUTES = new Set(['contact', 'conversation', 'bot', 'automation', 'pipeline', 'cotizaciones', 'agenda', 'cobros', 'contacts', 'conversations', 'consumo', 'plan', 'users', 'integraciones', 'agentes', 'ajustes', 'estadisticas', 'negocio', 'datos-clientes']);
+const ROUTES = new Set(['contact', 'conversation', 'bot', 'automation', 'pipeline', 'cotizaciones', 'agenda', 'cobros', 'contacts', 'conversations', 'consumo', 'plan', 'users', 'integraciones', 'agentes', 'ajustes', 'estadisticas', 'negocio', 'datos-clientes', 'notifications', 'redes']);
 
 /** Solo rutas del panel con ids o palabras simples (el servidor ya las filtra; aquí se vuelve a revisar). */
 export function safeHref(href) {
@@ -12,6 +12,17 @@ export function safeHref(href) {
   const [path, query = ''] = href.slice(2).split('?');
   const parts = path.split('/');
   return ROUTES.has(parts[0]) && parts.every((p) => /^[a-z0-9-]{0,60}$/i.test(p) || UUID.test(p)) && /^([a-z_]+=[0-9a-z-]{1,60}(&[a-z_]+=[0-9a-z-]{1,60})*)?$/i.test(query);
+}
+
+// Las mismas descargas que acepta el servidor (`safeDownload`): las exportaciones CSV y los datos de un contacto.
+const DOWNLOADS = [
+  /^\/api\/export\/(contacts|conversations|messages|quotes)\.csv(\?[a-z_]+=[\w%.-]{1,120}(&[a-z_]+=[\w%.-]{1,120})*)?$/,
+  /^\/api\/contacts\/[0-9a-f-]{36}\/data(\?account_id=[0-9a-f-]{36})?$/,
+];
+
+/** ¿Es una descarga que la tarjeta puede ofrecer? (`download_href` de una exportación confirmada) */
+export function safeDownload(href) {
+  return typeof href === 'string' && href.length <= 400 && DOWNLOADS.some((r) => r.test(href));
 }
 
 /** **negritas** y `código` dentro de un renglón. */
@@ -60,7 +71,7 @@ function diffBlock(diff, key) {
 
 /**
  * Tarjeta de una acción: qué hizo (o qué propone), y sus botones. `on` trae confirm, decline, undo, change (agrega la
- * referencia «Cambiar esto») y visit (al abrir un enlace).
+ * referencia «Cambiar esto»), visit (al abrir un enlace) y download (la descarga de una exportación confirmada).
  */
 export function actionCard(a, on, busy = false, follow = '') {
   const [label, tone] = STATUS[a.status] || [a.status, ''];
@@ -84,6 +95,10 @@ export function actionCard(a, on, busy = false, follow = '') {
     const label = `${withCode ? 'Confirmar con código' : 'Confirmar'}${seguir ? ' y seguir' : ''}`;
     buttons.push(h('button', { type: 'button', class: 'primary small', disabled: busy, 'data-key': `confirm:${a.id}`, 'aria-label': `${label}: ${a.title}`, onclick: submit }, label));
     buttons.push(h('button', { type: 'button', class: 'small', disabled: busy, 'data-key': `decline:${a.id}`, 'aria-label': `Descartar: ${a.title}`, onclick: () => on.decline(a) }, 'Descartar'));
+  }
+  // Una exportación confirmada: el archivo lo baja el panel con tu sesión (no pasa por el Copiloto).
+  if (a.status === 'done' && safeDownload(a.download_href)) {
+    buttons.push(h('button', { type: 'button', class: 'primary small', 'data-key': `download:${a.id}`, 'aria-label': `Descargar: ${a.title}`, onclick: () => on.download(a.download_href) }, icon('download', 14), 'Descargar'));
   }
   for (const l of (a.links || []).filter((x) => safeHref(x.href))) {
     buttons.push(h('a', { class: 'btn small', href: l.href, 'data-key': `link:${a.id}:${l.href}`, onclick: () => on.visit(a, l.href) }, l.label));
