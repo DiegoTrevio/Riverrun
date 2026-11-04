@@ -24,6 +24,7 @@ import { DISPOSABLE_MESSAGE, GOOGLE_PASS_COOKIE, googlePassCookie, isDisposableE
 import * as store from '../store/index.js';
 import type { User } from '../types.js';
 import { parse } from './util.js';
+import { actor, recordSecurity } from '../security-log.js';
 
 const HOUR = 3600_000;
 const DAYS_VALID = 7;
@@ -182,6 +183,7 @@ export async function invitationRoutes(api: FastifyInstance) {
       assertRecentMfa(req);
     }
     const { inv, mail_sent } = await createInvitation(req.user, accountId, b);
+    await recordSecurity({ kind: 'invite.created', accountId, ...actor(req), target: inv.email, details: { role: inv.role } });
     return { ...out(inv), mail_sent };
   });
 
@@ -201,6 +203,7 @@ export async function invitationRoutes(api: FastifyInstance) {
       [inv.id, tokenHash(token), DAYS_VALID],
     ))!;
     const mail_sent = await sendInvite(upd, token, inviterName(req.user));
+    await recordSecurity({ kind: 'invite.resent', accountId: inv.account_id, ...actor(req), target: inv.email, details: { role: inv.role } });
     return { ...out(upd), mail_sent };
   });
 
@@ -209,6 +212,7 @@ export async function invitationRoutes(api: FastifyInstance) {
     if (inv.role === 'admin') await assertOwner(req, inv.account_id);
     await query(`UPDATE account_invitations SET revoked_at = now() WHERE id = $1`, [inv.id]);
     await logEvent({ level: 'info', source: 'admin', message: `Invitación a ${inv.email} cancelada`, accountId: inv.account_id });
+    await recordSecurity({ kind: 'invite.revoked', accountId: inv.account_id, ...actor(req), target: inv.email, details: { role: inv.role } });
     return { ok: true };
   });
 }
@@ -293,6 +297,7 @@ export async function invitationPublicRoutes(app: FastifyInstance) {
     // Una cuenta sin dueño válido lo tiene en cuanto entra un administrador: el activo más antiguo (quien acaba de
     // entrar solo si no hay otro), ya con su usuario guardado.
     if (inv.role === 'admin') await accountOwner(inv.account_id);
+    await recordSecurity({ kind: 'invite.accepted', accountId: inv.account_id, userId: user.id, email: inv.email, ip: req.ip, userAgent: String(req.headers['user-agent'] ?? ''), details: { role: inv.role, google: !!google } });
     await logEvent({ level: 'info', source: 'admin', message: `${inv.email} se unió al equipo (${ROLE_LABEL[inv.role]})${google ? ' con Google' : ''}`, accountId: inv.account_id, details: { ip: req.ip } });
     // Antes de entrar al panel configura su verificación en dos pasos.
     if (google) reply.clearCookie(GOOGLE_PASS_COOKIE, { path: googlePassCookie.path });

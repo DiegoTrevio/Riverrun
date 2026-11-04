@@ -25,6 +25,7 @@ import { assertPasswordAllowed, NewPassword } from '../identity/passwords.js';
 import { parse } from './util.js';
 import { offeredPlans } from './billing.js';
 import { DISPOSABLE_MESSAGE, assertCaptcha, captchaEnabled, isDisposableEmail, recordTermsAcceptance, signupAvailable, termsVersion } from '../signup-guard.js';
+import { recordSecurity } from '../security-log.js';
 
 const Password = NewPassword;
 const Email = z.string().trim().toLowerCase().email('correo inválido').max(200);
@@ -75,10 +76,12 @@ export async function reserveSignup(ip: string): Promise<() => Promise<void>> {
 }
 
 /** El enlace para restablecer la contraseña (en segundo plano: ver /api/forgot-password). */
-async function sendResetLink(email: string) {
+async function sendResetLink(email: string, from: { ip: string; userAgent: string }) {
   if ((await countHit(`forgot-email:${email.toLowerCase()}`, HOUR)) > 3) return;
   const u = await store.getUserForLogin(email);
   if (!u || !u.active || (u.account_id && !u.account_active)) return;
+  // Bitácora de seguridad: solo si es una cuenta (en segundo plano: la respuesta no cambia, exista o no).
+  await recordSecurity({ kind: 'password_reset.requested', accountId: u.account_id, userId: u.id, email: u.email, ...from });
   const token = await store.createAuthToken(u.id, 'reset_password', 60);
   const mb = await mailBrand(u.account_id);
   await sendMail({
@@ -210,7 +213,7 @@ export async function signupRoutes(app: FastifyInstance) {
     if ((await countHit(`forgot-ip:${ipKey(req.ip)}`, HOUR)) > 5) return reply.code(429).send({ error: 'Demasiados intentos, intenta más tarde' });
     const { email } = parse(z.object({ email: Email }), req.body);
     setImmediate(() => {
-      sendResetLink(email).catch((e) => logEvent({ level: 'error', source: 'admin', message: `No se pudo mandar el enlace para restablecer la contraseña: ${e?.message ?? e}` }).catch(() => undefined));
+      sendResetLink(email, { ip: req.ip, userAgent: String(req.headers['user-agent'] ?? '') }).catch((e) => logEvent({ level: 'error', source: 'admin', message: `No se pudo mandar el enlace para restablecer la contraseña: ${e?.message ?? e}` }).catch(() => undefined));
     });
     return { ok: true };
   });
@@ -224,7 +227,10 @@ export async function signupRoutes(app: FastifyInstance) {
     // Recuperar el acceso por correo levanta el tope de intentos de esa cuenta.
     if (owner) await clearHits(`login-acct:${owner.email.toLowerCase()}`);
     const userId = await store.consumeAuthToken(b.token, 'reset_password');
-    if (!userId) throw new HttpError(400, 'El enlace no es válido o ya venció. Pide uno nuevo.');
+    if (!userId) {
+      await recordSecurity({ kind: 'password_reset.failed', ip: req.ip, userAgent: String(req.headers['user-agent'] ?? '') });
+      throw new HttpError(400, 'El enlace no es válido o ya venció. Pide uno nuevo.');
+    }
     // La contraseña nueva invalida todas las sesiones abiertas y los demás enlaces. Abrir el enlace también confirma
     // el correo, y quita el bloqueo del 2FA por intentos (quien lo abre probó que el correo es suyo).
     await store.updateUser(userId, { password_hash: await hashPassword(b.password) });

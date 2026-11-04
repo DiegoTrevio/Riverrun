@@ -147,6 +147,17 @@ t('se rechaza: correo sin verificar en Google, state alterado, sin cookie, cance
   assert.equal((await pool.query(`SELECT count(*)::int n FROM users WHERE email = 'x@y.mx'`)).rows[0].n, 0);
 });
 
+t('los accesos con Google rechazados quedan en la bitácora de seguridad (los sin cuenta, una vez por IP)', async () => {
+  await pool.query(`DELETE FROM security_events WHERE kind = 'login.google_rejected'`);
+  await pool.query(`DELETE FROM security_alerts WHERE key LIKE 'once:%google%'`);
+  await flow({ sub: 'g-admin', email: 'admin@test.mx', email_verified: true });
+  for (let i = 0; i < 3; i++) await flow({ sub: 'g-x', email: 'x@y.mx', email_verified: true }, { tamper: true });
+  const rows = (await pool.query(`SELECT email, user_id, details FROM security_events WHERE kind = 'login.google_rejected' ORDER BY id`)).rows;
+  const sup = rows.find((r) => r.details.reason === 'solo-contrasena');
+  assert.ok(sup && sup.email === 'admin@test.mx' && sup.user_id, JSON.stringify(rows));
+  assert.equal(rows.filter((r) => r.details.reason === 'estado').length, 1, 'tres regresos inventados desde la misma IP: una fila');
+});
+
 t('un id_token de otro emisor o para otra aplicación no entra (bajos de la 2c)', async () => {
   for (const bad of [{ iss: 'https://evil.example' }, { aud: 'otra-app' }, { aud: ['cid', 'otra'] }]) {
     const r = await flow({ sub: 'g-ajeno', email: 'ajeno@gmail.com', email_verified: true, ...bad });

@@ -7,6 +7,11 @@ const LABELS = {
   'login.ok': 'Entró al panel',
   'login.failed': 'Contraseña equivocada',
   'login.blocked': 'Acceso frenado por demasiados intentos',
+  'login.google_rejected': 'Acceso con Google rechazado',
+  'session.revoked': 'Cerró una sesión',
+  'session.revoked_others': 'Cerró sus sesiones en otros dispositivos',
+  'password_reset.requested': 'Pidió restablecer su contraseña',
+  'password_reset.failed': 'Enlace para restablecer la contraseña inválido o vencido',
   'mfa.failed': 'Código de verificación equivocado',
   'notice.password_changed': 'Cambió su contraseña',
   'notice.password_reset': 'Restableció su contraseña',
@@ -33,14 +38,23 @@ const LABELS = {
   'apikey.created': 'Creó una llave de la API',
   'apikey.revoked': 'Revocó una llave de la API',
   'webhook_secret.rotated': 'Cambió el secreto de los webhooks',
+  'invite.created': 'Invitó a una persona al equipo',
+  'invite.resent': 'Reenvió una invitación',
+  'invite.revoked': 'Canceló una invitación',
+  'invite.accepted': 'Aceptó una invitación y entró al equipo',
+  'user.deactivated': 'Dio de baja a una persona',
+  'user.reactivated': 'Volvió a dar de alta a una persona',
+  'user.moved': 'Pasó a una persona a otra cuenta',
+  'user.deleted': 'Eliminó a una persona',
 };
 
 const FILTERS = [
-  ['', 'Todo'], ['login', 'Accesos'], ['mfa', 'Códigos equivocados'], ['notice', 'Cambios de seguridad'],
+  ['', 'Todo'], ['login', 'Accesos'], ['mfa', 'Códigos equivocados'], ['session', 'Sesiones cerradas'], ['password_reset', 'Restablecer contraseña'],
+  ['notice', 'Cambios de seguridad'], ['user', 'Altas y bajas del equipo'], ['invite', 'Invitaciones'],
   ['export', 'Descargas de datos'], ['contact.erased', 'Contactos borrados'], ['apikey', 'Llaves de la API'],
 ];
 
-const RISKY = /^(login\.failed|login\.blocked|mfa\.failed|notice\.mfa_locked|alert\.)/;
+const RISKY = /^(login\.failed|login\.blocked|login\.google_rejected|mfa\.failed|notice\.mfa_locked|password_reset\.failed|alert\.)/;
 
 /**
  * La bitácora en una tarjeta: filtro por tipo, tabla y «Ver más». `superadmin`: la de toda la plataforma (con los avisos
