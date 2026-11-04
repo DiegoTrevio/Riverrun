@@ -10,7 +10,8 @@ import type { Caller } from './executor.js';
 import type { Link, Page, Preview, UndoRecipe } from './store.js';
 
 export type Area = 'cuenta' | 'agente' | 'automatizacion' | 'contactos' | 'conversaciones' | 'agenda' | 'oportunidades' | 'cobros' | 'cotizaciones' | 'datos';
-export type Level = 'read' | 'reversible' | 'confirm';
+/** `code`: se confirma escribiendo el código de verificación en la tarjeta (las acciones que en el panel lo piden). */
+export type Level = 'read' | 'reversible' | 'confirm' | 'code';
 
 /**
  * Paquetes de herramientas: el modelo recibe siempre el núcleo (`base`) y, además, solo los paquetes que hacen falta (el
@@ -113,6 +114,13 @@ export interface ToolDef<A = any> {
   undo?: (params: any, ctx: Ctx) => Promise<void>;
   /** Disponible solo si se cumple (p. ej. cobros activados). */
   available?: () => boolean;
+  /**
+   * Rutas («MÉTODO /ruta/:param») que una propuesta `code` de esta herramienta puede abrir al confirmarse con el código
+   * (permiso de un uso, `identity/copilot-grant.ts`). Sin esto, una propuesta `code` no abre ninguna ruta delicada.
+   */
+  grants?: string[];
+  /** Cuántas peticiones a esas rutas hace al ejecutarse (por omisión, 1). */
+  grantUses?: number;
 }
 
 /** Un evento que dispararía un cambio: el tipo de disparador de las reglas y su valor (etiqueta, campo, etapa…). */

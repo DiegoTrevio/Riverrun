@@ -147,6 +147,35 @@ Resultados que ve el modelo:
 | `read` | Se ejecuta. |
 | `reversible` | Se ejecuta. Guarda la foto de antes, la de después y la receta para deshacer. |
 | `confirm` | No se ejecuta: crea una propuesta con vista previa (texto exacto, destinatario, cuántos). |
+| `code` | Igual que `confirm`, pero se confirma escribiendo el **código de verificación** en la tarjeta. Es para lo que en el panel pide el código. |
+
+**Confirmar con código (`code`, migración 117)**
+
+Es para lo que en el panel pide el código de verificación. Hoy: reglas que mandan datos de clientes a números de fuera.
+Después se suman el equipo, los webhooks, borrar un contacto, la retención y la exportación.
+- El código va en la **tarjeta**, nunca en el chat. Un mensaje que es solo un código, con una propuesta `code`
+  pendiente, se rechaza (`code_in_chat`), y el modelo tiene dicho que nunca lo pida.
+- `POST …/confirm` con `code` (también sirve un código de recuperación):
+  - Primero revisa estado, vigencia y `seen_hash`, y después el código (`verifySessionCode`, `identity/mfa.ts`).
+  - Usa los mismos contadores y el mismo bloqueo que el diálogo del panel: 5 por sesión en 15 minutos y el tope por
+    persona.
+  - Sin código responde `code_required`; con un código equivocado, `bad_code`, y la propuesta sigue como estaba.
+- Con el código bueno se crea un **permiso de un uso** (`identity/copilot-grant.ts`):
+  - **Dónde vive:** en memoria. Las rutas lo revisan sin `await` (`assertRecentMfa`) y la herramienta corre en el mismo
+    proceso.
+  - **A qué está atado:** la persona, su sesión, la acción y las rutas que la herramienta declara en `grants`.
+  - **Vigencia:** 120 s y una sola petición; se revoca al terminar.
+  - **Cómo viaja:** en la cabecera `x-copilot-grant`, que solo pone `confirmAction`. Nunca llega al modelo, a la base
+    ni a los registros.
+- **Qué abre y qué no:**
+  - `stepUpHook` y `assertRecentMfa` lo aceptan en lugar del código reciente.
+  - `ownerHook` y `assertOwner` solo quitan el bloqueo del Copiloto: **siguen exigiendo ser el dueño**.
+  - `NEVER_FROM_COPILOT` no se abre nunca: cobro, la cuenta entera, `/api/me`, `/api/2fa`, llaves de API, secretos y
+    toda ruta que rote un secreto, planes, marcas, sistema, precios de IA, borrar cuentas y reiniciar el 2FA de otra
+    persona.
+- **Después:** queda `copilot.code_confirmed` en la bitácora de seguridad. Lo confirmado con código no se deshace desde
+  la tarjeta, porque deshacerlo también sería una acción delicada.
+- **Interruptor:** `COPILOT_CODE_ACTIONS=false` hace que el Copiloto no proponga estas acciones.
 
 **Propuestas (`confirm`):**
 - Solo el clic de quien la pidió la ejecuta, con los **argumentos guardados**. El cuerpo de la petición nunca trae

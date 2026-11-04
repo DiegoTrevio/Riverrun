@@ -5,6 +5,7 @@
  * `ownerStepUp` y `ownerHook` las revisa antes de pedir la verificación reciente.
  */
 import { COPILOT_BLOCKED, fromCopilot } from './step-up.js';
+import { copilotGranted } from './copilot-grant.js';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { HttpError } from '../access.js';
 import { query, queryOne } from '../db.js';
@@ -49,16 +50,18 @@ async function ownerOnlyError(accountId: string | null): Promise<HttpError> {
 }
 
 export async function assertOwner(req: FastifyRequest, accountId: string): Promise<void> {
-  // Lo del dueño no lo hace el Copiloto en su nombre (igual que en `ownerHook`).
-  if (fromCopilot(req)) throw new HttpError(403, COPILOT_BLOCKED, undefined, { code: 'copilot_blocked' });
+  // Lo del dueño no lo hace el Copiloto en su nombre (igual que en `ownerHook`), salvo con el permiso de un uso que da el
+  // código escrito en la tarjeta; aun así, quien confirma tiene que ser el dueño.
+  if (fromCopilot(req) && !copilotGranted(req)) throw new HttpError(403, COPILOT_BLOCKED, undefined, { code: 'copilot_blocked' });
   if (!(await isAccountOwner(req.user, accountId))) throw await ownerOnlyError(accountId);
 }
 
 /** Gancho de las rutas con sesión (después de requireAuth y antes de la verificación reciente). */
 export async function ownerHook(req: FastifyRequest, reply: FastifyReply) {
   if (!req.routeOptions.config?.owner) return;
-  // Lo que solo hace el dueño tampoco lo hace el Copiloto en su nombre (ni con la sesión del superadmin).
-  if (fromCopilot(req)) return reply.code(403).send({ error: COPILOT_BLOCKED, code: 'copilot_blocked' });
+  // Lo que solo hace el dueño tampoco lo hace el Copiloto en su nombre (ni con la sesión del superadmin), salvo con el
+  // permiso de un uso del código en la tarjeta. El permiso no hace dueño a nadie: lo de abajo se revisa igual.
+  if (fromCopilot(req) && !copilotGranted(req)) return reply.code(403).send({ error: COPILOT_BLOCKED, code: 'copilot_blocked' });
   if (req.user.role === 'superadmin') return;
   const accountId = req.user.account_id;
   if (accountId && (await isAccountOwner(req.user, accountId))) return;

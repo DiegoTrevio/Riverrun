@@ -8,7 +8,7 @@ import { deleteInBatches, query, queryOne } from '../db.js';
 import { config } from '../config.js';
 
 export type TurnStatus = 'running' | 'done' | 'stopped' | 'failed' | 'interrupted';
-export type Risk = 'read' | 'reversible' | 'confirm';
+export type Risk = 'read' | 'reversible' | 'confirm' | 'code';
 export type ActionStatus = 'proposed' | 'executing' | 'done' | 'failed' | 'declined' | 'expired' | 'undoing' | 'undone' | 'unknown';
 
 export interface Thread { id: string; account_id: string; user_id: string; title: string; created_at: Date; updated_at: Date; rev: string }
@@ -162,6 +162,11 @@ export async function markTurn(id: string, o: { tainted?: boolean; contactIds?: 
 /** Lo que el pedido anotó que falta para cuando se confirme su propuesta («Confirmar y seguir»). */
 export async function setContinuePlan(id: string, plan: string) {
   await query(`UPDATE copilot_turns SET continue_plan = $2 WHERE id = $1`, [id, plan.slice(0, 300)]);
+}
+
+/** Propuestas de la conversación que esperan el código de verificación. */
+export async function pendingCodeProposals(threadId: string): Promise<number> {
+  return (await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM copilot_actions WHERE thread_id = $1 AND risk = 'code' AND status = 'proposed' AND expires_at > now()`, [threadId]))!.n;
 }
 
 /** Propuestas de ese pedido que siguen esperando confirmación. */

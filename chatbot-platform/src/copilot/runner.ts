@@ -67,9 +67,11 @@ function idsIn(value: unknown, out: Set<string>) {
 /** Contexto de una herramienta: quién, en qué cuenta, con qué sesión y qué página tiene abierta. */
 export async function contextFor(o: {
   deps: RunnerDeps; user: User; accountId: string; cookie: string; ip?: string; threadId: string; turnId: string; page: cs.Page; actionId?: string;
+  /** Permiso de un uso del código escrito en la tarjeta (solo al confirmar una propuesta `code`). */
+  grant?: string;
 }): Promise<Ctx> {
   const { timezone } = await accountInfo(o.accountId);
-  const call = makeCaller({ inject: o.deps.inject, cookie: o.cookie, accountId: o.accountId, superadmin: o.user.role === 'superadmin', ip: o.ip, actionId: o.actionId });
+  const call = makeCaller({ inject: o.deps.inject, cookie: o.cookie, accountId: o.accountId, superadmin: o.user.role === 'superadmin', ip: o.ip, actionId: o.actionId, grant: o.grant });
   return { user: o.user, accountId: o.accountId, timezone, call, page: o.page, threadId: o.threadId, turnId: o.turnId, scope: new Set(), tainted: false };
 }
 
@@ -275,7 +277,9 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
         }
       }
 
-      // Confirmar: no se ejecuta; queda una propuesta con su vista previa.
+      // Confirmar (o confirmar con código): no se ejecuta; queda una propuesta con su vista previa.
+      const withCode = risk.level === 'code';
+      if (withCode && !limits.codeActions) return err('sin_permiso', 'Esta acción la tienes que hacer tú desde el panel.');
       if (proposals >= limits.maxProposals) { limitHit = 'propuestas'; return err('limite', 'Ya dejé varias propuestas por confirmar; pide el resto cuando las revises.'); }
       let preview: cs.Preview;
       let contactIds: string[] = [];
@@ -288,11 +292,16 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
       proposals++;
       const action = await cs.insertAction({
         thread_id: thread.id, turn_id: turn.id, account_id: thread.account_id, user_id: user.id, tool_call_id: call.id, tool: def.name,
-        args: args as Record<string, unknown>, args_hash: cs.argsHash(def.name, args, preview), risk: 'confirm', risk_reasons: risk.reasons,
+        args: args as Record<string, unknown>, args_hash: cs.argsHash(def.name, args, preview), risk: withCode ? 'code' : 'confirm', risk_reasons: risk.reasons,
         status: 'proposed', title: preview.title, preview, contact_ids: contactIds, expires_at: new Date(Date.now() + limits.proposalMinutes * 60_000),
       });
       if (contactIds.length) await cs.markTurn(turn.id, { contactIds });
-      const text = JSON.stringify({ estado: 'pendiente_de_confirmacion', accion: `A${action.id.slice(0, 8)}`, resumen: preview.title, ...(risk.reasons.length ? { motivo: risk.reasons } : {}), nota: 'Todavía no se hace: la persona debe confirmarlo en la tarjeta.' });
+      const text = JSON.stringify({
+        estado: 'pendiente_de_confirmacion', accion: `A${action.id.slice(0, 8)}`, resumen: preview.title, ...(risk.reasons.length ? { motivo: risk.reasons } : {}),
+        ...(withCode
+          ? { con_codigo: true, nota: 'Todavía no se hace: la persona lo confirma escribiendo su código de verificación en la tarjeta. Nunca le pidas el código en el chat.' }
+          : { nota: 'Todavía no se hace: la persona debe confirmarlo en la tarjeta.' }),
+      });
       done.set(key, text);
       return text;
     };

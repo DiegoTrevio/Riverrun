@@ -22,6 +22,8 @@ import * as cs from './store.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const Id = z.string().regex(UUID, 'Id inválido');
+/** Un mensaje que es solo un código (6 dígitos, o uno de recuperación con letras, números y guiones). */
+const CODE_SHAPE = /^\s*(\d{3}\s?\d{3}|[a-z0-9]{4,5}(-[a-z0-9]{4,5}){1,3})\s*$/i;
 
 /** Cuenta en la que trabaja esta petición, si tiene el Copiloto encendido. */
 async function copilotAccount(req: FastifyRequest): Promise<string> {
@@ -148,6 +150,10 @@ export async function copilotRoutes(api: FastifyInstance, deps: RunnerDeps) {
     }), req.body);
     await cs.sweepStale(thread.id);
     await cs.sweepStaleUser(req.user.id);
+    // Un código de verificación escrito en el chat (en vez de en la tarjeta) llegaría a la IA y quedaría guardado.
+    if (CODE_SHAPE.test(b.text) && (await cs.pendingCodeProposals(thread.id)) > 0) {
+      throw new HttpError(400, 'No escribas tu código aquí: escríbelo en la tarjeta de la propuesta.', undefined, { code: 'code_in_chat' });
+    }
     const { maxUsd } = await turnAllowance(req.user.id, thread.account_id);
     const refs = (await cs.actionsByIds(b.refs, thread.id)).map((a) => a.id);
     const cookie = sessionCookie(req);
@@ -177,9 +183,13 @@ export async function copilotRoutes(api: FastifyInstance, deps: RunnerDeps) {
 
   api.post('/api/copilot/actions/:id/confirm', async (req: any) => {
     const action = await ownAction(req);
-    const b = parse(z.object({ seen_hash: z.string().min(1).max(64), seguir: z.boolean().default(false) }), req.body);
+    const b = parse(z.object({
+      seen_hash: z.string().min(1).max(64), seguir: z.boolean().default(false),
+      // Propuestas que se confirman con el código de verificación (o un código de recuperación).
+      code: z.string().trim().max(40).optional(),
+    }), req.body);
     const cookie = sessionCookie(req);
-    const done = await confirmAction(deps, { action, user: req.user, cookie, ip: req.ip, seenHash: b.seen_hash });
+    const done = await confirmAction(deps, { action, user: req.user, cookie, ip: req.ip, seenHash: b.seen_hash, code: b.code, sessionId: req.sessionId });
     // «Confirmar y seguir»: si el pedido anotó lo que faltaba, el Copiloto sigue solo (con los mismos límites).
     const continued = b.seguir && done.status === 'done' ? await maybeContinue(deps, { action: done, user: req.user, cookie, ip: req.ip }) : null;
     return { ...actionOut(done), continued_turn: turnOut(continued) };

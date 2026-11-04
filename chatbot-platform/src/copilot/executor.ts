@@ -69,9 +69,14 @@ export function keepAccount<T>(value: T, accountId: string): T {
   return value;
 }
 
-export function makeCaller(o: { inject: Inject; cookie: string; accountId: string; superadmin: boolean; ip?: string; actionId?: string }): Caller {
-  // x-copilot: las rutas delicadas y las del dueño no las hace el Copiloto (las rechazan aunque haya código reciente).
-  const headers: Record<string, string> = { cookie: o.cookie, 'user-agent': 'riverrun-copilot', 'x-copilot': '1', ...(o.actionId ? { 'x-copilot-action': o.actionId } : {}) };
+export function makeCaller(o: { inject: Inject; cookie: string; accountId: string; superadmin: boolean; ip?: string; actionId?: string; grant?: string }): Caller {
+  // x-copilot: las rutas delicadas y las del dueño no las hace el Copiloto (las rechazan aunque haya código reciente),
+  // salvo con el permiso de un uso que da el código escrito en la tarjeta (`grant`, solo al confirmar esa propuesta).
+  const headers: Record<string, string> = {
+    cookie: o.cookie, 'user-agent': 'riverrun-copilot', 'x-copilot': '1',
+    ...(o.actionId ? { 'x-copilot-action': o.actionId } : {}),
+    ...(o.grant && o.actionId ? { 'x-copilot-grant': o.grant } : {}),
+  };
   // El superadmin trabaja en la cuenta del hilo: cada llamada la lleva en la consulta (y en el cuerpo, donde la leen).
   const scoped = (url: string) => (o.superadmin ? url + (url.includes('?') ? '&' : '?') + `account_id=${encodeURIComponent(o.accountId)}` : url);
   const withAccount = (body: unknown) => (o.superadmin && body && typeof body === 'object' && !Array.isArray(body) && !('account_id' in (body as object)) ? { ...(body as object), account_id: o.accountId } : body);

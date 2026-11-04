@@ -151,6 +151,8 @@ export const config = {
     turnMaxUsd: Number(env('COPILOT_TURN_MAX_USD', '1')),
     /** Herramientas por paquetes (núcleo + los que hacen falta); false = todas en cada paso, como antes. */
     toolPacks: env('COPILOT_TOOL_PACKS', 'true') !== 'false',
+    /** Acciones delicadas que se confirman con el código escrito en la tarjeta; false = el Copiloto no las propone. */
+    codeActions: env('COPILOT_CODE_ACTIONS', 'true') !== 'false',
     /** «Confirmar y seguir»: cuántas continuaciones seguidas puede encadenar un pedido (0 = nunca sigue solo). */
     maxContinuations: Math.max(0, Number(env('COPILOT_MAX_CONTINUATIONS', '4')) || 0),
     turnsPerHour: Number(env('COPILOT_TURNS_PER_HOUR', '30')),

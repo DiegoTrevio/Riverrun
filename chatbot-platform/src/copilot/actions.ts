@@ -7,6 +7,9 @@ import { trackSubSpend, type SubSpend } from '../ai/sub-spend.js';
 import { HttpError } from '../access.js';
 import { config } from '../config.js';
 import { logEvent } from '../logs.js';
+import { recordSecurity } from '../security-log.js';
+import { mintCopilotGrant, revokeCopilotGrant } from '../identity/copilot-grant.js';
+import { verifySessionCode } from '../identity/mfa.js';
 import type { User } from '../types.js';
 import { ToolError } from './executor.js';
 import { allowed, type Ctx } from './registry.js';
@@ -23,8 +26,26 @@ export function pickPaths(obj: unknown, paths: string[]): Record<string, unknown
   return Object.fromEntries(paths.map((p) => [p, at(obj, p) ?? null]));
 }
 
-async function ctxFor(deps: RunnerDeps, action: cs.Action, user: User, cookie: string, ip?: string): Promise<Ctx> {
-  return contextFor({ deps, user, accountId: action.account_id, cookie, ip, threadId: action.thread_id, turnId: action.turn_id, page: {}, actionId: action.id });
+async function ctxFor(deps: RunnerDeps, action: cs.Action, user: User, cookie: string, ip?: string, grant?: string): Promise<Ctx> {
+  return contextFor({ deps, user, accountId: action.account_id, cookie, ip, threadId: action.thread_id, turnId: action.turn_id, page: {}, actionId: action.id, grant });
+}
+
+const TOO_MANY = 'Demasiados códigos equivocados. Espera 15 minutos e inténtalo de nuevo.';
+const LOCKED = 'Bloqueamos la verificación por una hora por demasiados intentos. Si no fuiste tú, cambia tu contraseña.';
+
+/**
+ * El código de verificación de una propuesta `code`: con los mismos topes y bloqueo que el diálogo del panel (no da
+ * intentos de más). Un código equivocado deja la propuesta como estaba.
+ */
+async function checkCode(user: User, sessionId: string | null | undefined, code: string | undefined) {
+  if (!config.copilot.codeActions) throw new HttpError(403, 'Esta acción la tienes que hacer tú desde el panel.');
+  if (!code) throw new HttpError(400, 'Escribe tu código de verificación en la tarjeta para confirmar', undefined, { code: 'code_required' });
+  if (!sessionId) throw new HttpError(401, 'Inicia sesión');
+  const check = await verifySessionCode(user.id, sessionId, code);
+  if (check.result === 'too_many') throw new HttpError(429, TOO_MANY);
+  if (check.result === 'locked') throw new HttpError(429, LOCKED);
+  if (check.result === 'no_user') throw new HttpError(401, 'Inicia sesión');
+  if (check.result !== 'ok') throw new HttpError(400, 'El código no es correcto', undefined, { code: 'bad_code' });
 }
 
 // Va con el turno de la acción: si se borran los datos del cliente, el aviso (que lleva su nombre) se borra con él. Lleva
@@ -37,7 +58,11 @@ function toolFor(deps: RunnerDeps, action: cs.Action, user: User) {
   return def;
 }
 
-export async function confirmAction(deps: RunnerDeps, o: { action: cs.Action; user: User; cookie: string; ip?: string; seenHash: string }): Promise<cs.Action> {
+export async function confirmAction(deps: RunnerDeps, o: {
+  action: cs.Action; user: User; cookie: string; ip?: string; seenHash: string;
+  /** Propuestas `code`: el código escrito en la tarjeta y la sesión de quien confirma. */
+  code?: string; sessionId?: string | null;
+}): Promise<cs.Action> {
   const { action, user } = o;
   const def = toolFor(deps, action, user);
   if (action.status !== 'proposed') throw new HttpError(409, 'Esta propuesta ya se resolvió');
@@ -46,6 +71,9 @@ export async function confirmAction(deps: RunnerDeps, o: { action: cs.Action; us
     throw new HttpError(410, 'La propuesta caducó; pídela de nuevo al Copiloto');
   }
   if (o.seenHash !== action.args_hash) throw new HttpError(409, 'La propuesta cambió; revisa la tarjeta antes de confirmar');
+  // El código se revisa después de lo anterior (un código revisado ya no sirve otra vez) y antes de tomar la propuesta.
+  const withCode = action.risk === 'code';
+  if (withCode) await checkCode(user, o.sessionId, o.code);
   const claimed = await cs.claimProposal(action.id, user.id, o.seenHash);
   if (!claimed) throw new HttpError(409, 'Esta propuesta ya se resolvió');
   const parsed = def.schema.safeParse(claimed.args);
@@ -53,7 +81,14 @@ export async function confirmAction(deps: RunnerDeps, o: { action: cs.Action; us
     await cs.updateAction(action.id, { status: 'failed', error: 'Los datos guardados ya no son válidos' });
     throw new HttpError(409, 'Los datos de la propuesta ya no son válidos; pídela de nuevo');
   }
-  const ctx: Ctx = { ...(await ctxFor(deps, claimed, user, o.cookie, o.ip)), proposal: claimed.preview ?? undefined };
+  // Permiso de un uso para las rutas delicadas que esta herramienta declara; se revoca al terminar, pase lo que pase.
+  const grant = withCode && def.grants?.length && o.sessionId
+    ? mintCopilotGrant({ userId: user.id, sessionId: o.sessionId, actionId: action.id, routes: def.grants, uses: def.grantUses })
+    : undefined;
+  if (withCode) {
+    await recordSecurity({ kind: 'copilot.code_confirmed', accountId: action.account_id, userId: user.id, email: user.email, ip: o.ip, target: action.tool, details: { copilot_action_id: action.id } }).catch(() => undefined);
+  }
+  const ctx: Ctx = { ...(await ctxFor(deps, claimed, user, o.cookie, o.ip, grant)), proposal: claimed.preview ?? undefined };
   try {
     // AI-9: lo que la herramienta gasta en IA por dentro (cambiar instrucciones, diseñar un flujo…) cuenta para el tope
     // del día del Copiloto, en el pedido que la propuso.
@@ -65,20 +100,24 @@ export async function confirmAction(deps: RunnerDeps, o: { action: cs.Action; us
       if (sub.usd > 0 && action.turn_id) await cs.addSubCost(action.turn_id, sub.usd).catch(() => undefined);
     }
     const title = r.title ?? claimed.title;
+    // Lo que se confirmó con código no se deshace desde la tarjeta: deshacerlo también sería una acción delicada.
+    const undo = withCode ? null : r.undo ?? null;
     const updated = (await cs.updateAction(action.id, {
-      status: 'done', title, result: r.data ?? null, links: r.links ?? claimed.links, before: r.before ?? null, after: r.after ?? null, undo: r.undo ?? null,
-      undo_until: r.undo ? new Date(Date.now() + config.copilot.undoDays * 86400_000) : null, executed_at: new Date(),
+      status: 'done', title, result: r.data ?? null, links: r.links ?? claimed.links, before: r.before ?? null, after: r.after ?? null, undo,
+      undo_until: undo ? new Date(Date.now() + config.copilot.undoDays * 86400_000) : null, executed_at: new Date(),
       ...(r.preview ? { preview: r.preview } : {}),
       contact_ids: [...new Set([...claimed.contact_ids, ...(r.contactIds ?? [])])],
     }))!;
     await note(updated, `Confirmaste: ${claimed.title} → hecho.`);
-    await logEvent({ level: 'info', source: 'copilot', message: `Copiloto (${user.email}, confirmado): ${title}`, accountId: action.account_id, details: { copilot_action_id: action.id, tool: action.tool, turn_id: action.turn_id, risk: 'confirm', confirmed: true } }).catch(() => undefined);
+    await logEvent({ level: 'info', source: 'copilot', message: `Copiloto (${user.email}, confirmado${withCode ? ' con código' : ''}): ${title}`, accountId: action.account_id, details: { copilot_action_id: action.id, tool: action.tool, turn_id: action.turn_id, risk: claimed.risk, confirmed: true } }).catch(() => undefined);
     return updated;
   } catch (e) {
     const message = e instanceof ToolError ? e.message : 'La acción falló en el servidor';
     const updated = (await cs.updateAction(action.id, { status: 'failed', error: message }))!;
     await note(updated, `Confirmaste: ${claimed.title} → falló: ${message}.`);
     return updated;
+  } finally {
+    revokeCopilotGrant(grant);
   }
 }
 

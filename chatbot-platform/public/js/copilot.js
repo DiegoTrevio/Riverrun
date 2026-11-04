@@ -269,7 +269,10 @@ async function act(a, path, body, done) {
 }
 
 const handlers = {
-  confirm: (a, seguir = false) => act(a, 'confirm', { seen_hash: a.seen_hash, seguir }, (u) => (u.status === 'done' ? `Hecho: ${u.title}` : `No se pudo: ${u.error || u.title}`)),
+  confirm: (a, seguir = false, code) => {
+    if (a.risk === 'code' && !code) { toast('Escribe tu código de verificación en la tarjeta', true); return; }
+    return act(a, 'confirm', { seen_hash: a.seen_hash, seguir, ...(code ? { code } : {}) }, (u) => (u.status === 'done' ? `Hecho: ${u.title}` : `No se pudo: ${u.error || u.title}`));
+  },
   decline: (a) => act(a, 'decline', {}, () => 'Propuesta descartada'),
   undo: (a) => act(a, 'undo', {}, () => 'Se deshizo el cambio'),
   change: (a) => {

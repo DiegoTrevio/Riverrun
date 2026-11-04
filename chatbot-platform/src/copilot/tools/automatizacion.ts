@@ -5,6 +5,7 @@
  */
 import { z } from 'zod';
 import { ActionSchema, ConditionSchema, TriggerSchema } from '../../automation/types.js';
+import { addsDataOut } from '../../automation/data-out.js';
 import { path, ToolError } from '../executor.js';
 import { defineTool, type Ctx, type RiskInfo, type TriggerHint } from '../registry.js';
 import { actionEvents, OUTWARD } from '../risk.js';
@@ -107,6 +108,15 @@ function ruleRisk(rule: { active?: boolean; actions?: any[]; stop_ai?: boolean }
 }
 
 /**
+ * Una regla que manda datos a un número de fuera (aviso por WhatsApp a un teléfono que no es del equipo) pide el código
+ * en el panel (`assertRecentMfa`): en el Copiloto se confirma con el código escrito en la tarjeta.
+ */
+function withDataOut(base: RiskInfo, next: any[] | undefined, prev: any[] = []): RiskInfo {
+  if (!next || !addsDataOut(next as any, prev as any)) return base;
+  return { level: 'code', reasons: [...base.reasons, 'Manda datos de clientes a números fuera del panel: se confirma con tu código de verificación.'] };
+}
+
+/**
  * Lo que la regla, activa, dispara en otras reglas (AI-14): etiquetas, datos guardados, pasar a una persona. Con eso `assessRisk` busca
  * las reglas activas que mandan algo hacia afuera (siguiendo la cadena), igual que con `etiquetar`.
  */
@@ -155,7 +165,8 @@ export const crearRegla = defineTool({
   description: 'Crea una regla: cuando pasa algo, hace acciones (etiquetar, avisar al equipo, asignar, crear un pendiente, enviar un mensaje…). Activa y con envíos, se confirma. Para varios mensajes o botones, crear_flujo.',
   schema: z.object(RuleFields),
   label: (a) => `Creando la regla «${a.nombre}»…`,
-  risk: (a) => ruleRisk({ active: a.activa, actions: a.acciones, stop_ai: a.detener_asistente }),
+  risk: (a) => withDataOut(ruleRisk({ active: a.activa, actions: a.acciones, stop_ai: a.detener_asistente }), a.acciones),
+  grants: ['POST /api/automations'],
   events: (a) => ruleEvents({ active: a.activa, actions: a.acciones }),
   preview: (a) => rulePreview(`Crear la regla «${a.nombre}»${a.activa === false ? ' (en pausa)' : ' (activa)'}`, ruleBody(a)),
   async execute(a, ctx) {
@@ -203,8 +214,9 @@ export const cambiarRegla = defineTool({
   label: () => 'Cambiando la regla…',
   async risk(a: any, ctx) {
     const rule = await findRule(ctx, a.regla_id);
-    return materialChange(a) ? ruleRisk({ ...rule, ...ruleBody(a) }) : 'reversible';
+    return materialChange(a) ? withDataOut(ruleRisk({ ...rule, ...ruleBody(a) }), a.acciones, rule.actions) : 'reversible';
   },
+  grants: ['PUT /api/automations/:id'],
   async events(a: any, ctx) {
     if (!materialChange(a)) return [];
     const rule = await findRule(ctx, a.regla_id);

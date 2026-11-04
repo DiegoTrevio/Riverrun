@@ -25,6 +25,7 @@ export type SecurityKind =
   | `export.${string}`
   | 'contact.erased' | 'account.deleted'
   | 'apikey.created' | 'apikey.revoked' | 'webhook_secret.rotated'
+  | 'copilot.code_confirmed'
   | `alert.${string}`;
 
 export interface SecurityEvent {
