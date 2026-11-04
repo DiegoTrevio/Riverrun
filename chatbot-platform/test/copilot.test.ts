@@ -71,15 +71,18 @@ after(async () => {
   if (ok) await h.app.close();
 });
 
-t('el Copiloto se enciende por cuenta: apagado responde 403 y /api/me lo dice', async () => {
+t('el Copiloto viene encendido (migración 114); el superadmin lo apaga por cuenta y apagado responde 403', async () => {
+  assert.equal((await owner('GET', '/api/me')).json().copilot.enabled, true, 'encendido por omisión');
+  assert.equal((await owner('GET', '/api/copilot/threads')).statusCode, 200);
+  assert.equal((await owner('PUT', `/api/accounts/${h.accountId}`, { copilot_enabled: false })).statusCode, 403, 'solo el superadmin lo apaga');
+  assert.equal((await h.authed('PUT', `/api/accounts/${h.accountId}`, { copilot_enabled: false })).statusCode, 200);
   assert.equal((await owner('GET', '/api/me')).json().copilot.enabled, false);
   assert.equal((await owner('GET', '/api/copilot/threads')).statusCode, 403);
-  assert.equal((await owner('PUT', `/api/accounts/${h.accountId}`, { copilot_enabled: true })).statusCode, 403, 'solo el superadmin lo enciende');
   assert.equal((await h.authed('PUT', `/api/accounts/${h.accountId}`, { copilot_enabled: true })).statusCode, 200);
   assert.equal((await owner('GET', '/api/me')).json().copilot.enabled, true);
   assert.equal((await owner('GET', '/api/copilot/threads')).statusCode, 200);
-  const logs = await pool.query(`SELECT message FROM event_logs WHERE account_id = $1 AND message LIKE '%Copiloto encendido%'`, [h.accountId]);
-  assert.equal(logs.rowCount, 1);
+  const logs = await pool.query(`SELECT message FROM event_logs WHERE account_id = $1 AND message ~ 'Copiloto (apagado|encendido)'`, [h.accountId]);
+  assert.equal(logs.rowCount, 2);
 });
 
 t('etiquetar: se aplica, queda en la bitácora con quién, se deshace una vez y no dos', async () => {

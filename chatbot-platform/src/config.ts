@@ -133,7 +133,8 @@ export const config = {
   },
   /**
    * Copiloto: el ayudante con IA del panel que hace cambios por quien se lo pide (docs/copiloto.md). Además de este
-   * interruptor general, cada cuenta lo enciende en Cuentas (`accounts.copilot_enabled`).
+   * interruptor general, cada cuenta lo tiene encendido por omisión y se puede apagar en Cuentas
+   * (`accounts.copilot_enabled`, migración 114).
    */
   copilot: {
     enabled: env('COPILOT_ENABLED', 'true') === 'true',

@@ -21,7 +21,8 @@ por eso se llama **Copiloto**.
   pasó los 22 casos de la prueba con la IA real a unos 0.003 USD por pedido). Se cobra del presupuesto de IA de la cuenta
   (`kind = 'copilot'`).
 - **Activación:**
-  - Se enciende cuenta por cuenta (`accounts.copilot_enabled`) desde Cuentas, sin volver a desplegar.
+  - Viene encendido en todas las cuentas, nuevas y existentes (`accounts.copilot_enabled`, migración 114).
+  - El superadmin lo apaga o lo vuelve a encender cuenta por cuenta desde Cuentas, sin volver a desplegar.
   - `COPILOT_ENABLED=false` lo apaga para todas.
 
 ## Un turno
