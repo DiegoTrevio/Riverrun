@@ -40,6 +40,9 @@ export function parsePage(raw: string | undefined | null): Page {
     case 'agenda': return page({ kind: 'agenda', area: 'agenda' });
     case 'cobros': return page({ kind: 'receivables', id: id(params.get('contact')), area: 'cobros' });
     case 'estadisticas': case 'consumo': return page({ kind: 'stats', area: 'datos' });
+    case 'datos-clientes': return page({ kind: 'contact_fields', area: 'contactos' });
+    case 'notifications': return page({ kind: 'notifications', area: 'avisos' });
+    case 'redes': return parts[1] === 'whatsapp' ? page({ kind: 'wa_templates', area: 'plantillas' }) : page({ kind: 'redes', area: 'cuenta' });
     case undefined: case 'agentes': case 'asistentes': return page({ kind: parts[1] === 'nuevo' ? 'new_agent' : 'agents', area: 'agentes' });
     default: return page({ kind: /^[a-z-]{1,30}$/.test(parts[0]) ? parts[0] : 'otra', area: 'cuenta' });
   }
@@ -50,6 +53,7 @@ const KIND_NAMES: Record<string, string> = {
   campaign: 'Campaña', pipeline: 'Oportunidades', quote: 'Cotización', receivables: 'Cobros de un cliente',
   contacts: 'Lista de contactos', new_agent: 'Crear un agente', conversations: 'Bandeja de conversaciones', agents: 'Agentes', agenda: 'Agenda',
   quotes: 'Cotizaciones', stats: 'Estadísticas', settings: 'Horario y avisos', automation: 'Automatización',
+  contact_fields: 'Datos de tus clientes', notifications: 'Avisos', wa_templates: 'Plantillas de WhatsApp',
 };
 
 /** Nombre legible de la página («Contacto · Ana López»), buscado con los permisos de quien pregunta. */

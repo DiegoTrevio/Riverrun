@@ -22,20 +22,22 @@ export type Level = 'read' | 'reversible' | 'confirm' | 'code';
  */
 export const PACKS = [
   { id: 'base', resumen: 'Lo de siempre: la cuenta, buscar y ver contactos y conversaciones, editar un contacto, etiquetar' },
-  { id: 'conversaciones', resumen: 'Atender conversaciones: tomar, asignar, cerrar, enviar mensajes y fotos, secuencias de una conversación' },
-  { id: 'contactos', resumen: 'Contactos: tareas, dar de baja, etiquetas en uso' },
-  { id: 'agenda', resumen: 'Agenda: horarios libres y citas (crear, mover, cancelar)' },
-  { id: 'oportunidades', resumen: 'Embudos de oportunidades: ver y mover tarjetas' },
-  { id: 'cobros', resumen: 'Cobros a clientes: crear, editar, marcar pagados, recordar' },
-  { id: 'cotizaciones', resumen: 'Cotizaciones y lista de precios' },
+  { id: 'conversaciones', resumen: 'Atender conversaciones: tomar, asignar, cerrar, enviar mensajes, fotos o plantillas, resumen, reporte, memoria, secuencias' },
+  { id: 'plantillas', resumen: 'Plantillas de WhatsApp: ver, crear, sincronizar, borrar' },
+  { id: 'contactos', resumen: 'Contactos: tareas, dar de baja, campos de datos, importar CSV, vistas, descargar o borrar sus datos' },
+  { id: 'agenda', resumen: 'Agenda: servicios, disponibilidad del equipo, enlaces para reservar, horarios libres y citas' },
+  { id: 'oportunidades', resumen: 'Embudos de oportunidades: crear, cambiar, borrar; ver y mover tarjetas' },
+  { id: 'cobros', resumen: 'Cobros: crear, aprobar, editar, pagados, recordar, borrar; pagos recurrentes; ajustes' },
+  { id: 'cotizaciones', resumen: 'Cotizaciones, lista de precios, formatos en Word y ajustes' },
   { id: 'agente', resumen: 'Configurar un agente: instrucciones, trato y reglas, preguntas en orden, objetivo y etapas, cuándo responde, mensajes fijos y guardados, cotizaciones, modelo, encender o apagar' },
   { id: 'agentes', resumen: 'Crear, duplicar o borrar agentes; versiones; probarlo como cliente; pruebas automáticas' },
   { id: 'conocimiento', resumen: 'Lo que sabe el agente: conocimiento, importar de una página o un archivo, fotos y archivos que manda' },
   { id: 'canales', resumen: 'Canales del agente: ver su conexión, asignar, encender o apagar, chat para la web, WhatsApp' },
   { id: 'automatizacion', resumen: 'Automatizar: flujos de mensajes, reglas y secuencias' },
   { id: 'campanas', resumen: 'Campañas masivas: crear, lanzar, cancelar' },
-  { id: 'cuenta', resumen: 'Ajustes del negocio: horario y días festivos' },
-  { id: 'datos', resumen: 'Estadísticas del negocio' },
+  { id: 'avisos', resumen: 'Avisos del panel: ver, marcar leídos, avisar al equipo' },
+  { id: 'cuenta', resumen: 'Ajustes del negocio: horario, festivos, avisos, reparto, consentimiento, bajas, envíos, retención' },
+  { id: 'datos', resumen: 'Estadísticas del negocio y exportar a CSV' },
 ] as const;
 export type Pack = (typeof PACKS)[number]['id'];
 export const PACK_IDS = PACKS.map((p) => p.id) as Pack[];

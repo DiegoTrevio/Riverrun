@@ -394,6 +394,29 @@ export const crearFlujo = defineTool({
   },
 });
 
+export const duplicarFlujo = defineTool({
+  name: 'duplicar_flujo',
+  area: 'automatizacion',
+  roles: ['admin'],
+  description: 'Hace una copia de un flujo del lienzo («… (copia)»), como borrador sin publicar, para cambiarla sin tocar el original.',
+  schema: z.object({ flujo_id: Id }),
+  label: () => 'Duplicando el flujo…',
+  risk: () => 'reversible',
+  async execute(a, ctx) {
+    const b = await boardOf(ctx, a.flujo_id);
+    const row = await ctx.call.send<any>('POST', path`/api/flow-boards/${b.id}/duplicate`, {});
+    return {
+      title: `Dupliqué el flujo «${b.name}» como «${row.name}» (borrador)`,
+      links: [links.board(row.id, 'Abrir la copia')],
+      after: { revision: row.revision },
+      // Deshacer = quitar la copia, si sigue sin publicar y sin cambios (lo mismo que con crear_flujo).
+      undo: { label: 'Deshacer', custom: { tool: 'duplicar_flujo', params: { id: row.id, revision: row.revision } } },
+      data: { flujo_id: row.id, nombre: row.name },
+    };
+  },
+  undo: (p: { id: string; revision: number }, ctx) => crearFlujo.undo!(p, ctx),
+});
+
 export const cambiarFlujo = defineTool({
   name: 'cambiar_flujo',
   area: 'automatizacion',
@@ -692,4 +715,4 @@ export const borrarAutomatizacion = defineTool({
   },
 });
 
-export const AUTOMATION_TOOLS = [listarAutomatizaciones, verFlujo, crearFlujo, cambiarFlujo, publicarFlujo, pausarReanudarFlujo, crearRegla, cambiarRegla, editarSecuencia, crearCampana, lanzarCampana, cancelarCampana, borrarAutomatizacion];
+export const AUTOMATION_TOOLS = [listarAutomatizaciones, verFlujo, crearFlujo, duplicarFlujo, cambiarFlujo, publicarFlujo, pausarReanudarFlujo, crearRegla, cambiarRegla, editarSecuencia, crearCampana, lanzarCampana, cancelarCampana, borrarAutomatizacion];
