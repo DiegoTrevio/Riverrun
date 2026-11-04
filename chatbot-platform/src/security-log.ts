@@ -17,6 +17,7 @@
 import { createHmac } from 'node:crypto';
 import { query, queryOne } from './db.js';
 import { config } from './config.js';
+import { ipKey } from './auth.js';
 import { logEvent } from './logs.js';
 
 export type SecurityKind =
@@ -25,6 +26,7 @@ export type SecurityKind =
   | `export.${string}`
   | 'login.google_rejected'
   | `session.${string}` | `user.${string}` | `invite.${string}` | `password_reset.${string}`
+  | 'ip.blocked' | 'ip.unblocked'
   | 'contact.erased' | 'account.deleted'
   | 'apikey.created' | 'apikey.revoked' | 'webhook_secret.rotated'
   | `alert.${string}`;
@@ -41,19 +43,13 @@ export interface SecurityEvent {
   details?: Record<string, unknown>;
 }
 
-/** Umbrales de las reglas (en una ventana de 15 minutos para el acceso y de 1 hora para los datos). */
-export const RULES = {
-  // El límite por IP deja pasar 8 intentos cada 15 minutos (y los frenados se anotan una vez): 8 contra 5 correos
-  // distintos ya es probar una lista.
-  stuffingFailures: 8, stuffingEmails: 5,
-  /** Contraseñas fallidas en toda la plataforma en 15 minutos (una lista probada desde muchas IP, pocas por IP). */
-  globalFailures: 100,
-  bruteForceFailures: 10,
-  exportsPerHour: 5,
-  erasuresPerHour: 25,
-  /** Tope de avisos enviados por hora en total: pasado eso se anotan, y se manda un solo aviso de que hay demasiados. */
-  alertsPerHour: 10,
-};
+/**
+ * Umbrales de las reglas (en una ventana de 15 minutos para el acceso y de 1 hora para los datos), ajustables en .env
+ * (`SECURITY_*`). Por omisión: el límite por IP deja pasar 8 intentos cada 15 minutos, así que 8 contra 5 correos
+ * distintos ya es probar una lista; 100 fallidas en la plataforma son una lista desde muchas IP; el tope de avisos
+ * enviados por hora evita que quien elige la IP o el correo inunde al superadmin.
+ */
+export const RULES = config.securityRules;
 
 /** Solo lo que parece un correo se guarda como correo (quien escribe su contraseña en ese campo no la deja aquí). */
 const asEmail = (v: string | undefined) => (v && /^[^\s@]{1,64}@[^\s@]+\.[^\s@]{2,}$/.test(v) ? v.slice(0, 200).toLowerCase() : '');
@@ -156,8 +152,11 @@ async function detect(e: SecurityEvent) {
         [e.ip],
       );
       if (r && r.n >= RULES.stuffingFailures && r.people >= RULES.stuffingEmails) {
+        const blocked = await blockIp(e.ip, RULES.autoblockMinutes, { failures: r.n, people: r.people });
         await alert('stuffing', e.ip, 'Muchos accesos fallidos desde una IP',
-          `${r.n} intentos fallidos en 15 minutos desde ${e.ip}, contra ${r.people} correos distintos: alguien está probando listas de contraseñas. El límite por IP ya lo frena; si sigue, bloquéala en el firewall.`, e);
+          `${r.n} intentos fallidos en 15 minutos desde ${e.ip}, contra ${r.people} correos distintos: alguien está probando listas de contraseñas. ${blocked
+            ? `Esa IP ya no puede entrar durante ${RULES.autoblockMinutes} minutos (se desbloquea en Sistema → Seguridad). Si sigue después, bloquéala en el firewall.`
+            : 'El límite por IP ya lo frena; si sigue, bloquéala en el firewall.'}`, e);
       }
     }
     if (e.kind === 'login.failed') {
@@ -197,7 +196,7 @@ async function detect(e: SecurityEvent) {
   if (e.kind.startsWith('export.') && e.userId) {
     const r = await queryOne<{ n: number }>(
       `SELECT count(*)::int AS n FROM security_events WHERE kind LIKE 'export.%' AND user_id = $1 AND at > now() - interval '1 hour'`, [e.userId]);
-    if (r && r.n >= RULES.exportsPerHour) {
+    if (r && r.n >= RULES.exportsPerHour && r.n >= 2 * (await usualPerHour(`kind LIKE 'export.%'`, e.userId))) {
       await alert('exports', e.userId, 'Muchas descargas de datos de una persona',
         `${e.email || 'Alguien'} descargó datos ${r.n} veces en la última hora (lo último: ${e.kind.slice(7)}). Si no es normal para esa cuenta, revisa quién es y cierra sus sesiones.`, e);
     }
@@ -206,11 +205,50 @@ async function detect(e: SecurityEvent) {
   if (e.kind === 'contact.erased' && e.userId) {
     const r = await queryOne<{ n: number }>(
       `SELECT count(*)::int AS n FROM security_events WHERE kind = 'contact.erased' AND user_id = $1 AND at > now() - interval '1 hour'`, [e.userId]);
-    if (r && r.n >= RULES.erasuresPerHour) {
+    if (r && r.n >= RULES.erasuresPerHour && r.n >= 2 * (await usualPerHour(`kind = 'contact.erased'`, e.userId))) {
       await alert('erasures', e.userId, 'Muchos contactos borrados por una persona',
         `${e.email || 'Alguien'} borró ${r.n} contactos (con su historial) en la última hora. Lo borrado no se recupera salvo desde un respaldo.`, e);
     }
   }
+}
+
+/**
+ * Lo normal de una persona: su hora con más eventos de ese tipo en los 30 días anteriores (sin contar la última hora).
+ * Quien descarga mucho todos los días no dispara el aviso por hacer lo de siempre; se avisa al doble de lo habitual.
+ * Solo se calcula cuando ya se pasó el umbral fijo (no cuesta nada en lo normal).
+ */
+async function usualPerHour(kindSql: string, userId: string): Promise<number> {
+  const r = await queryOne<{ n: number | null }>(
+    `SELECT max(n)::int AS n FROM (SELECT count(*) AS n FROM security_events
+       WHERE ${kindSql} AND user_id = $1 AND at > now() - interval '30 days' AND at <= now() - interval '1 hour'
+       GROUP BY date_trunc('hour', at)) x`, [userId]);
+  return r?.n ?? 0;
+}
+
+/**
+ * Bloquea el acceso desde una IP (o su /64 en IPv6) por `minutes`, con el mismo contador del límite por IP: la petición
+ * que llegue desde ahí recibe el mismo «demasiados intentos». Queda en la bitácora (`ip.blocked`). false si está apagado.
+ */
+async function blockIp(ip: string, minutes: number, details: Record<string, unknown>): Promise<boolean> {
+  if (!minutes) return false;
+  // Una vez por IP y ventana: los intentos que siguen llegando ya están bloqueados (no se anota ni se alarga de nuevo).
+  if (!(await claimOnce(`block:${ipKey(ip)}`, minutes))) return true;
+  await query(
+    `INSERT INTO rate_limits (key, hits, expires_at) VALUES ($1, 100000, now() + make_interval(mins => $2))
+     ON CONFLICT (key) DO UPDATE SET hits = 100000, expires_at = GREATEST(rate_limits.expires_at, now() + make_interval(mins => $2))`,
+    [`login-ip:${ipKey(ip)}`, minutes]);
+  await query(`INSERT INTO security_events (kind, ip, target, details) VALUES ('ip.blocked', $1, $2, $3)`,
+    [ip.slice(0, 64), ipKey(ip).slice(0, 200), JSON.stringify({ ...details, minutes })]);
+  return true;
+}
+
+/** Superadmin: vuelve a dejar entrar desde una IP bloqueada (por la regla o por el límite normal). */
+export async function unblockIp(ip: string, by: { userId?: string | null; email?: string; ip?: string }): Promise<boolean> {
+  const r = await query(`DELETE FROM rate_limits WHERE key = $1 RETURNING 1`, [`login-ip:${ipKey(ip)}`]);
+  // Si vuelve a probar listas después, se vuelve a bloquear.
+  await releaseClaim(`block:${ipKey(ip)}`);
+  await recordSecurity({ kind: 'ip.unblocked', userId: by.userId ?? null, email: by.email, ip: by.ip, target: ipKey(ip) });
+  return r.length > 0;
 }
 
 /** Lo que se muestra: el superadmin todo; un administrador, lo de su cuenta. */

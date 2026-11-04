@@ -628,9 +628,26 @@ set +e; "${hdenv[@]}" FAKE_SSHD_BAD=1 ./riverrun harden --yes --skip-firewall > 
 # Puerto inválido y otro sistema: no se toca nada.
 set +e; "${hdenv[@]}" HARDEN_ALLOW_PORTS="80;rm" ./riverrun harden --yes > "$work/out" 2>&1; rc=$?; set -e
 [[ "$rc" != 0 ]] && grep -q "no es un puerto" "$work/out" || { cat "$work/out"; echo "ERROR: aceptó un puerto inválido"; exit 1; }
-printf 'ID=fedora\n' > "$hd/root/etc/os-release"
+printf 'ID=arch\n' > "$hd/root/etc/os-release"
 set +e; "${hdenv[@]}" ./riverrun harden --yes > "$work/out" 2>&1; rc=$?; set -e
-[[ "$rc" != 0 ]] && grep -q "solo conoce Debian y Ubuntu" "$work/out" || { cat "$work/out"; echo "ERROR: harden en otro sistema"; exit 1; }
+[[ "$rc" != 0 ]] && grep -q "endurece este servidor a mano" "$work/out" || { cat "$work/out"; echo "ERROR: harden en otro sistema"; exit 1; }
+# Familia Red Hat (AlmaLinux): dnf-automatic solo seguridad, EPEL para fail2ban, firewalld con DOCKER-USER, nada de ufw.
+printf 'ID="almalinux"\nID_LIKE="rhel centos fedora"\n' > "$hd/root/etc/os-release"
+for c in dnf firewall-cmd; do printf '#!/usr/bin/env bash\necho "%s $*" >> "$HLOG"\n' "$c" > "$hd/bin/$c"; done; chmod +x "$hd/bin/"*
+mkdir -p "$hd/root/etc/dnf"; printf '[commands]\nupgrade_type = default\napply_updates = no\n' > "$hd/root/etc/dnf/automatic.conf"
+: > "$HLOG"
+"${hdenv[@]}" ./riverrun harden --yes > "$work/out" 2>&1 || { cat "$work/out"; echo "ERROR: harden en AlmaLinux falló"; exit 1; }
+grep -q "^dnf install -y -q epel-release" "$HLOG" && grep -q "^dnf install -y -q dnf-automatic fail2ban python3-systemd firewalld" "$HLOG" || { cat "$HLOG"; echo "ERROR: paquetes de la familia Red Hat"; exit 1; }
+grep -q "^upgrade_type = security$" "$hd/root/etc/dnf/automatic.conf" && grep -q "^apply_updates = yes$" "$hd/root/etc/dnf/automatic.conf" || { cat "$hd/root/etc/dnf/automatic.conf"; echo "ERROR: dnf-automatic no quedó en seguridad"; exit 1; }
+grep -q "systemctl enable --now dnf-automatic.timer" "$HLOG" && grep -q "systemctl enable --now firewalld" "$HLOG" || { cat "$HLOG"; echo "ERROR: no encendió dnf-automatic o firewalld"; exit 1; }
+grep -q "firewall-cmd --permanent --add-port=2222/tcp" "$HLOG" && grep -q "firewall-cmd --permanent --add-port=443/tcp" "$HLOG" && grep -q "firewall-cmd --permanent --add-port=443/udp" "$HLOG" || { cat "$HLOG"; echo "ERROR: puertos de firewalld"; exit 1; }
+grep -q -- "--direct --add-rule ipv4 filter DOCKER-USER [0-9]* -m conntrack --ctstate NEW -j DROP" "$HLOG" && grep -q -- "--direct --add-rule ipv6 filter DOCKER-USER 0 -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN" "$HLOG" && grep -q -- "--direct --remove-rules ipv4 filter DOCKER-USER" "$HLOG" || { cat "$HLOG"; echo "ERROR: DOCKER-USER en firewalld"; exit 1; }
+[[ "$(grep -n -- "--add-port=2222/tcp" "$HLOG" | head -1 | cut -d: -f1)" -lt "$(grep -n "firewall-cmd --reload" "$HLOG" | cut -d: -f1)" ]] || { echo "ERROR: recargó firewalld antes de permitir SSH"; exit 1; }
+! grep -q "^ufw\|^apt-get" "$HLOG" || { cat "$HLOG"; echo "ERROR: usó ufw o apt en AlmaLinux"; exit 1; }
+# Fedora: sin EPEL.
+printf 'ID=fedora\n' > "$hd/root/etc/os-release"; : > "$HLOG"
+"${hdenv[@]}" ./riverrun harden --yes --skip-firewall > "$work/out" 2>&1 || { cat "$work/out"; echo "ERROR: harden en Fedora falló"; exit 1; }
+! grep -q "epel-release" "$HLOG" && grep -q "^dnf install -y -q dnf-automatic fail2ban python3-systemd$" "$HLOG" || { cat "$HLOG"; echo "ERROR: Fedora no usa EPEL"; exit 1; }
 if [[ "$(id -u)" != 0 ]]; then
   set +e; env PATH="$hd/bin:$PATH" RIVERRUN_ROOT="$hd/root" ./riverrun harden --yes > "$work/out" 2>&1; rc=$?; set -e
   [[ "$rc" != 0 ]] && grep -q "requiere root" "$work/out" || { cat "$work/out"; echo "ERROR: RIVERRUN_ROOT sin RIVERRUN_TEST saltó el root"; exit 1; }
