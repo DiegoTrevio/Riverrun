@@ -543,12 +543,25 @@ HLOG="$hd/log"; export HLOG; : > "$HLOG"
 printf 'ID=debian\nVERSION_CODENAME=bookworm\n' > "$hd/root/etc/os-release"
 printf 'Include /etc/ssh/sshd_config.d/*.conf\nPort 2222\n' > "$hd/root/etc/ssh/sshd_config"
 printf '*filter\n:ufw-after-input - [0:0]\nCOMMIT\n' > "$hd/root/etc/ufw/after.rules"; cp "$hd/root/etc/ufw/after.rules" "$hd/root/etc/ufw/after6.rules"
-for c in apt-get systemctl ufw; do printf '#!/usr/bin/env bash\necho "%s $*" >> "$HLOG"\n' "$c" > "$hd/bin/$c"; done
+for c in apt-get ufw; do printf '#!/usr/bin/env bash\necho "%s $*" >> "$HLOG"\n' "$c" > "$hd/bin/$c"; done
+cat > "$hd/bin/systemctl" <<'SHIM'
+#!/usr/bin/env bash
+echo "systemctl $*" >> "$HLOG"
+# Con FAKE_SOCKET, SSH escucha por ssh.socket (Ubuntu 24.04) en un puerto distinto del de sshd_config.
+[[ "$1" == "is-active" ]] && { [[ -n "${FAKE_SOCKET:-}" ]]; exit; }
+[[ "$1" == "show" ]] && echo "[::]:${FAKE_SOCKET:-22} (Stream)"
+exit 0
+SHIM
 cat > "$hd/bin/sshd" <<'SHIM'
 #!/usr/bin/env bash
 echo "sshd $*" >> "$HLOG"
 [[ "$1" == "-t" && -n "${FAKE_SSHD_BAD:-}" ]] && exit 1
-[[ "$1" == "-T" ]] && { echo "port 2222"; echo "passwordauthentication ${FAKE_PWAUTH:-no}"; }
+if [[ "$1" == "-T" ]]; then
+  [[ -n "${FAKE_NOPORT:-}" ]] && exit 255
+  echo "port 2222"; echo "kbdinteractiveauthentication no"
+  # Un bloque Match que vuelve a encender las contraseñas solo se ve con -C.
+  if [[ "$2" == "-C" && -n "${FAKE_MATCH_PW:-}" ]]; then echo "passwordauthentication yes"; else echo "passwordauthentication ${FAKE_PWAUTH:-no}"; fi
+fi
 exit 0
 SHIM
 chmod +x "$hd/bin/"*
@@ -556,7 +569,7 @@ hdenv=(env PATH="$hd/bin:$PATH" RIVERRUN_TEST=1 RIVERRUN_ROOT="$hd/root")
 cp .env .env.harden; printf 'COMPOSE_PROFILES=https\n' >> .env
 # Sin terminal y sin --yes: no hace nada.
 set +e; "${hdenv[@]}" ./riverrun harden > "$work/out" 2>&1; rc=$?; set -e
-[[ "$rc" != 0 ]] && grep -q "confirma con --yes" "$work/out" && ! grep -Eq "^(apt-get|ufw|systemctl)" "$HLOG" || { cat "$work/out"; echo "ERROR: harden sin confirmar cambió algo"; exit 1; }
+[[ "$rc" != 0 ]] && grep -q "confirma con --yes" "$work/out" && ! grep -Ev "^systemctl (is-active|show)" "$HLOG" | grep -Eq "^(apt-get|ufw|systemctl)" || { cat "$work/out"; echo "ERROR: harden sin confirmar cambió algo"; exit 1; }
 # Sin llave autorizada: SSH se deja como está (no deja a nadie fuera); el resto sí se aplica.
 "${hdenv[@]}" ./riverrun harden --yes > "$work/out" 2>&1 || { cat "$work/out"; echo "ERROR: harden falló"; exit 1; }
 [[ ! -e "$hd/root/etc/ssh/sshd_config.d/01-riverrun.conf" ]] && grep -q "te dejaría fuera" "$work/out" || { cat "$work/out"; echo "ERROR: apagó contraseñas sin llave autorizada"; exit 1; }
@@ -567,15 +580,45 @@ grep -q "ufw limit 2222/tcp" "$HLOG" && grep -q "ufw allow 80/tcp" "$HLOG" && gr
 [[ "$(grep -n "ufw limit 2222" "$HLOG" | cut -d: -f1)" -lt "$(grep -n "ufw --force enable" "$HLOG" | cut -d: -f1)" ]] || { echo "ERROR: encendió el firewall antes de permitir SSH"; exit 1; }
 grep -q -- "-A DOCKER-USER -p tcp -m conntrack --ctorigdstport 443 --ctdir ORIGINAL -j RETURN" "$hd/root/etc/ufw/after.rules" && grep -q -- "-A DOCKER-USER -m conntrack --ctstate NEW -j DROP" "$hd/root/etc/ufw/after.rules" && grep -q ":ufw-after-input" "$hd/root/etc/ufw/after.rules" || { cat "$hd/root/etc/ufw/after.rules"; echo "ERROR: DOCKER-USER no cierra lo que publica Docker"; exit 1; }
 ! grep -q -- "--ctorigdstport 3000" "$hd/root/etc/ufw/after.rules" || { echo "ERROR: abrió el panel hacia afuera"; exit 1; }
-grep -q -- "-s fc00::/7 -j RETURN" "$hd/root/etc/ufw/after6.rules" || { echo "ERROR: falta IPv6"; exit 1; }
+grep -q -- "-A DOCKER-USER -i br-+ -j RETURN" "$hd/root/etc/ufw/after6.rules" || { echo "ERROR: falta IPv6"; exit 1; }
+! grep -q -- "-s 10.0.0.0/8" "$hd/root/etc/ufw/after.rules" || { echo "ERROR: la red privada del proveedor no debe pasar"; exit 1; }
+# Las reglas generadas las acepta iptables de verdad (si se puede probar aquí).
+if command -v iptables-restore >/dev/null 2>&1 && [[ "$(id -u)" == 0 ]]; then
+  iptables-restore --test -n < "$hd/root/etc/ufw/after.rules" && ip6tables-restore --test -n < "$hd/root/etc/ufw/after6.rules" || { echo "ERROR: iptables rechaza las reglas"; exit 1; }
+fi
 [[ -f "$hd/root/etc/riverrun-harden" ]] || { echo "ERROR: no dejó su marca"; exit 1; }
 # Con llave: SSH solo con llave; repetir no duplica el bloque; un puerto extra se agrega.
-echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample dueno@laptop" > "$hd/root/root/.ssh/authorized_keys"
+# Una llave de otra cuenta no cuenta: quien corre harden (SUDO_USER) entra con la suya.
+mkdir -p "$hd/root/home/otra/.ssh" "$hd/root/home/dueno/.ssh"
+if command -v ssh-keygen >/dev/null 2>&1; then ssh-keygen -q -t ed25519 -N '' -C dueno@laptop -f "$hd/k"; pub="$(cat "$hd/k.pub")"
+else pub="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample dueno@laptop"; fi
+echo "$pub" > "$hd/root/home/otra/.ssh/authorized_keys"
+"${hdenv[@]}" SUDO_USER=dueno ./riverrun harden --yes --skip-firewall > "$work/out" 2>&1 || { cat "$work/out"; echo "ERROR: harden falló"; exit 1; }
+[[ ! -e "$hd/root/etc/ssh/sshd_config.d/01-riverrun.conf" ]] && grep -q "La cuenta dueno no tiene una llave" "$work/out" || { cat "$work/out"; echo "ERROR: usó la llave de otra cuenta"; exit 1; }
+echo "from=\"203.0.113.0/24\" $pub" > "$hd/root/root/.ssh/authorized_keys"
 : > "$HLOG"
 "${hdenv[@]}" HARDEN_ALLOW_PORTS=8443 ./riverrun harden --yes > "$work/out" 2>&1 || { cat "$work/out"; echo "ERROR: harden con llave falló"; exit 1; }
 grep -q "^PasswordAuthentication no$" "$hd/root/etc/ssh/sshd_config.d/01-riverrun.conf" && grep -q "^PermitRootLogin prohibit-password$" "$hd/root/etc/ssh/sshd_config.d/01-riverrun.conf" && grep -q "SSH solo con llave" "$work/out" || { cat "$work/out"; echo "ERROR: SSH no quedó solo con llave"; exit 1; }
+! grep -q "MaxAuthTries" "$hd/root/etc/ssh/sshd_config.d/01-riverrun.conf" || { echo "ERROR: MaxAuthTries bajo deja fuera a quien tiene varias llaves"; exit 1; }
 grep -q "sshd -t" "$HLOG" && grep -q "systemctl reload ssh" "$HLOG" || { cat "$HLOG"; echo "ERROR: no validó ni recargó SSH"; exit 1; }
 [[ "$(grep -c "BEGIN riverrun DOCKER-USER" "$hd/root/etc/ufw/after.rules")" == 1 ]] && grep -q -- "--ctorigdstport 8443" "$hd/root/etc/ufw/after.rules" && grep -q "ufw allow 8443/tcp" "$HLOG" || { cat "$hd/root/etc/ufw/after.rules"; echo "ERROR: el bloque se duplicó o falta el puerto extra"; exit 1; }
+# Un Match que vuelve a encender las contraseñas (solo visible con sshd -T -C): se avisa.
+"${hdenv[@]}" FAKE_MATCH_PW=1 ./riverrun harden --yes --skip-firewall > "$work/out" 2>&1 && grep -q "sigue aceptando contraseñas" "$work/out" || { cat "$work/out"; echo "ERROR: no vio el Match con contraseñas"; exit 1; }
+# ssh.socket escucha en 22 aunque sshd_config diga 2222, y esta sesión llega por el 22: se permiten los dos, y la IP de
+# esta sesión nunca la bloquea fail2ban.
+: > "$HLOG"
+"${hdenv[@]}" FAKE_SOCKET=22 SSH_CONNECTION="198.51.100.7 50000 10.0.0.5 22" ./riverrun harden --yes > "$work/out" 2>&1 || { cat "$work/out"; echo "ERROR: harden con ssh.socket falló"; exit 1; }
+grep -q "ufw limit 22/tcp" "$HLOG" && grep -q "ufw limit 2222/tcp" "$HLOG" || { cat "$HLOG"; echo "ERROR: no permitió el puerto real de SSH"; exit 1; }
+grep -q "^ignoreip = 127.0.0.1/8 ::1 198.51.100.7$" "$hd/root/etc/fail2ban/jail.d/riverrun.local" && grep -q "^port = 22,2222$" "$hd/root/etc/fail2ban/jail.d/riverrun.local" || { cat "$hd/root/etc/fail2ban/jail.d/riverrun.local"; echo "ERROR: fail2ban sin la IP propia o sin los puertos"; exit 1; }
+# Sin saber el puerto de SSH, no se toca nada.
+: > "$HLOG"
+set +e; "${hdenv[@]}" FAKE_NOPORT=1 ./riverrun harden --yes > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" != 0 ]] && grep -q "en qué puerto escucha SSH" "$work/out" && ! grep -q "^ufw" "$HLOG" || { cat "$work/out"; echo "ERROR: adivinó el puerto de SSH"; exit 1; }
+# Un bloque a medias en after.rules: no se borra el resto del archivo.
+cp "$hd/root/etc/ufw/after.rules" "$hd/after.ok"; printf '%s\n' "# BEGIN riverrun DOCKER-USER (./riverrun harden)" "-A x" "*nat" "COMMIT" > "$hd/root/etc/ufw/after.rules"
+set +e; "${hdenv[@]}" ./riverrun harden --yes > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" != 0 ]] && grep -q "bloque de riverrun incompleto" "$work/out" && grep -q "^\*nat$" "$hd/root/etc/ufw/after.rules" || { cat "$work/out"; echo "ERROR: un bloque a medias borró el archivo"; exit 1; }
+cp "$hd/after.ok" "$hd/root/etc/ufw/after.rules"
 # Otro archivo vuelve a encender las contraseñas: se avisa, no se afirma.
 "${hdenv[@]}" FAKE_PWAUTH=yes ./riverrun harden --yes --skip-firewall > "$work/out" 2>&1 && grep -q "sigue aceptando contraseñas" "$work/out" || { cat "$work/out"; echo "ERROR: debía avisar que SSH sigue con contraseñas"; exit 1; }
 # Una configuración que sshd rechaza: se quita y no se recarga.

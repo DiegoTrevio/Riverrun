@@ -378,11 +378,12 @@ HARDEN_END="# END riverrun DOCKER-USER"
 # Bloque para after.rules / after6.rules: de afuera solo entra a los contenedores lo publicado a propósito (80/443 y
 # HARDEN_ALLOW_PORTS); lo que sale de los contenedores y las respuestas siguen igual.
 harden_docker_rules() { # $1 = 4|6, $2… = puertos tcp
-  local v="$1" p nets; shift
-  if [[ "$v" == 6 ]]; then nets="fc00::/7 fe80::/10"; else nets="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16"; fi
+  local p; shift
   printf '%s\n*filter\n:DOCKER-USER - [0:0]\n' "$HARDEN_BEGIN"
   printf '%s\n' "-A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN"
-  for p in $nets; do printf '%s\n' "-A DOCKER-USER -s $p -j RETURN"; done
+  # Lo que sale de un contenedor (a internet o a otro contenedor) entra por su puente: sigue igual. Por interfaz y no
+  # por rango de IP: otra máquina de la red privada del proveedor no pasa por aquí.
+  printf '%s\n' "-A DOCKER-USER -i docker0 -j RETURN" "-A DOCKER-USER -i br-+ -j RETURN"
   for p in "$@"; do printf '%s\n' "-A DOCKER-USER -p tcp -m conntrack --ctorigdstport $p --ctdir ORIGINAL -j RETURN"; done
   [[ " $* " == *" 443 "* ]] && printf '%s\n' "-A DOCKER-USER -p udp -m conntrack --ctorigdstport 443 --ctdir ORIGINAL -j RETURN"
   printf '%s\n' "-A DOCKER-USER -m conntrack --ctstate NEW -j DROP" "-A DOCKER-USER -j RETURN" "COMMIT" "$HARDEN_END"
@@ -392,6 +393,10 @@ harden_docker_rules() { # $1 = 4|6, $2… = puertos tcp
 harden_put_block() { # archivo contenido
   local f="$1" block="$2" tmp
   [[ -f "$f" ]] || return 0
+  # Un bloque a medias (inicio sin fin) borraría el resto del archivo: mejor no tocarlo.
+  [[ "$(grep -cxF "$HARDEN_BEGIN" "$f" || true)" == "$(grep -cxF "$HARDEN_END" "$f" || true)" ]] \
+    || die "$f tiene un bloque de riverrun incompleto (inicio sin fin): corrígelo a mano y vuelve a correr harden."
+  cp -p "$f" "$f.riverrun-bak"
   tmp="$(mktemp)"
   B1="$HARDEN_BEGIN" B2="$HARDEN_END" awk '$0 == ENVIRON["B1"] { skip = 1 } !skip { print } $0 == ENVIRON["B2"] { skip = 0 }' "$f" > "$tmp"
   printf '%s\n' "$block" >> "$tmp"
@@ -399,12 +404,31 @@ harden_put_block() { # archivo contenido
 }
 
 # ¿Alguien puede entrar por SSH con llave? Sin eso, apagar las contraseñas dejaría el servidor sin acceso.
-harden_has_ssh_key() { # raíz del sistema
-  local root="$1" f
-  for f in "$root"/root/.ssh/authorized_keys "$root"/home/*/.ssh/authorized_keys; do
-    [[ -f "$f" ]] && grep -Eq '^[[:space:]]*(ssh-|ecdsa-|sk-)' "$f" && return 0
-  done
-  return 1
+# Se revisa la cuenta de quien corre harden (SUDO_USER, o root), no cualquiera: si tú entras con contraseña y la llave es
+# de otra persona, apagar las contraseñas te dejaría fuera a ti.
+harden_has_ssh_key() { # raíz del sistema, usuario
+  local root="$1" user="$2" home f
+  if [[ "$user" == root ]]; then home=/root
+  elif [[ -n "$root" ]]; then home="/home/$user"
+  else home="$(getent passwd "$user" | cut -d: -f6)"; fi
+  [[ -n "$home" ]] || return 1
+  f="$root$home/.ssh/authorized_keys"
+  [[ -f "$f" ]] || return 1
+  if command -v ssh-keygen >/dev/null 2>&1; then ssh-keygen -l -f "$f" >/dev/null 2>&1; return; fi
+  grep -Eq '(^|[[:space:],])(ssh-(ed25519|rsa|dss)|ecdsa-sha2-[a-z0-9]+|sk-[a-z0-9@.-]+)[[:space:]]+AAAA[A-Za-z0-9+/=]+' "$f"
+}
+
+# Todos los puertos en los que SSH escucha de verdad: lo que dice sshd, lo que está abierto (con ssh.socket, Ubuntu 24.04
+# ignora el Port de sshd_config) y el de esta misma sesión. Sin ninguno, no se adivina.
+harden_ssh_ports() {
+  {
+    sshd -T 2>/dev/null | awk '$1 == "port" { print $2 }' || true
+    if command -v ss >/dev/null 2>&1; then ss -Hltnp 2>/dev/null | awk '/"sshd"/ { n = split($4, a, ":"); print a[n] }' || true; fi
+    if systemctl is-active --quiet ssh.socket 2>/dev/null; then
+      systemctl show -p Listen --value ssh.socket 2>/dev/null | tr ' ' '\n' | sed -n 's/.*:\([0-9]\{1,5\}\)$/\1/p' || true
+    fi
+    if [[ -n "${SSH_CONNECTION:-}" ]]; then printf '%s\n' "${SSH_CONNECTION##* }"; fi
+  } | { grep -E '^[0-9]{1,5}$' || true; } | sort -un | tr '\n' ' ' | sed 's/ $//'
 }
 
 cmd_harden() {
@@ -427,8 +451,9 @@ cmd_harden() {
   [[ "$id" == debian || "$id" == ubuntu || " $like " == *" debian "* || " $like " == *" ubuntu "* ]] || die "harden solo conoce Debian y Ubuntu ($id): endurece este servidor a mano (docs/produccion.md)."
 
   # Puerto de SSH real (puede no ser el 22) y lo que se publica: 80/443 con dominio, más HARDEN_ALLOW_PORTS.
-  local sshp; sshp="$(sshd -T 2>/dev/null | awk '$1 == "port" { print $2; exit }' || true)"
-  [[ "$sshp" =~ ^[0-9]+$ ]] || sshp=22
+  local sshp; sshp="$(harden_ssh_ports)"
+  [[ -n "$sshp" ]] || die "No se pudo saber en qué puerto escucha SSH (sshd -T, ss): no se toca nada para no dejarte fuera."
+  local me="${SUDO_USER:-root}" client="${SSH_CONNECTION:-}"; client="${client%% *}"
   local ports=() p extra
   [[ "$(env_get COMPOSE_PROFILES)" == *https* ]] && ports+=(80 443)
   extra="${HARDEN_ALLOW_PORTS:-$(env_get HARDEN_ALLOW_PORTS)}"
@@ -436,13 +461,17 @@ cmd_harden() {
     [[ "$p" =~ ^[0-9]{1,5}$ ]] && (( p > 0 && p < 65536 )) || die "HARDEN_ALLOW_PORTS: «$p» no es un puerto."
     ports+=("$p")
   done
-  local keyok=0; harden_has_ssh_key "$root" && keyok=1
+  local keyok=0; harden_has_ssh_key "$root" "$me" && keyok=1
 
   say "${B}Endurecer el servidor${N}"
   say "  · Actualizaciones de seguridad automáticas (unattended-upgrades)."
   say "  · fail2ban: bloquea una hora las IP que fallan 5 veces al entrar por SSH (puerto $sshp)."
   if (( ssh && keyok )); then say "  · SSH solo con llave: sin contraseñas, root solo con llave, 3 intentos por conexión."
-  elif (( ssh )); then warn "  · SSH: se deja como está. No hay ninguna llave en authorized_keys: apagar las contraseñas te dejaría fuera."
+  elif (( ssh )); then warn "  · SSH: se deja como está. La cuenta $me no tiene una llave válida en authorized_keys: apagar las contraseñas te dejaría fuera."
+  fi
+  local pbind; pbind="$(env_get PANEL_BIND)"
+  if (( fw )) && [[ -n "$pbind" && "$pbind" != 127.0.0.1* && "$pbind" != localhost* && " ${ports[*]} " != *" 3000 "* ]]; then
+    warn "  · PANEL_BIND=$pbind: con el firewall, el panel deja de verse desde afuera (lo correcto). Si lo necesitas, HARDEN_ALLOW_PORTS=3000."
   fi
   if (( fw )); then
     say "  · Firewall (ufw): entra solo SSH ($sshp, con límite de intentos)${ports[*]:+ y ${ports[*]}}; también para lo que Docker publica."
@@ -453,7 +482,7 @@ cmd_harden() {
     [[ "$sure" =~ ^[sSyY] ]] || die "Cancelado: no se cambió nada."
   fi
 
-  apt-get update -qq
+  apt-get update -qq || warn "apt-get update tuvo errores (¿un repositorio roto?): se instala con lo que haya."
   local pkgs=(unattended-upgrades fail2ban python3-systemd)
   (( fw )) && pkgs+=(ufw)
   DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${pkgs[@]}"
@@ -462,7 +491,9 @@ cmd_harden() {
   printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' > "$etc/apt/apt.conf.d/20auto-upgrades"
   ok "Actualizaciones de seguridad automáticas"
 
-  printf '[sshd]\nenabled = true\nport = %s\nbackend = systemd\nmaxretry = 5\nfindtime = 10m\nbantime = 1h\n' "$sshp" > "$etc/fail2ban/jail.d/riverrun.local"
+  # Tu propia IP (la de esta sesión) nunca se bloquea: un agente con varias llaves falla varias veces antes de acertar.
+  printf '[sshd]\nenabled = true\nport = %s\nbackend = systemd\nmaxretry = 5\nfindtime = 10m\nbantime = 1h\nignoreip = 127.0.0.1/8 ::1%s\n' \
+    "${sshp// /,}" "${client:+ $client}" > "$etc/fail2ban/jail.d/riverrun.local"
   systemctl enable --now fail2ban >/dev/null 2>&1 || true
   systemctl restart fail2ban || warn "fail2ban no arrancó: revisa con systemctl status fail2ban"
   ok "fail2ban vigila SSH"
@@ -473,10 +504,16 @@ cmd_harden() {
     grep -Eqi '^[[:space:]]*Include[[:space:]].*sshd_config\.d' "$etc/ssh/sshd_config" 2>/dev/null \
       || warn "sshd_config no incluye sshd_config.d: agrega «Include /etc/ssh/sshd_config.d/*.conf» al principio para que esto aplique."
     install -d -m 0755 "$etc/ssh/sshd_config.d"
-    printf '# ./riverrun harden: SSH solo con llave.\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPermitRootLogin prohibit-password\nMaxAuthTries 3\n' > "$conf"
+    # OpenSSH anterior a 8.7 (Ubuntu 20.04) no conoce KbdInteractiveAuthentication: ahí es ChallengeResponseAuthentication.
+    local kbd=KbdInteractiveAuthentication
+    sshd -T 2>/dev/null | grep -qi '^kbdinteractiveauthentication' || kbd=ChallengeResponseAuthentication
+    printf '# ./riverrun harden: SSH solo con llave.\nPasswordAuthentication no\n%s no\nPermitRootLogin prohibit-password\n' "$kbd" > "$conf"
     if ! sshd -t; then rm -f "$conf"; die "La configuración de SSH no es válida: no se aplicó (SSH sigue como estaba)."; fi
     systemctl reload ssh 2>/dev/null || systemctl reload sshd || warn "No se pudo recargar SSH: aplica al reiniciar el servicio."
-    if sshd -T 2>/dev/null | grep -qi '^passwordauthentication yes'; then
+    # Con -C se evalúan también los bloques Match (uno puede volver a encender las contraseñas para algunos).
+    if sshd -T -C "user=$me,host=riverrun,addr=${client:-203.0.113.1}" 2>/dev/null | grep -qi '^passwordauthentication yes' \
+       || { grep -Eqi '^[[:space:]]*Match[[:space:]]' "$etc/ssh/sshd_config" "$etc"/ssh/sshd_config.d/*.conf 2>/dev/null \
+            && grep -Eqi '^[[:space:]]*PasswordAuthentication[[:space:]]+yes' "$etc/ssh/sshd_config" "$etc"/ssh/sshd_config.d/*.conf 2>/dev/null; }; then
       warn "SSH sigue aceptando contraseñas: otro archivo lo define antes. Revisa /etc/ssh/sshd_config y sshd_config.d."
     else ok "SSH solo con llave"; fi
   fi
@@ -485,9 +522,17 @@ cmd_harden() {
     # ufw no ve lo que Docker publica (sus reglas van antes): las de DOCKER-USER sí.
     harden_put_block "$etc/ufw/after.rules" "$(harden_docker_rules 4 "${ports[@]}")"
     harden_put_block "$etc/ufw/after6.rules" "$(harden_docker_rules 6 "${ports[@]}")"
+    # Antes de encender: que iptables acepte los archivos (si no, se dejan como estaban).
+    if [[ "${RIVERRUN_TEST:-}" != "1" ]] && command -v iptables-restore >/dev/null 2>&1; then
+      if ! iptables-restore --test -n < "$etc/ufw/after.rules" || { command -v ip6tables-restore >/dev/null 2>&1 && ! ip6tables-restore --test -n < "$etc/ufw/after6.rules"; }; then
+        cp -p "$etc/ufw/after.rules.riverrun-bak" "$etc/ufw/after.rules" 2>/dev/null || true
+        cp -p "$etc/ufw/after6.rules.riverrun-bak" "$etc/ufw/after6.rules" 2>/dev/null || true
+        die "Las reglas del firewall no son válidas: se dejaron como estaban y el firewall no se encendió."
+      fi
+    fi
     ufw default deny incoming >/dev/null
     ufw default allow outgoing >/dev/null
-    ufw limit "$sshp/tcp" >/dev/null
+    for p in $sshp; do ufw limit "$p/tcp" >/dev/null; done
     for p in "${ports[@]}"; do ufw allow "$p/tcp" >/dev/null; done
     [[ " ${ports[*]} " == *" 443 "* ]] && ufw allow 443/udp >/dev/null
     ufw --force enable >/dev/null
