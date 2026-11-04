@@ -7,6 +7,7 @@ import { icon } from './icons.js';
 import { render } from './main.js';
 import { withAcct } from './session.js';
 import { waTemplateField } from './wa-template-field.js';
+import { securityCard } from './security-log.js';
 
 const AUTO_TABS = [['lienzo', 'Lienzo'], ['rules', 'Reglas'], ['sequences', 'Flujos'], ['campaigns', 'Campañas']];
 
@@ -803,6 +804,8 @@ async function editSettings(root) {
         const parts = [r.admins ? `${r.admins} administrador(es)` : '', r.emails ? `${r.emails} correo(s)` : '', r.phones ? `${r.phones} WhatsApp` : ''].filter(Boolean);
         toast(parts.length ? `Alerta de prueba enviada a ${parts.join(', ')}${r.failed.length ? `; no se pudo enviar a ${r.failed.join(', ')}` : ''}` : 'No hay a quién avisar: activa a los administradores o agrega correos o WhatsApp.', !parts.length || r.failed.length > 0);
       } }, 'Enviar alerta de prueba (con lo guardado)')),
+    settingsSection('Actividad de seguridad', 'Accesos, cambios de contraseña o de verificación, descargas y borrados de datos de esta cuenta. Si ves algo que no reconoces, cambia tu contraseña y cierra las sesiones desde Mi perfil.',
+      securityCard({ accountQuery: withAcct('').replace(/^\?/, '') })),
     settingsSection('Integraciones', null,
       h('p', {}, 'Calendario de citas para Google Calendar / Outlook / Apple (suscribirse por URL):'),
       // Los secretos no vienen con los ajustes: «Mostrar» los pide (con verificación reciente).

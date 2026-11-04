@@ -6,6 +6,7 @@
 import { config } from './config.js';
 import { exclusively } from './db.js';
 import { logEvent, pruneLogs } from './logs.js';
+import { pruneSecurityEvents } from './security-log.js';
 import { applyRetention } from './privacy.js';
 import { pruneAiRunDetail, pruneAutomationData } from './automation/store.js';
 import { sweepStale } from './copilot/store.js';
@@ -15,6 +16,7 @@ export async function runMaintenance(): Promise<'ran' | 'locked'> {
     const steps: [string, () => Promise<unknown>][] = [
       ['Retención de datos', () => applyRetention()],
       ['Limpieza de la bitácora', () => pruneLogs(config.logRetentionDays)],
+      ['Limpieza de la bitácora de seguridad', () => pruneSecurityEvents()],
       ['Limpieza de trabajos y avisos', () => pruneAutomationData(config.logRetentionDays)],
       ['Limpieza del detalle de la IA', () => pruneAiRunDetail(config.aiRunDetailDays)],
       ['Copiloto: turnos interrumpidos y propuestas vencidas', () => sweepStale()],

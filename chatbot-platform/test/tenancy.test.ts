@@ -220,8 +220,10 @@ t('eliminar una cuenta borra todo lo suyo y nada de las demás', async () => {
   const r = await h.authed('DELETE', `/api/accounts/${B.id}`);
   assert.equal(r.statusCode, 200);
   assert.ok(!fs.existsSync(file), 'sus archivos se borran del disco');
-  // Ninguna tabla conserva filas de B (salvo la contabilidad, que queda sin negocio).
-  const tables = (await pool.query(`SELECT c.relname FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid AND c.relkind = 'r' AND c.relnamespace = 'public'::regnamespace WHERE a.attname = 'account_id' AND a.attnum > 0 AND NOT a.attisdropped`)).rows.map((x) => x.relname);
+  // Ninguna tabla conserva filas de B (salvo la contabilidad, que queda sin negocio, y la bitácora de seguridad, que se
+  // conserva SECURITY_LOG_DAYS a propósito para reconstruir un incidente; ahí queda anotado el borrado).
+  const tables = (await pool.query(`SELECT c.relname FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid AND c.relkind = 'r' AND c.relnamespace = 'public'::regnamespace WHERE a.attname = 'account_id' AND a.attnum > 0 AND NOT a.attisdropped AND c.relname <> 'security_events'`)).rows.map((x) => x.relname);
+  assert.equal((await pool.query(`SELECT 1 FROM security_events WHERE account_id = $1 AND kind = 'account.deleted'`, [B.id])).rowCount, 1);
   const left: string[] = [];
   for (const t of tables) if ((await pool.query(`SELECT 1 FROM ${t} WHERE account_id = $1 LIMIT 1`, [B.id])).rowCount) left.push(t);
   assert.deepEqual(left, [], `quedaron filas de la cuenta borrada en: ${left.join(', ')}`);

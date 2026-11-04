@@ -148,6 +148,8 @@ services:
       # INF-6: llave de los datos cifrados en la base (aparte de SESSION_SECRET); DATA_KEYS_OLD solo durante una rotación.
       DATA_KEY: ${DATA_KEY:-}
       DATA_KEYS_OLD: ${DATA_KEYS_OLD:-}
+      # Etapa 7: días que se guarda la bitácora de seguridad (accesos, descargas, borrados), aunque la cuenta ya no exista.
+      SECURITY_LOG_DAYS: ${SECURITY_LOG_DAYS:-}
       SECURE_COOKIES: ${SECURE_COOKIES:-false}
       # Contraseñas filtradas (Have I Been Pwned por rango); off = solo la lista local. PASSWORD_HASH_COST es solo para pruebas.
       PWNED_PASSWORDS_URL: ${PWNED_PASSWORDS_URL:-}

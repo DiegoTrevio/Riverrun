@@ -3,6 +3,7 @@
  * Evolution y su rastro en Zernio. Lo usan el superadmin y la retención automática. Los pagos y la constancia de términos
  * se conservan sin la cuenta (contabilidad y prueba legal).
  */
+import { recordSecurity } from '../security-log.js';
 import fsp from 'node:fs/promises';
 import { scheduleJob } from '../automation/store.js';
 import { providers, getSubscription, queueAction } from '../billing/service.js';
@@ -35,6 +36,8 @@ export async function deleteAccountFully(acc: Account) {
   const whatsapps = (await store.listChannels(acc.id)).filter((c) => c.type === 'whatsapp');
   const zernio = await zernioFootprint(acc.id);
   await store.deleteAccount(acc.id);
+  // La bitácora de seguridad no se borra con la cuenta: queda que existió y cuándo se borró.
+  await recordSecurity({ kind: 'account.deleted', accountId: acc.id, target: acc.name });
   // Sus redes y su perfil se quitan de Zernio aparte (con reintentos): el negocio ya no existe.
   if (zernio.accounts.length || zernio.profiles.length || zernio.posts.length) await scheduleJob({ account_id: null, type: 'zernio_cleanup', payload: zernio, run_at: new Date() });
   for (const ch of whatsapps) await releaseWhatsapp(ch, { accountDeleted: true });

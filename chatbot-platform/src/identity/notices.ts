@@ -3,6 +3,7 @@
  * dispositivo nuevo, la persona se entera aunque no haya sido ella. Texto sin enlaces (nada con token que reenviar) y
  * siempre con qué hacer si no fue ella. Nunca lanza: un correo que falla no debe romper el inicio de sesión.
  */
+import { recordSecurity } from '../security-log.js';
 import { mailBrand } from '../brands.js';
 import { logEvent } from '../logs.js';
 import { deliverMail } from '../mailer.js';
@@ -73,6 +74,9 @@ function body(kind: NoticeKind, when: string, d: NoticeDetails): string {
 }
 
 export async function notifyUser(user: NoticeUser, kind: NoticeKind, details: NoticeDetails = {}): Promise<void> {
+  // Etapa 7: cada aviso de seguridad también queda en la bitácora de seguridad (aunque el correo falle).
+  const { device, ip, ...rest } = details;
+  await recordSecurity({ kind: `notice.${kind}`, accountId: user.account_id, userId: user.id, email: user.email, ip, userAgent: device, details: rest });
   try {
     const when = new Intl.DateTimeFormat('es-MX', { dateStyle: 'long', timeStyle: 'short', timeZone: 'America/Mexico_City' }).format(new Date());
     const { fromName } = await mailBrand(user.account_id);

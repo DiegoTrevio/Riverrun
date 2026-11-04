@@ -2,6 +2,7 @@ import { api, confirmAction, field, fill, fmtDate, h, run, toast } from './core.
 import { okMark } from './icons.js';
 import { render } from './main.js';
 import { configSection, functionalSection } from './system-config.js';
+import { securityCard } from './security-log.js';
 
 /* ------------------------------ Sistema (superadmin) ------------------------------ */
 
@@ -44,7 +45,7 @@ export async function viewSystem(root) {
         h('p', { class: 'small' }, okMark(sys.alerts_configured.heartbeat), ' ', sys.alerts_configured.heartbeat ? 'Latido externo (HEARTBEAT_URL): si el servidor cae, el servicio externo avisa' : 'Latido externo: falta HEARTBEAT_URL (por ejemplo healthchecks.io); sin él nadie avisa si el servidor completo se cae'),
         !sys.alerts_configured.email && !sys.alerts_configured.webhook ? h('p', { class: 'banner danger', role: 'alert' }, 'Ninguna alerta sale del panel: si algo falla de noche, nadie se entera. Configura RESEND_API_KEY (o SMTP_URL) o ALERT_WEBHOOK_URL.') : null,
         h('p', { class: 'small' }, okMark(sys.heartbeat_configured), ' ', sys.heartbeat_configured ? 'Latido externo activo' : 'Sin latido externo: si el servidor entero cae, nadie se entera. Configura HEARTBEAT_URL (healthchecks.io es gratis).'))));
-  root.append(await mailCard(), await zernioCard(), functionalSection(sys.functional), await configSection());
+  root.append(securityCard({ superadmin: true }), await mailCard(), await zernioCard(), functionalSection(sys.functional), await configSection());
 }
 
 const DNS_BADGE = { true: ['green', 'Bien'], false: ['red', 'Falta'], null: ['', 'Sin revisar'] };

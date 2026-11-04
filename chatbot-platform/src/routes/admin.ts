@@ -1,3 +1,5 @@
+import { listSecurityEvents, loginFingerprint, recordSecurity, recordSecurityOnce } from '../security-log.js';
+import { partialIp } from '../identity/notices.js';
 import { cleanAlertPrefs } from '../automation/alert-groups.js';
 import type { AlertPrefs } from '../types.js';
 import { aiBudgetRoutes } from './ai-budget.js';
@@ -79,8 +81,22 @@ export async function sessionRoutes(app: FastifyInstance) {
     // Cada intento se cuenta antes de revisar la contraseña (una ráfaga no se salta el tope) y se devuelve si entra.
     const ipLimit = `login-ip:${ipKey(req.ip)}`;
     const accountLimit = `login-acct:${who.trim().toLowerCase()}`;
+    // Para la bitácora de seguridad: si lo escrito es una cuenta, su correo y su cuenta (así el administrador ve los
+    // intentos contra su gente); si no, solo una huella (lo escrito puede ser una contraseña).
+    const secFor = async () => {
+      const u = await store.getUserForLogin(who);
+      return u
+        ? { email: u.email, accountId: u.account_id, userId: u.id, ip: req.ip, userAgent: String(req.headers['user-agent'] ?? '') }
+        : { email: '', ip: req.ip, userAgent: String(req.headers['user-agent'] ?? ''), details: { who: loginFingerprint(who) } };
+    };
+    const blocked = async (by: string) => {
+      const e = await secFor();
+      return { ...e, kind: 'login.blocked' as const, details: { ...('details' in e ? e.details : {}), by } };
+    };
     if ((await countHit(ipLimit, LIMITS.loginIp.windowMs)) > LIMITS.loginIp.max) {
       await releaseHit(ipLimit);
+      // Frenado por el límite: una fila por IP y ventana (una ráfaga no llena la bitácora ni cuesta consultas por intento).
+      await recordSecurityOnce(`blocked:${ipLimit}`, 15, await blocked('ip'));
       return reply.code(429).send({ error: 'Demasiados intentos, espera 15 minutos' });
     }
     if ((await countHit(accountLimit, LIMITS.loginAccount.windowMs)) > LIMITS.loginAccount.max) {
@@ -88,6 +104,7 @@ export async function sessionRoutes(app: FastifyInstance) {
       const target = await store.getUserForLogin(who);
       if (!target || !(await trustedDeviceFor(req, target))) {
         await Promise.all([releaseHit(ipLimit), releaseHit(accountLimit)]);
+        await recordSecurityOnce(`blocked:${accountLimit}`, 15, await blocked('account'));
         return reply.code(429).send({ error: ACCOUNT_LIMIT });
       }
     }
@@ -96,6 +113,7 @@ export async function sessionRoutes(app: FastifyInstance) {
       // Solo si tiene forma de correo (bajos de la 2c): quien escribe su contraseña en el campo del correo no la deja en la bitácora.
       const logged = /^[^\s@]{1,64}@[^\s@]+\.[^\s@]{2,}$/.test(who) ? who.slice(0, 100) : '[no es un correo]';
       await logEvent({ level: 'warn', source: 'admin', message: 'Intento de acceso fallido', details: { ip: req.ip, email: logged } });
+      await recordSecurity({ kind: 'login.failed', ...(await secFor()) });
       return reply.code(401).send({ error: 'Usuario o contraseña incorrectos' });
     }
     await Promise.all([releaseHit(ipLimit), releaseHit(accountLimit)]);
@@ -234,6 +252,23 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     await removePlatformSecret(ZERNIO_SECRET);
     await logEvent({ level: 'warn', source: 'admin', message: `Llave de Zernio quitada desde el panel por ${req.user.email}: las redes sociales dejan de funcionar` });
     return zernioSystemStatus(false);
+  });
+
+  /* Etapa 7: bitácora de seguridad. El superadmin, toda (con filtros); cada administrador, la de su cuenta. */
+  const SecurityQuery = z.object({
+    kind: z.string().max(60).optional(), email: z.string().max(200).optional(), ip: z.string().max(64).optional(),
+    account_id: z.string().uuid().optional(), before: z.coerce.number().int().positive().optional(), limit: z.coerce.number().int().min(1).max(500).optional(),
+  });
+  api.get('/api/system/security-events', superadmin, async (req: any) => {
+    const q = parse(SecurityQuery, req.query);
+    return listSecurityEvents({ accountId: q.account_id, kind: q.kind, email: q.email, ip: q.ip, before: q.before, limit: q.limit });
+  });
+  api.get('/api/security-events', { preHandler: requireRole('admin') }, async (req: any) => {
+    const q = parse(SecurityQuery.omit({ account_id: true, ip: true }), req.query);
+    const accountId = await targetAccount(req.user, req.query.account_id);
+    // Para la cuenta: sin los avisos de detección de la plataforma (son del superadmin) ni IP completas de otras personas.
+    const rows = await listSecurityEvents({ accountId, kind: q.kind, email: q.email, before: q.before, limit: q.limit, excludeAlerts: true });
+    return rows.map((r) => ({ ...r, ip: r.user_id === req.user.id ? r.ip : partialIp(r.ip), user_agent: r.user_id === req.user.id ? r.user_agent : '' }));
   });
 
   /* Correo saliente: proveedor, dominio del remitente (SPF/DKIM/DMARC, verificación en Resend) y un correo de prueba. */
