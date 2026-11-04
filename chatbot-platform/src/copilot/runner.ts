@@ -219,7 +219,7 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
         changes++;
         const action = await cs.insertAction({ thread_id: thread.id, turn_id: turn.id, account_id: thread.account_id, user_id: user.id, tool_call_id: call.id, tool: def.name, args: args as Record<string, unknown>, risk: 'reversible', risk_reasons: risk.reasons, status: 'executing', title: def.label(args) });
         try {
-          const r = await def.execute(args, { ...ctx, call: makeCaller({ inject: deps.inject, cookie: req.cookie, accountId: thread.account_id, superadmin: user.role === 'superadmin', ip: req.ip, actionId: action.id }) });
+          const r = await cs.withLease(action.id, () => def.execute(args, { ...ctx, call: makeCaller({ inject: deps.inject, cookie: req.cookie, accountId: thread.account_id, superadmin: user.role === 'superadmin', ip: req.ip, actionId: action.id }) }));
           const title = r.title ?? def.label(args);
           if (!ctx.tainted) r.contactIds?.forEach((id) => ctx.scope.add(id));
           if (r.untrusted) ctx.tainted = true;

@@ -530,3 +530,31 @@ t('sin costo del proveedor, el tope por pedido usa el estimado con ai_prices y l
     await pool.query(`UPDATE copilot_turns SET cost_usd = 0 WHERE account_id = $1`, [h.accountId]);
   }
 });
+
+t('acción larga: mientras renueva su plazo sigue «ejecutándose»; con el plazo vencido pasa a «no sabemos»', async () => {
+  const cs = await import('../src/copilot/store.js');
+  const id = await thread(owner);
+  script(['Listo.']);
+  const turnId = (await ask(owner, id, 'Hola')).turn.id;
+  const insert = (lease: string | null) => pool.query(
+    `INSERT INTO copilot_actions (thread_id, turn_id, account_id, user_id, tool, risk, status, updated_at, lease_until)
+     SELECT $1, $2, $3, user_id, 'etiquetar', 'reversible', 'executing', now() - interval '10 minutes', ${lease ?? 'NULL'}
+       FROM copilot_threads WHERE id = $1 RETURNING id, rev`,
+    [id, turnId, h.accountId],
+  ).then((r) => r.rows[0] as { id: string; rev: string });
+  const vivo = await insert(`now() + interval '60 seconds'`);
+  const vencido = await insert(`now() - interval '1 second'`);
+  const viejo = await insert(null); // de antes de la migración 113: sin plazo, vale el de 2 minutos
+  await cs.renewLease(vivo.id);
+  const renovado = (await pool.query(`SELECT rev, lease_until > now() + interval '80 seconds' AS largo FROM copilot_actions WHERE id = $1`, [vivo.id])).rows[0];
+  assert.equal(renovado.rev, vivo.rev, 'renovar el plazo no es novedad para el panel');
+  assert.equal(renovado.largo, true);
+  await owner('GET', `/api/copilot/threads/${id}/updates?after_rev=0`);
+  const status = async (a: { id: string }) => (await pool.query(`SELECT status FROM copilot_actions WHERE id = $1`, [a.id])).rows[0].status;
+  assert.equal(await status(vivo), 'executing');
+  assert.equal(await status(vencido), 'unknown');
+  assert.equal(await status(viejo), 'unknown');
+  // withLease renueva mientras corre y deja de hacerlo al terminar.
+  assert.equal(await cs.withLease(vivo.id, async () => 'hecho'), 'hecho');
+  await pool.query(`DELETE FROM copilot_actions WHERE id = ANY($1::uuid[])`, [[vivo.id, vencido.id, viejo.id]]);
+});

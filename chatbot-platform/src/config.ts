@@ -141,12 +141,13 @@ export const config = {
     model: env('OPENROUTER_COPILOT_MODEL', useOpenRouter ? 'deepseek/deepseek-v4.1-flash-1017' : 'gpt-4.1'),
     /** Respaldos del Copiloto (deben saber usar herramientas); vacío o "none" = ninguno. */
     fallbackModels: env('OPENROUTER_COPILOT_FALLBACK_MODELS', '').split(',').map((m) => m.trim()).filter((m) => m && m !== 'none'),
-    maxSteps: Number(env('COPILOT_MAX_STEPS', '8')),
-    maxToolCalls: Number(env('COPILOT_MAX_TOOL_CALLS', '20')),
-    maxChanges: Number(env('COPILOT_MAX_CHANGES', '15')),
-    maxProposals: Number(env('COPILOT_MAX_PROPOSALS', '5')),
-    turnSeconds: Number(env('COPILOT_TURN_SECONDS', '180')),
-    turnMaxUsd: Number(env('COPILOT_TURN_MAX_USD', '0.5')),
+    // Topes por pedido: alcanzan para armar un agente completo (crearlo, sus preguntas, su flujo) en un solo pedido.
+    maxSteps: Number(env('COPILOT_MAX_STEPS', '16')),
+    maxToolCalls: Number(env('COPILOT_MAX_TOOL_CALLS', '40')),
+    maxChanges: Number(env('COPILOT_MAX_CHANGES', '30')),
+    maxProposals: Number(env('COPILOT_MAX_PROPOSALS', '8')),
+    turnSeconds: Number(env('COPILOT_TURN_SECONDS', '300')),
+    turnMaxUsd: Number(env('COPILOT_TURN_MAX_USD', '1')),
     turnsPerHour: Number(env('COPILOT_TURNS_PER_HOUR', '30')),
     accountTurnsPerDay: Number(env('COPILOT_ACCOUNT_TURNS_PER_DAY', '300')),
     /** Tope de gasto del Copiloto por cuenta en 24 horas, en USD (0 = sin tope; aparte del presupuesto de IA). */

@@ -41,12 +41,14 @@ Límites por turno:
 
 | Límite | Valor |
 |---|---|
-| Pasos del modelo | 8 |
-| Herramientas | 20 |
-| Cambios | 15 |
-| Propuestas | 5 |
-| Duración | 180 s |
-| Costo | 0.50 USD |
+| Pasos del modelo | 16 |
+| Herramientas | 40 |
+| Cambios | 30 |
+| Propuestas | 8 |
+| Duración | 300 s |
+| Costo | 1.00 USD |
+
+Alcanzan para armar un agente completo en un solo pedido (crearlo, sus preguntas, su objetivo y un flujo).
 
 Turnos en curso:
 - Un solo turno en curso por hilo y por usuario.
@@ -54,6 +56,9 @@ Turnos en curso:
   paso.
 - Un turno cuyo latido (`heartbeat_at`) tiene más de 45 s pasa a `interrupted`. Una acción que quedó a medias pasa a
   `unknown` («no sabemos si se aplicó; revísalo»).
+  - Mientras una acción corre, quien la ejecuta renueva su plazo (`lease_until`, 90 s) cada 30 s. Una herramienta que
+    tarda, porque lleva IA por dentro (diseñar un flujo, importar información), sigue «ejecutándose».
+  - Solo cuando el plazo vence (el proceso se cayó) pasa a `unknown`. Renovar el plazo no mueve `rev` (migración 113).
 
 Límites de uso:
 - 30 turnos por hora por usuario y 300 al día por cuenta, contados en la base de datos.

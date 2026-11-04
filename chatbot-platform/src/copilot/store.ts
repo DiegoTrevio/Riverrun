@@ -46,6 +46,8 @@ export interface Action {
   preview: Preview | null; result: unknown; links: Link[]; before: unknown; after: unknown; undo: UndoRecipe | null;
   undo_until: Date | null; contact_ids: string[]; error: string; expires_at: Date | null; confirmed_at: Date | null;
   executed_at: Date | null; undone_at: Date | null; created_at: Date; updated_at: Date; rev: string;
+  /** Hasta cuándo sigue viva la ejecución en curso (quien la corre lo renueva; migración 113). */
+  lease_until: Date | null;
 }
 
 type Db = Pick<pg.PoolClient, 'query'>;
@@ -198,7 +200,11 @@ export async function threadMessages(threadId: string, limit = 400): Promise<Mes
 // --- Acciones --------------------------------------------------------------------------------------------------------
 
 const ACTION_JSON = new Set(['args', 'risk_reasons', 'preview', 'result', 'links', 'before', 'after', 'undo']);
-const ACTION_COLUMNS = new Set(['tool_call_id', 'tool', 'args', 'args_hash', 'risk', 'risk_reasons', 'status', 'title', 'preview', 'result', 'links', 'before', 'after', 'undo', 'undo_until', 'contact_ids', 'error', 'expires_at', 'confirmed_at', 'executed_at', 'undone_at']);
+const ACTION_COLUMNS = new Set(['tool_call_id', 'tool', 'args', 'args_hash', 'risk', 'risk_reasons', 'status', 'title', 'preview', 'result', 'links', 'before', 'after', 'undo', 'undo_until', 'contact_ids', 'error', 'expires_at', 'confirmed_at', 'executed_at', 'undone_at', 'lease_until']);
+
+/** Cuánto vive la ejecución de una acción sin renovarse, y cada cuánto se renueva mientras corre. */
+const LEASE_SECONDS = 90;
+const LEASE_RENEW_MS = 30_000;
 
 function columns(patch: Record<string, unknown>, from: number) {
   const keys = Object.keys(patch).filter((k) => ACTION_COLUMNS.has(k) && patch[k] !== undefined);
@@ -213,6 +219,8 @@ export type NewAction = Partial<Action> & Pick<Action, 'thread_id' | 'turn_id' |
 
 export async function insertAction(a: NewAction): Promise<Action> {
   const base = { thread_id: a.thread_id, turn_id: a.turn_id, account_id: a.account_id, user_id: a.user_id };
+  // La que nace ejecutándose ya trae su plazo (lo renueva `withLease` mientras corre).
+  if (a.status === 'executing' && !a.lease_until) a = { ...a, lease_until: new Date(Date.now() + LEASE_SECONDS * 1000) };
   const c = columns(a as Record<string, unknown>, 5);
   return (await queryOne<Action>(
     `INSERT INTO copilot_actions (thread_id, turn_id, account_id, user_id${c.keys.length ? ', ' + c.keys.join(', ') : ''})
@@ -244,19 +252,41 @@ export async function ownAction(id: string, userId: string, accountId: string): 
  */
 export async function claimProposal(id: string, userId: string, seenHash: string): Promise<Action | null> {
   return queryOne<Action>(
-    `UPDATE copilot_actions SET status = 'executing', confirmed_at = now(), updated_at = now()
+    `UPDATE copilot_actions SET status = 'executing', confirmed_at = now(), updated_at = now(), lease_until = now() + make_interval(secs => $4)
       WHERE id = $1 AND user_id = $2 AND status = 'proposed' AND expires_at > now() AND args_hash = $3 RETURNING *`,
-    [id, userId, seenHash],
+    [id, userId, seenHash, LEASE_SECONDS],
   );
 }
 
 /** Toma una acción hecha para deshacerla (una sola vez a la vez). */
 export async function claimUndo(id: string, userId: string): Promise<Action | null> {
   return queryOne<Action>(
-    `UPDATE copilot_actions SET status = 'undoing', updated_at = now()
+    `UPDATE copilot_actions SET status = 'undoing', updated_at = now(), lease_until = now() + make_interval(secs => $3)
       WHERE id = $1 AND user_id = $2 AND status = 'done' AND undo IS NOT NULL AND undo_until > now() RETURNING *`,
-    [id, userId],
+    [id, userId, LEASE_SECONDS],
   );
+}
+
+/** Renueva el plazo de una acción que sigue corriendo (no mueve `rev`: no es novedad para el panel). */
+export async function renewLease(id: string) {
+  await query(
+    `UPDATE copilot_actions SET lease_until = now() + make_interval(secs => $2) WHERE id = $1 AND status IN ('executing', 'undoing')`,
+    [id, LEASE_SECONDS],
+  );
+}
+
+/**
+ * Corre `fn` renovando el plazo de la acción cada 30 s: así una herramienta que tarda (con IA por dentro) no pasa a «no
+ * sabemos si se aplicó» mientras sigue trabajando. Si el proceso se cae, el plazo vence y la limpieza la marca.
+ */
+export async function withLease<T>(id: string, fn: () => Promise<T>): Promise<T> {
+  const timer = setInterval(() => { void renewLease(id).catch(() => undefined); }, LEASE_RENEW_MS);
+  timer.unref?.();
+  try {
+    return await fn();
+  } finally {
+    clearInterval(timer);
+  }
 }
 
 export async function turnActions(turnId: string): Promise<Action[]> {
@@ -294,7 +324,8 @@ export async function sweepStale(threadId?: string) {
   const scope = threadId ? ' AND thread_id = $1' : '';
   const params = threadId ? [threadId] : [];
   await query(`UPDATE copilot_turns SET status = 'interrupted', step_label = '', finished_at = now(), error = 'Se interrumpió antes de terminar.' WHERE status = 'running' AND heartbeat_at < now() - interval '45 seconds'${scope}`, params);
-  await query(`UPDATE copilot_actions SET status = 'unknown', updated_at = now(), error = 'Se interrumpió a la mitad: revisa si se aplicó.' WHERE status IN ('executing', 'undoing') AND updated_at < now() - interval '2 minutes'${scope}`, params);
+  // Solo cuando venció su plazo (nadie la está renovando): una acción larga que sigue corriendo no se toca.
+  await query(`UPDATE copilot_actions SET status = 'unknown', updated_at = now(), error = 'Se interrumpió a la mitad: revisa si se aplicó.' WHERE status IN ('executing', 'undoing') AND coalesce(lease_until, updated_at + interval '2 minutes') < now()${scope}`, params);
   await query(`UPDATE copilot_actions SET status = 'expired', updated_at = now() WHERE status = 'proposed' AND expires_at < now()${scope}`, params);
 }
 

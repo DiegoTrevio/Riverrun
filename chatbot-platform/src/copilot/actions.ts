@@ -59,7 +59,7 @@ export async function confirmAction(deps: RunnerDeps, o: { action: cs.Action; us
     const sub: SubSpend = { usd: 0, calls: 0 };
     let r: Awaited<ReturnType<typeof def.execute>>;
     try {
-      r = await trackSubSpend(sub, () => def.execute(parsed.data, ctx));
+      r = await cs.withLease(action.id, () => trackSubSpend(sub, () => def.execute(parsed.data, ctx)));
     } finally {
       if (sub.usd > 0 && action.turn_id) await cs.addSubCost(action.turn_id, sub.usd).catch(() => undefined);
     }
@@ -98,18 +98,20 @@ export async function undoAction(deps: RunnerDeps, o: { action: cs.Action; user:
   const ctx = await ctxFor(deps, claimed, user, o.cookie, o.ip);
   const recipe = claimed.undo!;
   try {
-    if (recipe.custom) {
-      if (!def.undo) throw new ToolError('no_disponible', 'Esta acción no se puede deshacer');
-      await def.undo(recipe.custom.params, ctx);
-    } else {
-      if (recipe.check) {
-        const current = await ctx.call.get(recipe.check.url);
-        if (cs.stableJson(pickPaths(current, recipe.check.pick)) !== cs.stableJson(recipe.check.expect)) {
-          throw new ToolError('conflicto', 'El registro cambió después de esta acción; para no pisar esos cambios, no lo deshice.');
+    await cs.withLease(action.id, async () => {
+      if (recipe.custom) {
+        if (!def.undo) throw new ToolError('no_disponible', 'Esta acción no se puede deshacer');
+        await def.undo(recipe.custom.params, ctx);
+      } else {
+        if (recipe.check) {
+          const current = await ctx.call.get(recipe.check.url);
+          if (cs.stableJson(pickPaths(current, recipe.check.pick)) !== cs.stableJson(recipe.check.expect)) {
+            throw new ToolError('conflicto', 'El registro cambió después de esta acción; para no pisar esos cambios, no lo deshice.');
+          }
         }
+        for (const step of recipe.steps ?? []) await ctx.call.send(step.method, step.url, step.body);
       }
-      for (const step of recipe.steps ?? []) await ctx.call.send(step.method, step.url, step.body);
-    }
+    });
   } catch (e) {
     await cs.updateAction(action.id, { status: 'done' });
     if (e instanceof ToolError) throw new HttpError(e.code === 'conflicto' || e.code === 'no_encontrado' ? 409 : e.code === 'sin_permiso' ? 403 : 400, e.message);
