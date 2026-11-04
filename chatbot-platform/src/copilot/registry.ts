@@ -8,6 +8,7 @@ import type { ToolSpec } from '../ai/provider.js';
 import type { User } from '../types.js';
 import type { Caller } from './executor.js';
 import type { Link, Page, Preview, UndoRecipe } from './store.js';
+import type { CopilotFile } from './files.js';
 
 export type Area = 'cuenta' | 'agente' | 'automatizacion' | 'contactos' | 'conversaciones' | 'agenda' | 'oportunidades' | 'cobros' | 'cotizaciones' | 'datos';
 /** `code`: se confirma escribiendo el código de verificación en la tarjeta (las acciones que en el panel lo piden). */
@@ -27,7 +28,10 @@ export const PACKS = [
   { id: 'oportunidades', resumen: 'Embudos de oportunidades: ver y mover tarjetas' },
   { id: 'cobros', resumen: 'Cobros a clientes: crear, editar, marcar pagados, recordar' },
   { id: 'cotizaciones', resumen: 'Cotizaciones y lista de precios' },
-  { id: 'agente', resumen: 'Configurar agentes: instrucciones, trato y reglas, encender o apagar, conocimiento' },
+  { id: 'agente', resumen: 'Configurar un agente: instrucciones, trato y reglas, preguntas en orden, objetivo y etapas, cuándo responde, mensajes fijos y guardados, cotizaciones, modelo, encender o apagar' },
+  { id: 'agentes', resumen: 'Crear, duplicar o borrar agentes; versiones; probarlo como cliente; pruebas automáticas' },
+  { id: 'conocimiento', resumen: 'Lo que sabe el agente: conocimiento, importar de una página o un archivo, fotos y archivos que manda' },
+  { id: 'canales', resumen: 'Canales del agente: ver su conexión, asignar, encender o apagar, chat para la web, WhatsApp' },
   { id: 'automatizacion', resumen: 'Automatizar: flujos de mensajes, reglas y secuencias' },
   { id: 'campanas', resumen: 'Campañas masivas: crear, lanzar, cancelar' },
   { id: 'cuenta', resumen: 'Ajustes del negocio: horario y días festivos' },
@@ -66,6 +70,8 @@ export interface Ctx {
   loadPacks?: (packs: Pack[]) => string[];
   /** «Confirmar y seguir»: anota lo que falta para cuando se confirme lo propuesto; false si no hay nada por confirmar. */
   planContinuation?: (faltan: string) => Promise<boolean>;
+  /** Archivos vigentes adjuntos a esta conversación (las herramientas los leen con `fileForTool`). */
+  files?: Map<string, CopilotFile>;
 }
 
 export interface ExecResult {

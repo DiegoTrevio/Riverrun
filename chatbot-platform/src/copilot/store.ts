@@ -6,13 +6,15 @@ import { createHash } from 'node:crypto';
 import type pg from 'pg';
 import { deleteInBatches, query, queryOne } from '../db.js';
 import { config } from '../config.js';
+import { removeAttachmentFile } from '../attachments.js';
+import { deleteThreadFiles } from './files.js';
 
 export type TurnStatus = 'running' | 'done' | 'stopped' | 'failed' | 'interrupted';
 export type Risk = 'read' | 'reversible' | 'confirm' | 'code';
 export type ActionStatus = 'proposed' | 'executing' | 'done' | 'failed' | 'declined' | 'expired' | 'undoing' | 'undone' | 'unknown';
 
 export interface Thread { id: string; account_id: string; user_id: string; title: string; created_at: Date; updated_at: Date; rev: string }
-export interface Page { hash?: string; kind?: string; id?: string; label?: string; area?: string }
+export interface Page { hash?: string; kind?: string; id?: string; label?: string; area?: string; tab?: string }
 export interface Turn {
   id: string; thread_id: string; account_id: string; user_id: string; status: TurnStatus; page: Page; step_label: string; model: string;
   steps: number; tool_calls: number; input_tokens: number; cached_tokens: number; output_tokens: number; cost_usd: string;
@@ -27,6 +29,8 @@ export interface StoredToolCall { id: string; name: string; arguments: string }
 export interface Message {
   id: string; thread_id: string; turn_id: string | null; role: 'user' | 'assistant' | 'tool' | 'event'; content: string;
   tool_calls: StoredToolCall[] | null; tool_call_id: string | null; refs: string[]; redacted: boolean; created_at: Date; rev: string;
+  /** Archivos adjuntos a este mensaje (migración 118). */
+  files: string[];
 }
 export interface Link { label: string; href: string }
 /** Lo que ve quien revisa o confirma una acción: lo arma el servidor, nunca el modelo. */
@@ -98,6 +102,8 @@ export async function touchThread(id: string, title?: string) {
 }
 
 export async function deleteThread(id: string) {
+  // Sus archivos adjuntos, del disco también (las filas se irían en cascada, los archivos no).
+  await deleteThreadFiles(id);
   await query(`DELETE FROM copilot_threads WHERE id = $1`, [id]);
 }
 
@@ -218,10 +224,10 @@ export async function recentTurns(userId: string, accountId: string) {
 
 // --- Mensajes --------------------------------------------------------------------------------------------------------
 
-export async function addMessage(m: { thread_id: string; turn_id?: string | null; role: Message['role']; content?: string; tool_calls?: StoredToolCall[] | null; tool_call_id?: string | null; refs?: string[] }): Promise<Message> {
+export async function addMessage(m: { thread_id: string; turn_id?: string | null; role: Message['role']; content?: string; tool_calls?: StoredToolCall[] | null; tool_call_id?: string | null; refs?: string[]; files?: string[] }): Promise<Message> {
   return (await queryOne<Message>(
-    `INSERT INTO copilot_messages (thread_id, turn_id, role, content, tool_calls, tool_call_id, refs) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-    [m.thread_id, m.turn_id ?? null, m.role, m.content ?? '', m.tool_calls ? JSON.stringify(m.tool_calls) : null, m.tool_call_id ?? null, m.refs ?? []],
+    `INSERT INTO copilot_messages (thread_id, turn_id, role, content, tool_calls, tool_call_id, refs, files) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+    [m.thread_id, m.turn_id ?? null, m.role, m.content ?? '', m.tool_calls ? JSON.stringify(m.tool_calls) : null, m.tool_call_id ?? null, m.refs ?? [], m.files ?? []],
   ))!;
 }
 
@@ -383,7 +389,13 @@ export async function redactContact(db: Db, contactId: string) {
   const turns = (await db.query(`SELECT id, thread_id FROM copilot_turns WHERE $1 = ANY(contact_ids)`, [contactId])).rows as { id: string; thread_id: string }[];
   const turnIds = turns.map((t) => t.id);
   if (turnIds.length) {
-    await db.query(`UPDATE copilot_messages SET content = '', tool_calls = NULL, redacted = true WHERE turn_id = ANY($1::uuid[])`, [turnIds]);
+    // Lo que se adjuntó en esos pedidos (una foto o un documento del cliente) se borra también.
+    const files = (await db.query(
+      `DELETE FROM copilot_files WHERE id IN (SELECT unnest(files) FROM copilot_messages WHERE turn_id = ANY($1::uuid[])) RETURNING file_path`,
+      [turnIds],
+    )).rows as { file_path: string }[];
+    await Promise.all(files.map((f) => removeAttachmentFile(f.file_path)));
+    await db.query(`UPDATE copilot_messages SET content = '', tool_calls = NULL, redacted = true, files = '{}' WHERE turn_id = ANY($1::uuid[])`, [turnIds]);
     await db.query(`UPDATE copilot_threads SET title = '' WHERE id = ANY($1::uuid[])`, [[...new Set(turns.map((t) => t.thread_id))]]);
   }
   const actions = (await db.query(

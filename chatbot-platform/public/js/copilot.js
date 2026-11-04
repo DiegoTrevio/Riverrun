@@ -13,6 +13,8 @@ const s = {
   mounted: false, open: false, view: 'chat', threadId: '', accountId: '',
   messages: new Map(), actions: new Map(), turn: null, rev: 0,
   refs: [], pageOff: false, pageHash: '', pageLabel: '', busy: new Set(), timer: 0, sending: false,
+  // Archivos adjuntos: los que van con el siguiente pedido y lo que se sabe de cada uno (nombre, tipo).
+  attached: [], fileMeta: new Map(), uploading: 0,
 };
 const el = {};
 
@@ -38,8 +40,13 @@ function build() {
   el.send = h('button', { type: 'submit', class: 'primary', 'aria-label': 'Enviar al Copiloto' }, icon('send', 16), h('span', {}, 'Enviar'));
   el.stop = h('button', { type: 'button', class: 'cp-stop', hidden: true, onclick: stopTurn }, 'Detener');
   el.why = h('span', { id: 'copilot-why', class: 'help cp-why', hidden: true });
+  // Adjuntar: fotos (en el teléfono, también la cámara), PDF, CSV y documentos. Las fotos se reducen antes de subirlas.
+  el.file = h('input', { type: 'file', multiple: true, hidden: true, accept: 'image/*,application/pdf,.pdf,.csv,.txt,.doc,.docx,.xls,.xlsx', onchange: (e) => { void attach([...e.target.files]); e.target.value = ''; } });
+  el.camera = h('input', { type: 'file', hidden: true, accept: 'image/*', capture: 'environment', onchange: (e) => { void attach([...e.target.files]); e.target.value = ''; } });
+  el.attach = h('button', { type: 'button', class: 'icon-button cp-attach', 'aria-label': 'Adjuntar foto o archivo', title: 'Adjuntar foto o archivo', onclick: () => el.file.click() }, icon('paperclip', 18));
+  el.shoot = h('button', { type: 'button', class: 'icon-button cp-camera', 'aria-label': 'Tomar foto', title: 'Tomar foto', onclick: () => el.camera.click() }, icon('camera', 18));
   el.form = h('form', { class: 'cp-composer', onsubmit: (e) => { e.preventDefault(); return send(); } },
-    el.chips, el.input, h('div', { class: 'cp-composer-bar' }, h('span', { class: 'help cp-hint' }, 'Enter envía · Mayús+Enter, otro renglón'), el.why, el.stop, el.send));
+    el.chips, el.input, h('div', { class: 'cp-composer-bar' }, el.file, el.camera, el.attach, el.shoot, h('span', { class: 'help cp-hint' }, 'Enter envía · Mayús+Enter, otro renglón'), el.why, el.stop, el.send));
   el.root = h('aside', { id: 'copilot', class: 'copilot', 'aria-labelledby': 'copilot-title', hidden: true, onkeydown: (e) => { if (e.key === 'Escape') { e.stopPropagation(); closeCopilot(); } } },
     h('header', { class: 'cp-head' },
       h('h2', { id: 'copilot-title' }, icon('wand', 18), 'Copiloto'),
@@ -149,7 +156,7 @@ const visible = (b) => (b.checkVisibility ? b.checkVisibility({ visibilityProper
 // --- Datos ---------------------------------------------------------------------------------------------------------
 
 function resetThread() {
-  s.threadId = ''; s.messages = new Map(); s.actions = new Map(); s.turn = null; s.rev = 0; s.refs = [];
+  s.threadId = ''; s.messages = new Map(); s.actions = new Map(); s.turn = null; s.rev = 0; s.refs = []; s.attached = [];
   clearTimeout(s.timer);
 }
 
@@ -163,6 +170,7 @@ function samePage(href) {
 function merge(u, initial = false) {
   let touchedPage = false;
   for (const m of u.messages || []) s.messages.set(m.id, m);
+  for (const f of u.files || []) s.fileMeta.set(f.id, f);
   for (const a of u.actions || []) {
     const before = s.actions.get(a.id);
     s.actions.set(a.id, a);
@@ -226,16 +234,17 @@ async function pull() {
 async function send() {
   const text = el.input.value.trim();
   if (aiPaused()) return syncPaused();
-  if (!text || s.sending || running()) return;
+  if (s.uploading) { setStatus('Espera a que terminen de subir los archivos…'); return; }
+  if ((!text && !s.attached.length) || s.sending || running()) return;
   s.sending = true;
   el.send.disabled = true;
   try {
     if (!s.threadId) { const t = await api('POST', url('/threads'), {}); s.threadId = t.id; save(); }
     const asked = s.threadId;
-    const r = await api('POST', url(`/threads/${asked}/messages`), { text, page: { hash: s.pageOff ? '' : location.hash }, refs: s.refs.map((x) => x.id) });
+    const r = await api('POST', url(`/threads/${asked}/messages`), { text, page: { hash: s.pageOff ? '' : location.hash }, refs: s.refs.map((x) => x.id), files: s.attached.map((f) => f.id) });
     if (asked !== s.threadId) return;
     el.input.value = '';
-    s.refs = []; s.pageOff = false;
+    s.refs = []; s.pageOff = false; s.attached = []; renderChips();
     merge({ messages: [r.message], turns: [r.turn] });
     render();
     schedule(700);
@@ -245,6 +254,60 @@ async function send() {
     s.sending = false;
     syncPaused();
   }
+}
+
+/**
+ * Reduce una foto grande antes de subirla: el lado largo a 2048 px y JPEG por debajo de 4.5 MB (las fotos del teléfono
+ * suelen pasar del tope de 5 MB). Volver a codificarla también le quita los datos de ubicación. Si el navegador no la
+ * puede abrir (HEIC en Chrome), se sube como viene y el servidor dice qué formato usar.
+ */
+async function shrinkImage(file) {
+  if (!file.type.startsWith('image/') || file.type === 'image/gif') return file;
+  const MAX = 2048, LIMIT = 4.5 * 1024 * 1024;
+  let bmp;
+  try { bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch { return file; }
+  if (Math.max(bmp.width, bmp.height) <= MAX && file.size <= LIMIT) { bmp.close?.(); return file; }
+  const scale = Math.min(1, MAX / Math.max(bmp.width, bmp.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(bmp.width * scale); canvas.height = Math.round(bmp.height * scale);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height); // un PNG transparente queda con fondo blanco
+  ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  bmp.close?.();
+  for (const q of [0.85, 0.75, 0.6]) {
+    const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', q));
+    if (blob && blob.size <= LIMIT) return new File([blob], file.name.replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' });
+  }
+  return file;
+}
+
+/** Sube los archivos elegidos a la conversación (la crea si hace falta); quedan como fichas para el siguiente pedido. */
+async function attach(files) {
+  if (!files.length) return;
+  if (s.attached.length + files.length > 4) { toast('Hasta 4 archivos por pedido', true); files = files.slice(0, Math.max(0, 4 - s.attached.length)); }
+  try {
+    if (!s.threadId) { const t = await api('POST', url('/threads'), {}); s.threadId = t.id; save(); }
+  } catch (e) { toast(e.message || 'No se pudo adjuntar', true); return; }
+  const asked = s.threadId;
+  for (const original of files) {
+    s.uploading++; setStatus(`Subiendo ${original.name}…`);
+    try {
+      const file = await shrinkImage(original);
+      const fd = new FormData();
+      fd.append('file', file, file.name);
+      const f = await api('POST', url(`/threads/${asked}/files`), fd, true);
+      if (asked !== s.threadId) continue;
+      s.fileMeta.set(f.id, f);
+      s.attached.push(f);
+    } catch (e) {
+      toast(`${original.name}: ${e.message || 'no se pudo subir'}`, true);
+    } finally {
+      s.uploading--;
+    }
+  }
+  setStatus('');
+  renderChips();
+  el.input.focus();
 }
 
 async function stopTurn() {
@@ -347,6 +410,13 @@ function renderChips() {
     chips.push(h('span', { class: 'cp-chip' }, h('span', { class: 'cp-chip-text' }, `En esta página: ${s.pageLabel}`),
       h('button', { type: 'button', class: 'cp-chip-x', 'aria-label': 'No usar esta página como contexto', onclick: () => { s.pageOff = true; renderChips(); } }, icon('x', 12))));
   }
+  for (const f of s.attached) {
+    chips.push(h('span', { class: 'cp-chip file' }, icon(f.kind === 'image' ? 'image' : 'file', 12), h('span', { class: 'cp-chip-text' }, f.name),
+      h('button', { type: 'button', class: 'cp-chip-x', 'aria-label': `Quitar ${f.name}`, onclick: () => {
+        s.attached = s.attached.filter((x) => x.id !== f.id); renderChips();
+        void api('DELETE', url(`/files/${f.id}`)).catch(() => undefined);
+      } }, icon('x', 12))));
+  }
   for (const r of s.refs) {
     chips.push(h('span', { class: 'cp-chip ref' }, h('span', { class: 'cp-chip-text' }, `Sobre: ${r.title}`),
       h('button', { type: 'button', class: 'cp-chip-x', 'aria-label': `Quitar la referencia a ${r.title}`, onclick: () => { s.refs = s.refs.filter((x) => x.id !== r.id); renderChips(); } }, icon('x', 12))));
@@ -376,7 +446,11 @@ function timeline() {
     if (m.role === 'user') {
       const refs = (m.refs || []).map((id) => s.actions.get(id)).filter(Boolean);
       out.push(h('div', { class: 'cp-msg is-user', 'data-key': `m:${m.id}` }, h('span', { class: 'sr-only' }, 'Tú: '), m.redacted ? '(mensaje borrado)' : m.content,
-        refs.length ? h('div', { class: 'cp-msg-refs' }, refs.map((a) => h('span', { class: 'cp-chip ref' }, `Sobre: ${a.title}`))) : null));
+        refs.length ? h('div', { class: 'cp-msg-refs' }, refs.map((a) => h('span', { class: 'cp-chip ref' }, `Sobre: ${a.title}`))) : null,
+        (m.files || []).length ? h('div', { class: 'cp-msg-refs' }, m.files.map((id) => {
+          const f = s.fileMeta.get(id);
+          return h('span', { class: 'cp-chip file' }, `📎 ${f ? f.name : 'Archivo'}${f?.expired ? ' (venció)' : ''}`);
+        })) : null));
     } else if (m.role === 'assistant') {
       const n = undoable.get(m.turn_id) || 0;
       const turnDone = !(s.turn?.id === m.turn_id && s.turn?.status === 'running');

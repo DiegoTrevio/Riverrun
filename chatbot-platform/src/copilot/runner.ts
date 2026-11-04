@@ -20,6 +20,7 @@ import { describePage } from './page.js';
 import { accountSnapshot, systemMessage, touchesCustomers } from './prompt.js';
 import { buildHistory, FULL_TURNS, replayedToolNames } from './history.js';
 import { activePacks, packIndex, visibleTools } from './packs.js';
+import { threadFiles } from './files.js';
 import * as cs from './store.js';
 
 export interface RunnerDeps { ai: AiProvider; inject: Inject; tools: ToolDef[] }
@@ -70,9 +71,11 @@ export async function contextFor(o: {
   /** Permiso de un uso del código escrito en la tarjeta (solo al confirmar una propuesta `code`). */
   grant?: string;
 }): Promise<Ctx> {
-  const { timezone } = await accountInfo(o.accountId);
+  const [{ timezone }, attached] = await Promise.all([accountInfo(o.accountId), threadFiles(o.threadId)]);
   const call = makeCaller({ inject: o.deps.inject, cookie: o.cookie, accountId: o.accountId, superadmin: o.user.role === 'superadmin', ip: o.ip, actionId: o.actionId, grant: o.grant });
-  return { user: o.user, accountId: o.accountId, timezone, call, page: o.page, threadId: o.threadId, turnId: o.turnId, scope: new Set(), tainted: false };
+  // Los archivos vigentes de esta conversación: las herramientas los leen por su id (`fileForTool`).
+  const files = new Map(attached.filter((f) => new Date(f.expires_at).getTime() > Date.now()).map((f) => [f.id, f]));
+  return { user: o.user, accountId: o.accountId, timezone, call, page: o.page, threadId: o.threadId, turnId: o.turnId, scope: new Set(), tainted: false, files };
 }
 
 function errorText(e: unknown): string {
@@ -147,7 +150,7 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
       model: limits.model, user, accountName: account.name, timezone: ctx.timezone, snapshot, page, actions,
       index: limits.toolPacks ? packIndex(all) : '', continuing: req.continuation?.plan,
     });
-    const history: AnyMessage[] = buildHistory(stored, actions);
+    const history: AnyMessage[] = buildHistory(stored, actions, await threadFiles(thread.id));
     const ai = accountAi(deps.ai, thread.account_id, null, 'copilot');
     const fallback = limits.fallbackModels.length ? limits.fallbackModels : 'none' as const;
 

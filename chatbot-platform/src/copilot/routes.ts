@@ -12,6 +12,11 @@ import { assertAiAllowed } from '../ai/gate.js';
 import { turnAllowance } from './allowance.js';
 import { maybeContinue } from './continue.js';
 import { tidy } from './prompt.js';
+import { deleteFile, FILE_LIMITS, getOwnFile, ownFiles, saveCopilotFile, threadFiles } from './files.js';
+import { attachmentAbsolutePath } from '../attachments.js';
+import { countHit } from '../identity/rate-limit.js';
+import { readUpload } from '../routes/util.js';
+import fs from 'node:fs/promises';
 import * as store from '../store/index.js';
 import { parse } from '../routes/util.js';
 import { confirmAction, declineAction, undoAction, undoTurn } from './actions.js';
@@ -49,7 +54,7 @@ function sessionCookie(req: FastifyRequest): string {
 
 function messageOut(m: cs.Message) {
   if (m.role === 'tool' || (m.role === 'assistant' && !m.content)) return null;
-  return { id: Number(m.id), role: m.role, content: m.redacted ? '' : m.content, redacted: m.redacted, turn_id: m.turn_id, refs: m.refs, created_at: m.created_at, rev: Number(m.rev) };
+  return { id: Number(m.id), role: m.role, content: m.redacted ? '' : m.content, redacted: m.redacted, turn_id: m.turn_id, refs: m.refs, files: m.redacted ? [] : m.files ?? [], created_at: m.created_at, rev: Number(m.rev) };
 }
 
 function actionOut(a: cs.Action) {
@@ -70,6 +75,11 @@ function turnOut(t: cs.Turn | null) {
     // «Confirmar y seguir»: si sigue solo de otro pedido y lo que anotó que falta (para la tarjeta).
     origin: t.origin, continue_plan: t.continue_plan ? tidy(t.continue_plan, 300) : '',
   };
+}
+
+/** Un archivo adjunto, como lo ve el panel (sin su ruta en disco). */
+function fileOut(f: { id: string; name: string; kind: string; size_bytes: number; expires_at: Date }) {
+  return { id: f.id, name: f.name, kind: f.kind, size_bytes: f.size_bytes, expires_at: f.expires_at, expired: new Date(f.expires_at).getTime() < Date.now() };
 }
 
 const maxRev = (...lists: { rev: string }[][]) => lists.flat().reduce((n, x) => Math.max(n, Number(x.rev)), 0);
@@ -117,9 +127,10 @@ export async function copilotRoutes(api: FastifyInstance, deps: RunnerDeps) {
   api.get('/api/copilot/threads/:id', async (req: any) => {
     const thread = await ownThread(req);
     await cs.sweepStale(thread.id);
-    const [messages, actions, turn] = await Promise.all([cs.threadMessages(thread.id, 300), cs.threadActions(thread.id), cs.currentTurn(thread.id)]);
+    const [messages, actions, turn, files] = await Promise.all([cs.threadMessages(thread.id, 300), cs.threadActions(thread.id), cs.currentTurn(thread.id), threadFiles(thread.id)]);
     return {
       thread: { id: thread.id, title: thread.title },
+      files: files.map(fileOut),
       messages: messages.map(messageOut).filter(Boolean),
       actions: actions.map(actionOut),
       turn: turnOut(turn),
@@ -144,10 +155,12 @@ export async function copilotRoutes(api: FastifyInstance, deps: RunnerDeps) {
     const thread = await ownThread(req);
     await assertAiAllowed(thread.account_id);
     const b = parse(z.object({
-      text: z.string().trim().min(1, 'Escribe qué necesitas').max(4000),
+      text: z.string().trim().max(4000).default(''),
       page: z.object({ hash: z.string().max(300).default('') }).default({ hash: '' }),
       refs: z.array(Id).max(5).default([]),
-    }), req.body);
+      // Archivos ya subidos a esta conversación (foto, PDF, CSV…): el pedido puede ser solo el archivo.
+      files: z.array(Id).max(FILE_LIMITS.perMessage).default([]),
+    }).refine((x) => x.text.length > 0 || x.files.length > 0, 'Escribe qué necesitas'), req.body);
     await cs.sweepStale(thread.id);
     await cs.sweepStaleUser(req.user.id);
     // Un código de verificación escrito en el chat (en vez de en la tarjeta) llegaría a la IA y quedaría guardado.
@@ -156,11 +169,13 @@ export async function copilotRoutes(api: FastifyInstance, deps: RunnerDeps) {
     }
     const { maxUsd } = await turnAllowance(req.user.id, thread.account_id);
     const refs = (await cs.actionsByIds(b.refs, thread.id)).map((a) => a.id);
+    const files = (await ownFiles(b.files, thread.id, req.user.id)).map((f) => f.id);
+    if (files.length !== b.files.length) throw new HttpError(400, 'Uno de los archivos ya no está (vence a las 24 horas): adjúntalo otra vez');
     const cookie = sessionCookie(req);
     const turn = await cs.startTurn(thread, parsePage(b.page.hash), config.copilot.model);
     if (!turn) throw new HttpError(409, 'Todavía estoy trabajando en tu pedido anterior');
-    const message = await cs.addMessage({ thread_id: thread.id, turn_id: turn.id, role: 'user', content: b.text, refs });
-    await cs.touchThread(thread.id, b.text.slice(0, 60));
+    const message = await cs.addMessage({ thread_id: thread.id, turn_id: turn.id, role: 'user', content: b.text, refs, files });
+    await cs.touchThread(thread.id, (b.text || 'Archivo adjunto').slice(0, 60));
     void startTurnInBackground(deps, { thread, turn, user: req.user, cookie, ip: req.ip, refs, maxUsd });
     return reply.code(202).send({ turn: turnOut(turn), message: messageOut(message) });
   });
@@ -203,6 +218,33 @@ export async function copilotRoutes(api: FastifyInstance, deps: RunnerDeps) {
   api.post('/api/copilot/actions/:id/undo', async (req: any) => {
     const action = await ownAction(req);
     return actionOut(await undoAction(deps, { action, user: req.user, cookie: sessionCookie(req), ip: req.ip }));
+  });
+
+  /** Adjuntar un archivo a la conversación (foto de la cámara o la galería, PDF, CSV, documento): vive 24 horas. */
+  api.post('/api/copilot/threads/:id/files', async (req: any) => {
+    const thread = await ownThread(req);
+    if ((await countHit(`copilot-files:${req.user.id}`, 3600_000)) > 20) throw new HttpError(429, 'Llegaste al límite de archivos por hora; intenta en un rato');
+    const { file } = await readUpload(req);
+    if (!file) throw new HttpError(400, 'Adjunta un archivo');
+    return fileOut(await saveCopilotFile({ accountId: thread.account_id, threadId: thread.id, userId: req.user.id, file }));
+  });
+
+  /** Ver un archivo adjunto propio (siempre como descarga y sin adivinar el tipo). */
+  api.get('/api/copilot/files/:id', async (req: any, reply) => {
+    const accountId = await copilotAccount(req);
+    const f = await getOwnFile(parse(Id, req.params.id), req.user.id, accountId);
+    if (!f || new Date(f.expires_at).getTime() < Date.now()) throw notFound('Archivo no encontrado');
+    const name = f.name.replace(/[^\w .()-]/g, '_').slice(0, 120) || 'archivo';
+    return reply.header('content-type', f.mime).header('x-content-type-options', 'nosniff').header('cache-control', 'private, no-store')
+      .header('content-disposition', `attachment; filename="${name}"`).send(await fs.readFile(attachmentAbsolutePath(f.file_path)));
+  });
+
+  api.delete('/api/copilot/files/:id', async (req: any) => {
+    const accountId = await copilotAccount(req);
+    const f = await getOwnFile(parse(Id, req.params.id), req.user.id, accountId);
+    if (!f) throw notFound('Archivo no encontrado');
+    await deleteFile(f.id);
+    return { ok: true };
   });
 
   /** Etiquetas de la cuenta con cuántos contactos tiene cada una (un agente, solo de sus contactos). */

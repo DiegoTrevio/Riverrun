@@ -688,3 +688,75 @@ t('«Confirmar y seguir»: no sigue sin «seguir», con otra propuesta pendiente
     });
   });
 });
+
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+
+/** Sube un archivo a una conversación del Copiloto como lo hace el panel (multipart). */
+async function uploadTo(req: Req, threadId: string, name: string, bytes: Buffer, type = 'image/png') {
+  const boundary = '----prueba' + Math.random().toString(16).slice(2);
+  const body = Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\nContent-Type: ${type}\r\n\r\n`),
+    bytes, Buffer.from(`\r\n--${boundary}--\r\n`),
+  ]);
+  return h.app.inject({ method: 'POST', url: `/api/copilot/threads/${threadId}/files`, payload: body, headers: { cookie: req.cookie, 'content-type': `multipart/form-data; boundary=${boundary}` } });
+}
+
+t('archivos: se adjuntan a la conversación, el modelo ve su archivo_id (nunca el contenido) y se borran con ella', async () => {
+  await withLimits({ turnsPerHour: 1000 }, async () => {
+    const fs = await import('node:fs/promises');
+    const { attachmentAbsolutePath } = await import('../src/attachments.js');
+    const id = await thread(owner);
+    const up = await uploadTo(owner, id, 'menu del dia.png', PNG);
+    assert.equal(up.statusCode, 200, up.body);
+    const file = up.json();
+    assert.equal(file.kind, 'image');
+    assert.equal((await uploadTo(owner, id, 'pagina.html', Buffer.from('<html><script>alert(1)</script></html>'), 'text/html')).statusCode, 400, 'HTML no');
+    // La conversación de otra persona no existe para quien sube.
+    assert.equal((await uploadTo(agent, id, 'x.png', PNG)).statusCode, 404);
+
+    h.copilotCalls.length = 0;
+    script(['Recibí la foto del menú.']);
+    const r = await owner('POST', `/api/copilot/threads/${id}/messages`, { text: '', files: [file.id] });
+    assert.equal(r.statusCode, 202, r.body);
+    await waitFor(async () => (await owner('GET', `/api/copilot/threads/${id}`)).json().turn?.status !== 'running', 8000);
+    const sent = JSON.stringify((h.copilotCalls[0] as any).messages);
+    assert.match(sent, new RegExp(`archivo_id ${file.id}`));
+    assert.match(sent, /menu del dia\.png/);
+    assert.ok(!sent.includes(PNG.toString('base64')), 'los bytes nunca van al modelo');
+    const shown = (await owner('GET', `/api/copilot/threads/${id}`)).json();
+    assert.deepEqual(shown.messages.find((m: any) => m.role === 'user').files, [file.id]);
+    assert.equal(shown.files[0].name, 'menu del dia.png');
+
+    // Un id que no es de esta conversación (o ya venció) no se acepta.
+    await pool.query(`UPDATE copilot_files SET expires_at = now() - interval '1 minute' WHERE id = $1`, [file.id]);
+    const stale = await owner('POST', `/api/copilot/threads/${id}/messages`, { text: 'otra vez', files: [file.id] });
+    assert.equal(stale.statusCode, 400, stale.body);
+    assert.equal((await owner('GET', `/api/copilot/files/${file.id}`)).statusCode, 404, 'vencido no se descarga');
+
+    // Una herramienta sube el archivo a una ruta del panel (multipart armado por el servidor).
+    const fresh = (await uploadTo(owner, id, 'logo.png', PNG)).json();
+    const { makeCaller } = await import('../src/copilot/executor.js');
+    const caller = makeCaller({ inject: (o) => h.app.inject(o as any).then((x) => ({ statusCode: x.statusCode, body: x.body })), cookie: owner.cookie, accountId: h.accountId, superadmin: false });
+    const saved = await caller.upload('/api/attachments', { buffer: PNG, name: 'logo "raro"\r\n.png', mime: 'image/png' });
+    assert.ok(saved.id, JSON.stringify(saved));
+
+    // Borrar la conversación borra sus archivos, del disco también.
+    const row = (await pool.query(`SELECT file_path FROM copilot_files WHERE id = $1`, [fresh.id])).rows[0];
+    await fs.access(attachmentAbsolutePath(row.file_path));
+    assert.equal((await owner('DELETE', `/api/copilot/threads/${id}`)).statusCode, 200);
+    assert.equal((await pool.query(`SELECT 1 FROM copilot_files WHERE thread_id = $1`, [id])).rowCount, 0);
+    await assert.rejects(fs.access(attachmentAbsolutePath(row.file_path)), 'el archivo ya no está en disco');
+  });
+});
+
+t('archivos: la limpieza borra los vencidos (fila y disco)', async () => {
+  const fs = await import('node:fs/promises');
+  const { attachmentAbsolutePath } = await import('../src/attachments.js');
+  const { sweepCopilotFiles } = await import('../src/copilot/files.js');
+  const id = await thread(owner);
+  const f = (await uploadTo(owner, id, 'viejo.png', PNG)).json();
+  const row = (await pool.query(`UPDATE copilot_files SET expires_at = now() - interval '1 minute' WHERE id = $1 RETURNING file_path`, [f.id])).rows[0];
+  await sweepCopilotFiles();
+  assert.equal((await pool.query(`SELECT 1 FROM copilot_files WHERE id = $1`, [f.id])).rowCount, 0);
+  await assert.rejects(fs.access(attachmentAbsolutePath(row.file_path)));
+});
