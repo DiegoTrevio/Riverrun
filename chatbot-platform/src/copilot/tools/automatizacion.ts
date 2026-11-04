@@ -511,6 +511,7 @@ async function campaignChannel(ctx: Ctx, id?: string) {
 export const crearCampana = defineTool({
   name: 'crear_campana',
   area: 'automatizacion',
+  pack: 'campanas',
   roles: ['admin'],
   description: 'Deja lista una campaña en borrador (un mensaje o una secuencia para un grupo de contactos por etiquetas o actividad) y dice a cuántas personas llegaría. No se envía nada: lanzarla se confirma aparte.',
   schema: z.object({
@@ -553,6 +554,7 @@ export const crearCampana = defineTool({
 export const lanzarCampana = defineTool({
   name: 'lanzar_campana',
   area: 'automatizacion',
+  pack: 'campanas',
   roles: ['admin'],
   description: 'Lanza (o programa, si tiene fecha) una campaña en borrador. Requiere confirmación con la audiencia y el mensaje a la vista.',
   schema: z.object({ campana_id: Id }),
@@ -591,6 +593,7 @@ export const lanzarCampana = defineTool({
 export const cancelarCampana = defineTool({
   name: 'cancelar_campana',
   area: 'automatizacion',
+  pack: 'campanas',
   roles: ['admin'],
   description: 'Cancela una campaña programada o que se está enviando (requiere confirmación).',
   schema: z.object({ campana_id: Id }),

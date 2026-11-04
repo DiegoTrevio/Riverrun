@@ -18,6 +18,8 @@ export interface Turn {
   steps: number; tool_calls: number; input_tokens: number; cached_tokens: number; output_tokens: number; cost_usd: string;
   tainted: boolean; contact_ids: string[]; error: string; cancel_requested_at: Date | null; heartbeat_at: Date;
   started_at: Date; finished_at: Date | null; rev: string;
+  /** Paquetes de herramientas que tuvo cargados (el siguiente pedido los conserva; migración 115). */
+  packs: string[];
 }
 export interface StoredToolCall { id: string; name: string; arguments: string }
 export interface Message {
@@ -142,11 +144,20 @@ export async function countToolCall(id: string) {
 }
 
 /** Marca que el turno leyó texto de clientes y qué contactos tocó (para la privacidad y el alcance). */
-export async function markTurn(id: string, o: { tainted?: boolean; contactIds?: string[] }) {
+export async function markTurn(id: string, o: { tainted?: boolean; contactIds?: string[]; packs?: string[] }) {
   await query(
-    `UPDATE copilot_turns SET tainted = tainted OR $2, contact_ids = ARRAY(SELECT DISTINCT unnest(contact_ids || $3::uuid[])) WHERE id = $1`,
-    [id, !!o.tainted, o.contactIds ?? []],
+    `UPDATE copilot_turns SET tainted = tainted OR $2, contact_ids = ARRAY(SELECT DISTINCT unnest(contact_ids || $3::uuid[])),
+            packs = CASE WHEN $4::text[] IS NULL THEN packs ELSE $4::text[] END WHERE id = $1`,
+    [id, !!o.tainted, o.contactIds ?? [], o.packs ?? null],
   );
+}
+
+/** Paquetes que tuvo cargados el pedido anterior del hilo (el nuevo los conserva). */
+export async function previousPacks(threadId: string, exceptTurnId: string): Promise<string[]> {
+  return (await queryOne<{ packs: string[] }>(
+    `SELECT packs FROM copilot_turns WHERE thread_id = $1 AND id <> $2 ORDER BY started_at DESC LIMIT 1`,
+    [threadId, exceptTurnId],
+  ))?.packs ?? [];
 }
 
 export async function finishTurn(id: string, status: Exclude<TurnStatus, 'running'>, error = '') {

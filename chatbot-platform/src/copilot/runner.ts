@@ -13,12 +13,13 @@ import { insertAiRun } from '../store/index.js';
 import { logEvent } from '../logs.js';
 import type { User } from '../types.js';
 import { makeCaller, ToolError, type Inject } from './executor.js';
-import { allowed, toolSpec, type Ctx, type ToolDef } from './registry.js';
+import { allowed, packOf, toolSpec, type Ctx, type ToolDef } from './registry.js';
 import { assessRisk } from './risk.js';
 import { forModel } from './summarize.js';
 import { describePage } from './page.js';
 import { accountSnapshot, systemMessage, touchesCustomers } from './prompt.js';
-import { buildHistory, FULL_TURNS } from './history.js';
+import { buildHistory, FULL_TURNS, replayedToolNames } from './history.js';
+import { activePacks, packIndex, visibleTools } from './packs.js';
 import * as cs from './store.js';
 
 export interface RunnerDeps { ai: AiProvider; inject: Inject; tools: ToolDef[] }
@@ -118,14 +119,25 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
     // Lo que se leyó de clientes en los turnos que el modelo vuelve a ver completos sigue en el historial.
     if (await cs.recentlyTainted(thread.id, turn.id, FULL_TURNS)) ctx.tainted = true;
 
-    const defs = toolsFor(user, deps.tools);
-    const specs = defs.map(toolSpec);
+    // Todas las que puede usar su rol; al modelo solo van las de los paquetes cargados (núcleo + los que hacen falta).
+    const all = toolsFor(user, deps.tools);
     const snapshot = await accountSnapshot(ctx.call);
     const [stored, actions] = await Promise.all([cs.threadMessages(thread.id), cs.threadActions(thread.id)]);
+    const packs = activePacks({ all, page, replayed: replayedToolNames(stored), previous: await cs.previousPacks(thread.id, turn.id) });
+    let visible = visibleTools(all, packs);
+    let specs = visible.map(toolSpec);
+    let packsChanged = false;
+    ctx.packs = packs;
+    ctx.loadPacks = (more) => {
+      for (const p of more) packs.add(p);
+      packsChanged = true;
+      return all.filter((d) => more.includes(packOf(d))).map((d) => d.name);
+    };
+    await cs.markTurn(turn.id, { packs: [...packs] });
     // AI-5: los títulos de las acciones sobre clientes (con sus nombres) entran al prompt; el turno cuenta como contaminado.
     const listed = [...actions.filter((a) => a.risk !== 'read').slice(-12), ...(await cs.actionsByIds(req.refs, thread.id))];
     if (listed.some(touchesCustomers)) ctx.tainted = true;
-    const system = systemMessage({ model: limits.model, user, accountName: account.name, timezone: ctx.timezone, snapshot, page, actions });
+    const system = systemMessage({ model: limits.model, user, accountName: account.name, timezone: ctx.timezone, snapshot, page, actions, index: limits.toolPacks ? packIndex(all) : '' });
     const history: AnyMessage[] = buildHistory(stored, actions);
     const ai = accountAi(deps.ai, thread.account_id, null, 'copilot');
     const fallback = limits.fallbackModels.length ? limits.fallbackModels : 'none' as const;
@@ -177,12 +189,20 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
         limitHit = 'costo';
         return err('limite', 'Llegué al tope de costo o de tiempo de este pedido; pide el resto en otro mensaje.');
       }
-      const def = defs.find((d) => d.name === call.name);
+      const def = all.find((d) => d.name === call.name);
       if (!def) return err('no_disponible', `«${call.name}» no existe o tu usuario no la puede usar.`);
+      // Una herramienta de su rol cuyo paquete no estaba cargado: se carga (el siguiente paso ya trae su esquema).
+      const loadedNow = !visible.includes(def);
+      if (loadedNow) ctx.loadPacks!([packOf(def)]);
       let raw: unknown;
       try { raw = JSON.parse(call.arguments || '{}'); } catch { return err('datos_invalidos', 'Los argumentos no son un JSON válido.'); }
       const parsed = def.schema.safeParse(raw);
-      if (!parsed.success) return JSON.stringify({ error: 'datos_invalidos', mensaje: 'Argumentos inválidos', detalles: parsed.error.issues.slice(0, 6).map((i) => `${i.path.join('.') || 'argumentos'}: ${i.message}`) });
+      if (!parsed.success) {
+        return JSON.stringify({
+          error: 'datos_invalidos', mensaje: loadedNow ? 'Argumentos inválidos. Ya cargué su esquema: vuelve a intentarlo con los argumentos correctos.' : 'Argumentos inválidos',
+          detalles: parsed.error.issues.slice(0, 6).map((i) => `${i.path.join('.') || 'argumentos'}: ${i.message}`),
+        });
+      }
       const args = parsed.data;
       const key = `${def.name}:${cs.stableJson(args)}`;
       const prior = done.get(key) ?? reads.get(key);
@@ -204,7 +224,8 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
           }
           if (r.untrusted) ctx.tainted = true;
           if (r.untrusted || r.contactIds?.length) await cs.markTurn(turn.id, { tainted: r.untrusted, contactIds: r.contactIds });
-          await cs.insertAction({ thread_id: thread.id, turn_id: turn.id, account_id: thread.account_id, user_id: user.id, tool_call_id: call.id, tool: def.name, args: args as Record<string, unknown>, risk: 'read', status: 'done', title: r.title ?? def.label(args), links: r.links ?? [], contact_ids: r.contactIds ?? [], executed_at: new Date() });
+          // Las del propio Copiloto (cargar herramientas) no son acciones sobre la cuenta: no dejan tarjeta.
+          if (!def.meta) await cs.insertAction({ thread_id: thread.id, turn_id: turn.id, account_id: thread.account_id, user_id: user.id, tool_call_id: call.id, tool: def.name, args: args as Record<string, unknown>, risk: 'read', status: 'done', title: r.title ?? def.label(args), links: r.links ?? [], contact_ids: r.contactIds ?? [], executed_at: new Date() });
           const text = forModel(r.data);
           reads.set(key, text);
           return text;
@@ -292,6 +313,13 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
           : await runTool(c);
         history.push({ role: 'tool', tool_call_id: c.id, content });
         await cs.addMessage({ thread_id: thread.id, turn_id: turn.id, role: 'tool', tool_call_id: c.id, content });
+      }
+      // Paquetes nuevos: el siguiente paso ya manda sus herramientas (y el siguiente pedido los conserva).
+      if (packsChanged) {
+        packsChanged = false;
+        visible = visibleTools(all, packs);
+        specs = visible.map(toolSpec);
+        await cs.markTurn(turn.id, { packs: [...packs] });
       }
     }
   } catch (e: any) {

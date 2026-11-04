@@ -13,6 +13,7 @@ const who = (m: any) => (m.direction === 'in' ? 'cliente' : m.sender === 'human'
 export const buscarConversaciones = defineTool({
   name: 'buscar_conversaciones',
   area: 'conversaciones',
+  pack: 'base',
   roles: ['admin', 'agent'],
   description: 'Lista conversaciones recientes, por cliente (nombre o teléfono), estado o a quién están asignadas.',
   schema: z.object({
@@ -44,6 +45,7 @@ export const buscarConversaciones = defineTool({
 export const leerConversacion = defineTool({
   name: 'leer_conversacion',
   area: 'conversaciones',
+  pack: 'base',
   roles: ['admin', 'agent'],
   description: 'Lee los últimos mensajes de una conversación, su estado, a quién está asignada y su resumen.',
   schema: z.object({ conversacion_id: Id, mensajes: z.number().int().min(1).max(40).optional() }),

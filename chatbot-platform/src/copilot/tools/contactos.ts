@@ -13,6 +13,7 @@ const VIEWS = { todos: 'all', pendientes: 'pending', sin_asignar: 'unassigned', 
 export const buscarContactos = defineTool({
   name: 'buscar_contactos',
   area: 'contactos',
+  pack: 'base',
   roles: ['admin', 'agent'],
   description: 'Busca contactos por nombre, teléfono o etiqueta (o los que tienen pendientes, sin asignar o con cita). Devuelve su id, etiquetas y próxima cita.',
   schema: z.object({
@@ -47,6 +48,7 @@ export const buscarContactos = defineTool({
 export const verContacto = defineTool({
   name: 'ver_contacto',
   area: 'contactos',
+  pack: 'base',
   roles: ['admin', 'agent'],
   description: 'Ficha de un contacto: datos, etiquetas, conversaciones, pendientes, próximas citas y cotizaciones.',
   schema: z.object({ contacto_id: Id }),
@@ -81,6 +83,7 @@ export const verContacto = defineTool({
 export const editarContacto = defineTool({
   name: 'editar_contacto',
   area: 'contactos',
+  pack: 'base',
   roles: ['admin', 'agent'],
   description: 'Cambia el nombre de un contacto, sus datos (por clave; null borra un dato) o le agrega una nota. No toca lo demás.',
   schema: z.object({
@@ -146,6 +149,7 @@ async function setTags(ctx: Ctx, id: string, change: (tags: string[]) => string[
 export const etiquetar = defineTool({
   name: 'etiquetar',
   area: 'contactos',
+  pack: 'base',
   roles: ['admin', 'agent'],
   description: 'Agrega o quita etiquetas a uno o varios contactos (hasta 20 a la vez).',
   schema: z.object({

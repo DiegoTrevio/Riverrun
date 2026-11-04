@@ -149,6 +149,8 @@ export const config = {
     maxProposals: Number(env('COPILOT_MAX_PROPOSALS', '8')),
     turnSeconds: Number(env('COPILOT_TURN_SECONDS', '300')),
     turnMaxUsd: Number(env('COPILOT_TURN_MAX_USD', '1')),
+    /** Herramientas por paquetes (núcleo + los que hacen falta); false = todas en cada paso, como antes. */
+    toolPacks: env('COPILOT_TOOL_PACKS', 'true') !== 'false',
     turnsPerHour: Number(env('COPILOT_TURNS_PER_HOUR', '30')),
     accountTurnsPerDay: Number(env('COPILOT_ACCOUNT_TURNS_PER_DAY', '300')),
     /** Tope de gasto del Copiloto por cuenta en 24 horas, en USD (0 = sin tope; aparte del presupuesto de IA). */

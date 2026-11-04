@@ -61,14 +61,31 @@ function repair(list: AnyMessage[]): AnyMessage[] {
   return out;
 }
 
-export function buildHistory(messages: Message[], actions: Action[]): AnyMessage[] {
-  const byId = new Map(actions.map((a) => [a.id, a]));
-  // Cada mensaje de la persona abre un turno; lo demás (pasos, resultados, avisos de confirmación) va con el turno abierto.
+/** Cada mensaje de la persona abre un turno; lo demás (pasos, resultados, avisos de confirmación) va con el turno abierto. */
+function groupTurns(messages: Message[]): Message[][] {
   const turns: Message[][] = [];
   for (const m of messages) {
     if (m.role === 'user' || !turns.length) turns.push([]);
     turns[turns.length - 1].push(m);
   }
+  return turns;
+}
+
+/**
+ * Herramientas cuyas llamadas se repiten completas en el historial: sus paquetes tienen que ir en el pedido (un
+ * proveedor rechaza una llamada a una herramienta que no está en la lista).
+ */
+export function replayedToolNames(messages: Message[]): Set<string> {
+  const names = new Set<string>();
+  for (const t of groupTurns(messages).slice(-FULL_TURNS)) {
+    for (const m of t) if (m.role === 'assistant') for (const c of m.tool_calls ?? []) names.add(c.name);
+  }
+  return names;
+}
+
+export function buildHistory(messages: Message[], actions: Action[]): AnyMessage[] {
+  const byId = new Map(actions.map((a) => [a.id, a]));
+  const turns = groupTurns(messages);
   const rendered = turns.map((t, i) => {
     const full = i >= turns.length - FULL_TURNS;
     const toolMax = i >= turns.length - RECENT_TURNS ? MAX_TOOL : OLD_TOOL;

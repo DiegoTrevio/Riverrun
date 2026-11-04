@@ -561,3 +561,60 @@ t('acción larga: mientras renueva su plazo sigue «ejecutándose»; con el plaz
   assert.equal(await cs.withLease(vivo.id, async () => 'hecho'), 'hecho');
   await pool.query(`DELETE FROM copilot_actions WHERE id = ANY($1::uuid[])`, [[vivo.id, vencido.id, viejo.id]]);
 });
+
+t('paquetes: la página carga su área; una herramienta de otra área se carga sola; usar_herramientas no deja tarjeta', async () => {
+  // Este archivo hace muchos pedidos con la misma persona: aquí no cuenta el tope por hora.
+  await withLimits({ turnsPerHour: 1000 }, async () => {
+    const names = (i: number) => ((h.copilotCalls[i] as any).tools as any[]).map((x) => x.name);
+    // Sin página: solo el núcleo.
+    let id = await thread(owner);
+    h.copilotCalls.length = 0;
+    script(['Hola.']);
+    await ask(owner, id, 'Hola');
+    assert.ok(names(0).includes('buscar_contactos') && names(0).includes('usar_herramientas'));
+    assert.ok(!names(0).includes('crear_cita'), 'la agenda no va si no hace falta');
+
+    // En la agenda: sus herramientas van desde el primer paso.
+    id = await thread(owner);
+    h.copilotCalls.length = 0;
+    script(['Listo.']);
+    await ask(owner, id, '¿Qué citas hay?', { page: { hash: '#/agenda' } });
+    assert.ok(names(0).includes('crear_cita') && names(0).includes('horarios_libres'));
+
+    // Una herramienta de otra área con argumentos válidos se ejecuta y el siguiente paso ya la trae.
+    id = await thread(owner);
+    h.copilotCalls.length = 0;
+    script([call('ver_oportunidades', {}), 'Listo.']);
+    const r = await ask(owner, id, 'Muéstrame las oportunidades');
+    assert.ok(!names(0).includes('ver_oportunidades'));
+    assert.ok(names(1).includes('ver_oportunidades'), 'el siguiente paso trae su esquema');
+    assert.equal(r.actions.find((a: any) => a.tool === 'ver_oportunidades')?.status, 'done');
+
+    // El siguiente pedido de la misma conversación conserva el paquete.
+    h.copilotCalls.length = 0;
+    script(['Ok.']);
+    await ask(owner, id, 'Gracias');
+    assert.ok(names(0).includes('ver_oportunidades'), 'el pedido siguiente lo conserva');
+
+    // usar_herramientas: carga las áreas que pidió, sin dejar tarjeta en la conversación.
+    id = await thread(owner);
+    h.copilotCalls.length = 0;
+    script([call('usar_herramientas', { areas: ['cobros', 'cotizaciones'] }), 'Listo.']);
+    const u = await ask(owner, id, 'Voy a revisar cobros y cotizaciones');
+    assert.ok(names(1).includes('crear_cobro') || names(1).includes('ver_cotizaciones'));
+    assert.ok(names(1).includes('ver_cotizaciones'));
+    assert.equal(u.actions.filter((a: any) => a.tool === 'usar_herramientas').length, 0, 'no deja tarjeta');
+    const turn = (await pool.query(`SELECT packs FROM copilot_turns WHERE thread_id = $1 ORDER BY started_at DESC LIMIT 1`, [id])).rows[0];
+    assert.ok(turn.packs.includes('cotizaciones'));
+
+    // Con argumentos inválidos y el paquete sin cargar: no se ejecuta, pero el siguiente paso ya trae el esquema.
+    id = await thread(owner);
+    h.copilotCalls.length = 0;
+    script([call('crear_cita', { nada: true }), 'No pude.']);
+    const bad = await ask(owner, id, 'Agenda algo');
+    assert.equal(bad.actions.filter((a: any) => a.tool === 'crear_cita').length, 0);
+    assert.ok(names(1).includes('crear_cita'));
+    const toolMsg = (await pool.query(`SELECT content FROM copilot_messages WHERE thread_id = $1 AND role = 'tool'`, [id])).rows[0].content;
+    assert.match(toolMsg, /Ya cargué su esquema/);
+  });
+});

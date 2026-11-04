@@ -76,6 +76,39 @@ Lo que se le manda al modelo, para gastar poco:
   esquema de `crear_regla`.
 - La lista de la conversación lleva solo los cambios y las propuestas (las últimas 12), no las consultas.
 - Los resultados de herramientas de turnos más viejos que los últimos 2 se recortan.
+- Herramientas por paquetes (siguiente sección): cada paso lleva el núcleo y solo las áreas que hacen falta.
+
+## Herramientas por paquetes
+
+El catálogo crece, pero cada paso no manda todas las herramientas (`src/copilot/packs.ts`, migración 115).
+
+**Qué va siempre:**
+- El **núcleo** (`base`): `contexto_cuenta`, `contar_etiquetas`, buscar y ver contactos, `editar_contacto`,
+  `etiquetar`, buscar y leer conversaciones, y `usar_herramientas`.
+
+**Qué paquetes se cargan además en un pedido:**
+- El de la **página abierta**. Por ejemplo, en la agenda van las herramientas de citas desde el primer paso.
+- Los de las herramientas cuyas llamadas se **repiten en el historial** (los últimos 6 turnos completos), porque un
+  proveedor rechaza una llamada a una herramienta que no está en la lista.
+- Los que tuvo el **pedido anterior** de la misma conversación (`copilot_turns.packs`).
+- Los que el modelo pide con **`usar_herramientas({areas})`**. Las instrucciones llevan un índice fijo por rol con el
+  área de cada herramienta. `usar_herramientas` no deja tarjeta.
+
+**Si el modelo llama una herramienta de su rol cuyo paquete no está cargado:**
+- se carga;
+- si sus argumentos son válidos, se ejecuta;
+- si no, responde «ya cargué su esquema, vuelve a intentarlo».
+- El rol se sigue revisando igual: lo que su rol no puede usar no se carga ni se ejecuta.
+
+**Orden y caché:**
+- El orden es fijo: primero el núcleo y después los paquetes en el orden de `PACKS` (`registry.ts`), sin importar cuándo
+  se cargó cada uno. Así el inicio de la petición se aprovecha de la caché.
+
+**Topes de tamaño** (`test/copilot.unit.test.ts`):
+- núcleo: menos de 12 000 caracteres para administrador y menos de 9 000 para agente;
+- cada paquete: menos de 14 000.
+
+**Interruptor:** `COPILOT_TOOL_PACKS=false` manda todas las herramientas en cada paso, como antes.
 
 ## Herramientas: las mismas rutas del panel
 

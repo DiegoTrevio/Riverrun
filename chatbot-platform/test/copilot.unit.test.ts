@@ -2,8 +2,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { COPILOT_TOOLS } from '../src/copilot/tools/index.js';
-import { toolSpec, allowed } from '../src/copilot/registry.js';
-import { buildHistory } from '../src/copilot/history.js';
+import { toolSpec, allowed, packOf, PACK_IDS } from '../src/copilot/registry.js';
+import { buildHistory, replayedToolNames } from '../src/copilot/history.js';
+import { activePacks, packIndex, visibleTools } from '../src/copilot/packs.js';
 import { systemMessage } from '../src/copilot/prompt.js';
 import { parsePage } from '../src/copilot/page.js';
 import { clip, day, forModel, safeLink } from '../src/copilot/summarize.js';
@@ -148,9 +149,43 @@ test('herramientas: el esquema que ve el modelo es corto, sin perder lo que impo
   // Los valores por omisión de los argumentos sí van: dicen qué pasa si el modelo no los manda.
   const cita = toolSpec(COPILOT_TOOLS.find((t) => t.name === 'crear_cita')!).parameters as any;
   assert.equal(cita.properties.avisar_al_cliente.default, true);
-  // Tope de regresión: lo que va en cada paso de cada pedido no debe volver a crecer sin darse cuenta.
-  assert.ok(size('admin') < 39_000, `herramientas de administrador: ${size('admin')} caracteres`);
-  assert.ok(size('agent') < 14_000, `herramientas de agente: ${size('agent')} caracteres`);
+  // Tope de regresión: lo que va en cada paso de cada pedido no debe volver a crecer sin darse cuenta. Cada paso lleva el
+  // núcleo y los paquetes cargados; el catálogo completo solo va con COPILOT_TOOL_PACKS=false.
+  const packSize = (role: string, pack: string) => JSON.stringify(COPILOT_TOOLS.filter((t) => allowed(t, { role } as any) && packOf(t) === pack).map(toolSpec)).length;
+  assert.ok(packSize('admin', 'base') < 12_000, `núcleo de administrador: ${packSize('admin', 'base')} caracteres`);
+  assert.ok(packSize('agent', 'base') < 9_000, `núcleo de agente: ${packSize('agent', 'base')} caracteres`);
+  for (const p of PACK_IDS) for (const role of ['admin', 'agent']) assert.ok(packSize(role, p) < 14_000, `paquete ${p} (${role}): ${packSize(role, p)} caracteres`);
+  assert.ok(size('admin') < 130_000, `catálogo de administrador: ${size('admin')} caracteres`);
+  assert.ok(size('agent') < 40_000, `catálogo de agente: ${size('agent')} caracteres`);
+  assert.ok(packIndex(COPILOT_TOOLS.filter((t) => allowed(t, { role: 'admin' } as any))).length < 4_000, 'el índice de paquetes es corto');
+});
+
+test('paquetes: cada herramienta en un paquete que existe; el orden no depende de cuándo se cargó cada uno', () => {
+  for (const t of COPILOT_TOOLS) assert.ok(PACK_IDS.includes(packOf(t)), `${t.name}: paquete ${packOf(t)}`);
+  const admin = COPILOT_TOOLS.filter((t) => allowed(t, { role: 'admin' } as any));
+  const names = (packs: string[]) => visibleTools(admin, new Set(packs as any)).map((t) => t.name);
+  assert.deepEqual(names(['agenda', 'cobros']), names(['cobros', 'agenda']));
+  const base = names([]);
+  for (const n of ['contexto_cuenta', 'buscar_contactos', 'ver_contacto', 'etiquetar', 'buscar_conversaciones', 'leer_conversacion', 'usar_herramientas']) assert.ok(base.includes(n), n);
+  assert.ok(!base.includes('crear_cita') && !base.includes('crear_regla'), 'lo de otras áreas no va en el núcleo');
+  assert.deepEqual(names(['agenda']).slice(0, base.length), base, 'el núcleo va primero');
+  assert.ok(names(['agenda']).includes('crear_cita'));
+  // Paquetes de un pedido: el núcleo, el de la página, los de las herramientas del historial y los del pedido anterior.
+  const p = activePacks({ all: admin, page: parsePage('#/agenda'), replayed: ['crear_regla'], previous: ['cobros', 'no_existe'] });
+  assert.deepEqual([...p].sort(), ['agenda', 'automatizacion', 'base', 'cobros']);
+  assert.deepEqual([...activePacks({ all: admin, page: parsePage('#/contact/' + ID) })].sort(), ['base', 'contactos']);
+});
+
+test('historial: se sabe qué herramientas se repiten completas (sus paquetes van en el pedido)', () => {
+  const turn = (n: number, tool: string) => [
+    msg(n * 10, { role: 'user', content: `Pedido ${n}`, turn_id: `t${n}` }),
+    msg(n * 10 + 1, { role: 'assistant', tool_calls: [{ id: `c${n}`, name: tool, arguments: '{}' }], turn_id: `t${n}` }),
+    msg(n * 10 + 2, { role: 'tool', tool_call_id: `c${n}`, content: '{}', turn_id: `t${n}` }),
+  ];
+  const all = [...turn(1, 'crear_regla'), ...Array.from({ length: 6 }, (_, i) => turn(i + 2, 'crear_cita')).flat()];
+  const names = replayedToolNames(all);
+  assert.ok(names.has('crear_cita'));
+  assert.ok(!names.has('crear_regla'), 'un turno que ya no se repite completo no carga su paquete');
 });
 
 test('cambiar_regla: el modelo ve un esquema corto, pero el servidor valida con el completo', () => {

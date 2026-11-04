@@ -11,6 +11,37 @@ import type { Link, Page, Preview, UndoRecipe } from './store.js';
 
 export type Area = 'cuenta' | 'agente' | 'automatizacion' | 'contactos' | 'conversaciones' | 'agenda' | 'oportunidades' | 'cobros' | 'cotizaciones' | 'datos';
 export type Level = 'read' | 'reversible' | 'confirm';
+
+/**
+ * Paquetes de herramientas: el modelo recibe siempre el núcleo (`base`) y, además, solo los paquetes que hacen falta (el
+ * de la página abierta, los que ya usó en la conversación y los que pide con `usar_herramientas`). Así el catálogo puede
+ * crecer sin que cada paso de cada pedido mande todas las herramientas. El orden de esta lista es el orden en que se
+ * mandan: no depende de cuándo se cargó cada paquete, así el inicio de la petición se aprovecha de la caché.
+ */
+export const PACKS = [
+  { id: 'base', resumen: 'Lo de siempre: la cuenta, buscar y ver contactos y conversaciones, editar un contacto, etiquetar' },
+  { id: 'conversaciones', resumen: 'Atender conversaciones: tomar, asignar, cerrar, enviar mensajes y fotos, secuencias de una conversación' },
+  { id: 'contactos', resumen: 'Contactos: tareas, dar de baja, etiquetas en uso' },
+  { id: 'agenda', resumen: 'Agenda: horarios libres y citas (crear, mover, cancelar)' },
+  { id: 'oportunidades', resumen: 'Embudos de oportunidades: ver y mover tarjetas' },
+  { id: 'cobros', resumen: 'Cobros a clientes: crear, editar, marcar pagados, recordar' },
+  { id: 'cotizaciones', resumen: 'Cotizaciones y lista de precios' },
+  { id: 'agente', resumen: 'Configurar agentes: instrucciones, trato y reglas, encender o apagar, conocimiento' },
+  { id: 'automatizacion', resumen: 'Automatizar: flujos de mensajes, reglas y secuencias' },
+  { id: 'campanas', resumen: 'Campañas masivas: crear, lanzar, cancelar' },
+  { id: 'cuenta', resumen: 'Ajustes del negocio: horario y días festivos' },
+  { id: 'datos', resumen: 'Estadísticas del negocio' },
+] as const;
+export type Pack = (typeof PACKS)[number]['id'];
+export const PACK_IDS = PACKS.map((p) => p.id) as Pack[];
+
+/** Paquete de cada área cuando la herramienta no dice otro. */
+const AREA_PACK: Record<Area, Pack> = {
+  cuenta: 'cuenta', agente: 'agente', automatizacion: 'automatizacion', contactos: 'contactos', conversaciones: 'conversaciones',
+  agenda: 'agenda', oportunidades: 'oportunidades', cobros: 'cobros', cotizaciones: 'cotizaciones', datos: 'datos',
+};
+
+export const packOf = (def: Pick<ToolDef, 'pack' | 'area'>): Pack => def.pack ?? AREA_PACK[def.area];
 export interface RiskInfo { level: Level; reasons: string[] }
 export interface Target { kind: string; id: string }
 
@@ -28,6 +59,10 @@ export interface Ctx {
   tainted: boolean;
   /** Al confirmar: la propuesta que la persona vio (su `meta` dice cómo estaba el registro entonces). */
   proposal?: Preview;
+  /** Paquetes de herramientas cargados en este pedido. */
+  packs?: Set<Pack>;
+  /** Carga paquetes en este pedido; devuelve los nombres de las herramientas que quedaron disponibles. */
+  loadPacks?: (packs: Pack[]) => string[];
 }
 
 export interface ExecResult {
@@ -52,6 +87,10 @@ export interface ExecResult {
 export interface ToolDef<A = any> {
   name: string;
   area: Area;
+  /** Paquete en el que va (por omisión, el de su área; `base` = siempre presente). */
+  pack?: Pack;
+  /** Herramienta del propio Copiloto (cargar paquetes…): no deja acción en la conversación. */
+  meta?: true;
   /** Roles que la pueden usar (el superadmin puede lo que el administrador). */
   roles: ('admin' | 'agent')[];
   description: string;
@@ -116,10 +155,16 @@ function clean(node: any): any {
   return out;
 }
 
+const specs = new WeakMap<ToolDef, ToolSpec>();
+
 export function toolSpec(def: ToolDef): ToolSpec {
+  const known = specs.get(def);
+  if (known) return known;
   const full: any = z.toJSONSchema(def.modelSchema ?? def.schema, { target: 'draft-7', io: 'input' });
   const schema = clean(full);
   for (const [k, v] of Object.entries<any>(full.properties ?? {})) if (v && 'default' in v) schema.properties[k].default = v.default;
   if (schema.additionalProperties === undefined) schema.additionalProperties = false;
-  return { name: def.name, description: def.description, parameters: schema };
+  const spec = { name: def.name, description: def.description, parameters: schema };
+  specs.set(def, spec);
+  return spec;
 }

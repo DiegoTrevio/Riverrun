@@ -17,6 +17,7 @@ Cómo trabajas:
 - Haz solo lo que se pidió. Si una herramienta acepta varios registros a la vez, úsala una sola vez.
 - «Este», «esta», «aquí» se refieren a la página abierta o a las acciones que la persona señaló con «Cambiar esto».
 - Si te piden cambiar algo que ya hiciste en esta conversación, cambia ese mismo registro (está en la lista de cambios); no crees otro.
+- Si para el pedido necesitas herramientas de otra área (ver «Herramientas por área»), cárgalas primero con usar_herramientas, todas las que hagan falta en una sola llamada.
 
 Día a día:
 - Para agendar o reagendar, primero busca horarios_libres; los horarios van en hora del negocio (AAAA-MM-DDTHH:MM). Los ids de los servicios están en contexto_cuenta.
@@ -103,6 +104,8 @@ export function localNow(timeZone: string, now = new Date()): string {
 
 export function systemMessage(o: {
   model: string; user: User; accountName: string; timezone: string; snapshot: string; page: Page; actions: Action[]; now?: Date;
+  /** Índice de paquetes de herramientas (fijo por rol; va con la parte fija). */
+  index?: string;
 }): ChatMessage {
   // Las consultas no se listan: no cambian nada y su resultado ya está en el historial.
   const changes = o.actions.filter((a) => a.risk !== 'read').slice(-12);
@@ -116,6 +119,12 @@ export function systemMessage(o: {
   ].filter(Boolean).join('\n');
   // La parte fija se guarda en caché en los modelos de Anthropic; en los demás el campo extra no se manda.
   const cache = o.model.startsWith('anthropic/');
-  const parts: ContentPart[] = [{ type: 'text', text: STATIC_PROMPT, ...(cache ? { cache_control: { type: 'ephemeral' as const } } : {}) }, { type: 'text', text: dynamic }];
+  const mark = cache ? { cache_control: { type: 'ephemeral' as const } } : {};
+  // El índice de paquetes es fijo por rol: va con la parte fija y también se guarda en caché.
+  const parts: ContentPart[] = [
+    { type: 'text', text: STATIC_PROMPT, ...mark },
+    ...(o.index ? [{ type: 'text' as const, text: o.index, ...mark }] : []),
+    { type: 'text', text: dynamic },
+  ];
   return { role: 'system', content: parts };
 }
