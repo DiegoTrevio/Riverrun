@@ -330,21 +330,63 @@ Las reglas del Copiloto no llevan acciones que mandan datos a otros sistemas (`w
 sale al panel: la revisión del flujo, la campaña, la cotización). Si cambió antes de confirmar, la acción falla y pide
 volver a proponerla.
 
-**No incluido en esta versión:** plantillas de WhatsApp, probar reglas o al agente en el simulador, ajustes de
-cotización, avisos al equipo y activación del agente.
+**Agente completo (fase 1, solo administradores):**
+
+| Archivo | Herramientas | Riesgo |
+|---|---|---|
+| `agente-config.ts` (paquete `agente`) | `cambiar_preguntas` (lista completa en orden; conserva caminos y lo demás de las que ya existían), `cambiar_objetivo` (objetivo, etapas con `flow_step_map`, saludo y qué pasa al cumplirlo), `ajustes_avanzados_del_agente`, `mensajes_guardados`, `cotizaciones_del_agente` (manda el objeto `ai.quotes` completo y revisa formato y campos) | V |
+| | `cambiar_activacion` (cuándo responde), `modelo_del_agente` (solo modelos con precio: `GET /api/ai-models`) | C |
+| `agente-vida.ts` (paquete `agentes`) | `crear_agente` (asistente de creación con el `request_id` de la vista previa; nace apagado), `duplicar_agente`, `borrar_agente`, `reiniciar_conversaciones_del_agente`, `restaurar_version` | C |
+| | `ver_versiones`, `probar_agente` (simulador; lo que contesta va en `datos_del_cliente`), `probar_palabras`, `ver_pruebas`, `correr_pruebas`, `ver_resultado_pruebas` | R |
+| | `editar_pruebas` | V |
+| `conocimiento.ts` (paquete `conocimiento`) | `importar_informacion` (página, Google Sheets, texto o archivo adjunto; la tarjeta muestra todo lo que se guardará y se guarda eso mismo) | C |
+| | `estado_del_indice`, `ver_fotos` | R |
+| | `subir_foto` (de un archivo adjunto, con `call.upload`), `editar_foto` | V |
+| | `borrar_foto` | C |
+| `canales.ts` (paquete `canales`) | `ver_canales` (nunca el token del canal) | R |
+| | `crear_chat_web` (con su código para la página), `crear_whatsapp` (el QR lo escanea la persona en la pantalla enlazada) | V |
+| | `asignar_canal` | C |
+
+La pestaña abierta del agente carga su paquete: Conocimiento y Fotos cargan `conocimiento`, Conexiones carga
+`canales`, y Probar y Empezar cargan `agentes`.
 
 **Fuera del Copiloto** (dice dónde hacerlo):
-- canales;
-- planes;
-- presupuesto y modelo de IA;
-- usuarios e invitaciones;
-- llaves de API, webhooks y secretos;
-- borrar o exportar la cuenta o los datos de un contacto;
-- consentimiento, baja y retención;
-- crear, duplicar o borrar agentes;
-- subir archivos;
-- redes sociales;
-- funciones de superadmin.
+- pagar, cambiar o cancelar el plan de la plataforma, el método de pago y los datos fiscales;
+- exportar o borrar toda la cuenta, y transferir el dueño;
+- la contraseña, la verificación en dos pasos, las sesiones y los dispositivos de alguien;
+- llaves de API, secretos y su rotación;
+- escanear el QR de WhatsApp o dar permisos de Facebook, Instagram o calendarios (lo hace la persona; el Copiloto
+  enlaza la pantalla);
+- planes, marcas y sistema de superadmin, y precios de IA.
+
+## Archivos adjuntos
+
+Con el clip (y «Tomar foto» en el teléfono) se adjunta una foto, un PDF, un CSV o un documento al pedido (migración 118,
+`src/copilot/files.ts`).
+
+**Subida:**
+- Va a `POST /api/copilot/threads/:id/files`.
+- El tipo sale de los bytes (`readUpload`): fotos y documentos; nada de HTML, ejecutables ni comprimidos.
+- Antes de subirlas, el panel reduce las fotos grandes a 2048 px y a JPEG de menos de 4.5 MB. Eso además les quita la
+  ubicación.
+
+**Topes:** 20 archivos por hora por persona, 20 vigentes por conversación, 200 MB vigentes por cuenta y 4 por pedido.
+
+**Qué ve el modelo:**
+- Solo una línea por archivo: «[Archivos adjuntos] - archivo_id … · «nombre» (foto, 1.2 MB)». Nunca ve el contenido
+  ni una ruta de disco.
+- Las herramientas reciben el `archivo_id`; `fileForTool` revisa que sea de esta conversación y que siga vigente.
+  `call.upload` arma el multipart para la ruta del panel.
+- Lo que una herramienta lea de un archivo se trata como dato, no como instrucción.
+
+**Cuándo se borran:**
+- a las 24 horas (`COPILOT_FILE_HOURS`), por la limpieza de datos (`applyRetention` → `sweepCopilotFiles`);
+- al borrar la conversación;
+- al borrar los datos de un cliente (los de esos pedidos);
+- al borrar la cuenta.
+- La limpieza también quita los archivos de `uploads/<cuenta>/copilot/` que se quedaron sin fila.
+
+`GET /api/copilot/files/:id` los descarga, siempre como archivo adjunto y con `nosniff`.
 
 ## Datos (migración 092)
 
