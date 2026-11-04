@@ -20,7 +20,7 @@ Cada etapa es un PR con pruebas que fallan con el código anterior y pasan con e
 | 3b′. Cobros de la revisión del 31 de octubre | PAY-17…PAY-23 y bajos de cobros | ✅ Corregido |
 | 3c. Revisión del 31 de octubre | Los altos de [la revisión del 31 de octubre](revision-seguridad-2026-10-31.md): dos caídas del proceso, atajos para sacar o borrar datos, cobros del agente, la ficha en el Copiloto (IN-15, IN-16, ID-11…ID-14, AI-5 en parte) | ✅ Corregido |
 | 4. Abuso de entradas | Límites compartidos en la base, tamaños por ruta, firma del webhook de WhatsApp, adjuntos sin macros, PDF aislados, cuota de IA antes de transcribir (IN-2…IN-14, PAY-6) | 4′ ✅ (revisión del 31 de octubre: IN-17…IN-20, IN-22, IN-5, parte de IN-8…IN-14 y límites en la base); IN-2 e IN-3 ✅; IN-21 ✅ en la 6′; IN-6/7 ✅ en la 6″; PAY-6 ✅ en la 5″ |
-| 5. IA y Copiloto | Tarjetas de confirmación completas, costo de sub-llamados, notas de cotización, fuga de instrucciones (AI-5…AI-13) | 5′ ✅ (revisión del 31 de octubre: AI-14 y bajos de IA); 5″ ✅ (AI-5…AI-9 y PAY-6); AI-10…AI-13 sin descripción registrada: requieren una auditoría nueva |
+| 5. IA y Copiloto | Tarjetas de confirmación completas, costo de sub-llamados, notas de cotización, fuga de instrucciones (AI-5…AI-13) | 5′ ✅ (revisión del 31 de octubre: AI-14 y bajos de IA); 5″ ✅ (AI-5…AI-9 y PAY-6); AI-10…AI-13 ✅ en los bajos (auditoría del 4 de noviembre) |
 | 6. Secretos y datos | Claves separadas con rotación, credenciales de canales cifradas, retención en Evolution (INF-6…INF-8, INF-13) | 6′ ✅ (revisión del 31 de octubre: ZIP sin secretos, `HTTP_LOG` sin tokens, IN-21); 6″ ✅ (INF-6…INF-8, IN-6/7); INF-13 ✅ en los bajos |
 | 7. Detección | Bitácora de seguridad, alertas, avisos al usuario | ✅ Corregido (bitácora de seguridad, reglas con aviso al superadmin; los avisos al usuario ya estaban desde la 2a) |
 | 8. Contenedores | Roles de base de datos, Redis con clave, redes aisladas, límites, imágenes al día (INF-2, INF-3, INF-9, INF-10) | 8 ✅ (los altos: INF-2 e INF-3); INF-9 e INF-10 ✅ en la 6″ |
@@ -333,7 +333,7 @@ IN-6/7 y PAY-6) sigue pendiente.
 - Reservas: tres solicitudes pendientes con el correo de alguien le impiden reservar durante una hora; el tope de 20 por día por enlace cuenta cada solicitud.
 - Zernio: solo se juntan los avisos con el mismo cuerpo firmado; si Zernio reintentara con un cuerpo distinto, se procesaría dos veces.
 
-## Bajos: IN-8…IN-14, INF-13…INF-15
+## Bajos: IN-8…IN-14, AI-10…AI-13, INF-13…INF-15
 
 | # | Hallazgo | Arreglo | Prueba |
 |---|---|---|---|
@@ -341,6 +341,10 @@ IN-6/7 y PAY-6) sigue pendiente.
 | IN-8…14 | El formulario `/contacto` ponía el nombre que escribió el visitante en el asunto del correo al soporte. | Asunto fijo (`Mensaje desde /contacto de …`); el nombre va en el cuerpo. Además, todo asunto sale como una sola línea, sin caracteres de control y con 150 caracteres como máximo. | `mailer.test.ts`, `lows.unit.test.ts` |
 | IN-8…14 | Los regresos de Google Calendar, Outlook y Facebook ponían en la URL el texto del error, y el panel lo mostraba: cualquiera podía armar un enlace con el texto que quisiera dentro del panel. | La URL lleva solo un código (`error`, `cancelado`, `vencido`…). El panel muestra mensajes fijos, y el motivo queda en Registros. | `meta-connect.test.ts`, `google.test.ts` |
 | IN-8…14 | Las descargas de páginas y adjuntos tenían un tiempo límite sin recibir datos, pero no un plazo total: un servidor que manda un byte cada 11 segundos las mantenía abiertas. Los adjuntos de Zernio y Telegram se leían enteros a memoria antes de medirlos. | Plazo total de 30 segundos (redirecciones incluidas) en `fetchPublic`. `readCapped` corta la lectura al pasar el tope de 16 MB, aunque no haya `Content-Length`. | `lows.unit.test.ts` |
+| AI-10 | El Copiloto solo trataba como texto de clientes lo que venía en `datos_del_cliente`, pero nombres, etiquetas y textos de pendientes (que pueden escribir clientes: su nombre de WhatsApp, el de una reserva) llegaban fuera de esa clave. | El texto de los pendientes va dentro de `datos_del_cliente`, y las instrucciones del Copiloto nombran también `nombre`, `cliente`, `contacto`, etiquetas y conceptos como datos, nunca instrucciones. Los cambios de configuración ya se confirmaban tras leer a un cliente (AI-3). | `lows.unit.test.ts` |
+| AI-11 | `import-reviewed` aceptaba cualquier esquema en `source_url` (`javascript:`, `data:`), y la dirección se guardaba y registraba tal cual: el agente la podía citar a un cliente con su usuario, contraseña o token. | Solo http(s), y sin usuario, contraseña, query ni fragmento, al guardar (también desde el editor de conocimiento) y al registrar. | `lows.unit.test.ts` |
+| AI-12 | El tope de costo y de tiempo de un pedido del Copiloto se revisaba solo antes de cada llamada al modelo: varias herramientas con IA por dentro en una misma respuesta (p. ej. `crear_flujo`) podían pasarlo muchas veces. | También antes de cada herramienta: si lo que gastaron las anteriores de esa respuesta ya pasó el tope, o se acabó el tiempo, las siguientes devuelven `limite` y el pedido termina con un resumen. | `copilot.config.test.ts` |
+| AI-13 | Correr las pruebas de un agente (hasta 40 llamadas y USD 1 cada vez) no tenía límite: solo una a la vez por agente, en paralelo entre agentes. | 6 corridas por hora por cuenta (429 después). | `agent-versions.test.ts` |
 | INF-13 | Sin SMTP, la bitácora guardaba el cuerpo de cada correo (datos de clientes; los tokens ya iban ocultos desde la 2b). | Solo destinatario, asunto y largo. El buzón de pruebas en memoria sigue igual. | `mailer.test.ts` |
 | INF-14 | `.gitignore` solo cubría `.env`. | También `.env.*` (salvo `.env.example`), llaves (`*.pem`, `*.key`, `id_*`), respaldos (`*.gpg.tar`, `*.tar.enc`, volcados), `uploads/` y registros, en la plataforma y en la raíz. | `git ls-files -ci` vacío |
 | INF-15 | Las acciones de GitHub iban por etiqueta (`@v4`), que su dueño puede mover; nada avisaba de dependencias con fallas nuevas ni buscaba secretos. | Cada acción fijada al commit que hoy tiene su etiqueta, con la versión en un comentario. Dependabot (npm, acciones, imágenes de Docker) cada semana. Flujo «Seguridad»: gitleaks (descarga verificada por su suma) sobre lo que cambia en cada PR y cada push, y cada semana sobre todo el historial, más `npm audit`. | CI |
@@ -538,7 +542,7 @@ Ninguno: INF-2 e INF-3 se corrigieron en la etapa 8.
 Ninguno: los medios se corrigieron en las etapas 4′, 5″ y 6″.
 
 ### Bajos
-AI-10…AI-13: sin descripción registrada; requieren una auditoría nueva de la IA y el Copiloto. IN-8…IN-14 e INF-12…INF-15
-✅ (la 9 y la sección «Bajos»). `privacy.md` y `terms.md` (sitio de GitHub Pages) dicen «Viralize» y prometen «encriptamos
-todos los datos»: lo revisa el dueño o su abogado (y conviene mencionar que la bitácora de seguridad guarda un año correos
-e IP, también de cuentas borradas).
+Ninguno: IN-8…IN-14, AI-10…AI-13 e INF-12…INF-15 se corrigieron en la 9 y en la sección «Bajos». `privacy.md` y
+`terms.md` (de otro proyecto, «Viralize») se quitaron del sitio. Lo que queda es del dueño: `privacy.html` y `terms.html`
+describen una plataforma de contenido musical; si deben cubrir el chatbot, las revisa el dueño o su abogado (y conviene
+mencionar que la bitácora de seguridad guarda un año correos e IP, también de cuentas borradas).

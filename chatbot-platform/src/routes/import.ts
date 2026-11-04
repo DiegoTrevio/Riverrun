@@ -7,7 +7,7 @@ import { parse } from './util.js';
 import { HttpError, requireRole, targetAccount } from '../access.js';
 import { withTransaction } from '../db.js';
 import type { AiProvider } from '../ai/provider.js';
-import { checkImportRate, IMPORT_SECTIONS, importKnowledge, MAX_FILE_BYTES, sourceFromFile, sourceFromUrl, type ImportResult, type Source } from '../knowledge-import.js';
+import { checkImportRate, cleanSourceUrl, IMPORT_SECTIONS, importKnowledge, MAX_FILE_BYTES, sourceFromFile, sourceFromUrl, type ImportResult, type Source } from '../knowledge-import.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
 import { KNOWLEDGE_TITLES } from './onboarding.js';
@@ -72,10 +72,11 @@ export async function knowledgeImportRoutes(api: FastifyInstance, ai: AiProvider
     if (!bot || await targetAccount(req.user, bot.account_id) !== bot.account_id) throw new HttpError(404, 'No encontrado');
     const body = parse(z.object({
       sections: z.object(Object.fromEntries(IMPORT_SECTIONS.map((key) => [key, z.string().max(50000).default('')]))).strict(),
-      source_url: z.string().url().max(2000).nullable().optional(),
+      source_url: z.string().url().max(2000).refine((v) => cleanSourceUrl(v) !== null, 'La fuente debe usar HTTP o HTTPS').nullable().optional(),
     }), req.body);
-    const saved = await saveSections(bot.id, body.sections, body.source_url);
-    if (saved.length) await logEvent({ level: 'info', source: 'admin', message: `Conocimiento importado y revisado${body.source_url ? ` de ${body.source_url}` : ''}: ${saved.join(', ')}`, accountId: bot.account_id, chatbotId: bot.id });
+    const source = cleanSourceUrl(body.source_url);
+    const saved = await saveSections(bot.id, body.sections, source);
+    if (saved.length) await logEvent({ level: 'info', source: 'admin', message: `Conocimiento importado y revisado${source ? ` de ${source}` : ''}: ${saved.join(', ')}`, accountId: bot.account_id, chatbotId: bot.id });
     return { saved };
   });
 

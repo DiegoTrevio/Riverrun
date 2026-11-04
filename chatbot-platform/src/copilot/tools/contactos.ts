@@ -65,10 +65,14 @@ export const verContacto = defineTool({
         id: c.id, nombre: nameOf(c), telefono: c.phone, etiquetas: p.tags, dado_de_baja: c.opted_out || undefined, acepta_promociones: !!c.consent_at,
         canales: (p.records ?? []).map((r: any) => r.channel_name),
         conversaciones: (p.conversations ?? []).slice(0, 5).map((cv: any) => ({ id: cv.id, estado: cv.status, asignada_a: cv.assigned_name ?? undefined, agente: cv.chatbot_name ?? undefined, ultimo_mensaje: when(cv.last_message_at, ctx.timezone) })),
-        pendientes: (p.tasks ?? []).filter((t: any) => t.status === 'abierta').slice(0, 10).map((t: any) => ({ id: t.id, tipo: t.kind, texto: t.body, vence: t.due_on ?? undefined })),
+        // AI-10: el texto de un pendiente puede venir de un cliente (o de un mensaje suyo): va dentro de datos_del_cliente.
+        pendientes: (p.tasks ?? []).filter((t: any) => t.status === 'abierta').slice(0, 10).map((t: any) => ({ id: t.id, tipo: t.kind, vence: t.due_on ?? undefined })),
         proximas_citas: (p.appointments ?? []).slice(0, 5).map((ap: any) => ({ id: ap.id, servicio: ap.service_name, inicio: when(ap.starts_at, ctx.timezone), estado: ap.status })),
         cotizaciones: (p.quotes ?? []).slice(0, 5).map((q: any) => ({ id: q.id, folio: q.folio, estado: q.status, total: `$${(Number(q.total_max ?? q.total_min ?? 0) / 100).toLocaleString('es-MX')} ${q.currency}` })),
-        datos_del_cliente: { datos: c.data, notas: c.notes },
+        datos_del_cliente: {
+          datos: c.data, notas: c.notes,
+          pendientes: (p.tasks ?? []).filter((t: any) => t.status === 'abierta').slice(0, 10).map((t: any) => ({ id: t.id, texto: t.body })),
+        },
       },
     };
   },

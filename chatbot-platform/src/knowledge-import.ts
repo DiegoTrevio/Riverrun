@@ -436,6 +436,19 @@ export async function importKnowledge(ai: AiProvider, source: Source, hint = '')
 }
 
 /** Límite de importaciones por cuenta (cada una gasta IA): 20 por hora. En la base (todos los procesos). */
+/**
+ * AI-11: la fuente de un conocimiento se guarda, se registra y el agente se la puede citar a un cliente: solo http(s), y
+ * sin usuario, contraseña, query ni fragmento (ahí suelen ir tokens y firmas). null si no es una dirección http(s).
+ */
+export function cleanSourceUrl(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  let u: URL;
+  try { u = new URL(raw); } catch { return null; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+  u.username = ''; u.password = ''; u.search = ''; u.hash = '';
+  return u.toString();
+}
+
 export async function checkImportRate(accountId: string) {
   if (await limited(`ai-import:${accountId}`, 20, 3_600_000)) throw new HttpError(429, 'Hiciste muchas importaciones seguidas. Intenta de nuevo en un rato.');
 }

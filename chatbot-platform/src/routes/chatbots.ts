@@ -33,6 +33,7 @@ import * as store from '../store/index.js';
 import { AiSettingsSchema, DataFieldSchema, FlowSchema, ImageSendWhenSchema, imageSendWhen, PersonalitySchema, RulesSchema, SavedMessagesSchema, type Chatbot, type SavedMessage, type User } from '../types.js';
 import { alignFixedMessages, chatbotFromTemplate } from '../templates/business.js';
 import { dispositionHeader, parse, readUpload, saveFile, sendRanged, type UploadFile } from './util.js';
+import { cleanSourceUrl } from '../knowledge-import.js';
 
 const ChatbotBody = z.object({
   name: z.string().trim().min(1).max(120).optional(),
@@ -108,7 +109,8 @@ const KnowledgeBody = z.object({
   always_include: z.boolean().optional(),
   active: z.boolean().optional(),
   sort_order: z.number().int().optional(),
-  source_url: z.string().max(2000).url().refine(value=>['http:','https:'].includes(new URL(value).protocol),'La fuente debe usar HTTP o HTTPS').nullable().optional(),
+  // AI-11: sin usuario, contraseña, query ni fragmento (el agente puede citar la fuente a un cliente).
+  source_url: z.string().max(2000).url().refine(value=>['http:','https:'].includes(new URL(value).protocol),'La fuente debe usar HTTP o HTTPS').transform(value=>cleanSourceUrl(value)).nullable().optional(),
 });
 
 const ImageMeta = z.object({

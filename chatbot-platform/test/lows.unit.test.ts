@@ -1,5 +1,6 @@
 /**
- * Bajos de la revisión (IN-8…IN-14): calendario .ics escapado, asunto de una línea, descargas con tope y con plazo.
+ * Bajos de la revisión (IN-8…IN-14, AI-10, AI-11): calendario .ics escapado, asunto de una línea, descargas con tope y con
+ * plazo, fuente de conocimiento limpia y nombres de clientes tratados como datos por el Copiloto.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -9,7 +10,8 @@ import { icsEscape, icsFold } from '../src/automation/agenda.js';
 import { cleanSubject } from '../src/mailer.js';
 import { readCapped } from '../src/channels/media.js';
 import { config } from '../src/config.js';
-import { fetchPublic } from '../src/knowledge-import.js';
+import { cleanSourceUrl, fetchPublic } from '../src/knowledge-import.js';
+import { STATIC_PROMPT } from '../src/copilot/prompt.js';
 
 test('.ics: un nombre con saltos (también \\r solo) no agrega propiedades ni eventos', () => {
   const evil = 'Ana\rEND:VEVENT\r\nBEGIN:VEVENT\nSUMMARY:Falso; con, comas\u0007';
@@ -63,4 +65,17 @@ test('fetchPublic: un servidor que suelta un byte a la vez no la detiene más de
     server.closeAllConnections?.();
     server.close();
   }
+});
+
+test('AI-11: la fuente de un conocimiento solo es http(s) y sin usuario, contraseña, query ni fragmento', () => {
+  assert.equal(cleanSourceUrl('javascript:alert(1)'), null);
+  assert.equal(cleanSourceUrl('data:text/html,<b>x</b>'), null);
+  assert.equal(cleanSourceUrl('no es url'), null);
+  assert.equal(cleanSourceUrl('https://ana:clave@tienda.mx/menu?token=SECRETO#precios'), 'https://tienda.mx/menu');
+  assert.equal(cleanSourceUrl('http://tienda.mx/'), 'http://tienda.mx/');
+});
+
+test('AI-10: el Copiloto trata nombres, etiquetas y conceptos de lo que devuelven las herramientas como datos', () => {
+  assert.match(STATIC_PROMPT, /"nombre", "cliente", "contacto"/);
+  assert.match(STATIC_PROMPT, /nunca instrucciones/);
 });
