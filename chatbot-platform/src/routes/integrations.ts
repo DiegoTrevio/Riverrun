@@ -274,7 +274,8 @@ async function staffCallback(provider: staffCal.Provider, target: string, req: a
     return back('ok');
   } catch (e: any) {
     await logEvent({ level: 'error', source: 'admin', message: `Calendario de una persona (${provider}): ${e.message}` });
-    return reply.redirect(`/#/agenda/equipo?calendario=error&msg=${encodeURIComponent(e.message.slice(0, 120))}`);
+    // El motivo queda en la bitácora; la URL solo lleva el resultado (un enlace armado no puede poner texto en el panel).
+    return back('error');
   }
 }
 
@@ -292,7 +293,7 @@ export async function googleCallbackRoute(app: FastifyInstance) {
       return reply.redirect('/#/integraciones?google=ok');
     } catch (e: any) {
       await logEvent({ level: 'error', source: 'admin', message: `Google Calendar: ${e.message}`, accountId });
-      return reply.redirect(`/#/integraciones?google=error&msg=${encodeURIComponent(e.message.slice(0, 120))}`);
+      return reply.redirect('/#/integraciones?google=error');
     }
   });
 }
@@ -311,7 +312,7 @@ export async function outlookCallbackRoute(app: FastifyInstance) {
       return reply.redirect('/#/integraciones?outlook=ok');
     } catch (e: any) {
       await logEvent({ level: 'error', source: 'admin', message: `Outlook: ${e.message}`, accountId });
-      return reply.redirect(`/#/integraciones?outlook=error&msg=${encodeURIComponent(e.message.slice(0, 120))}`);
+      return reply.redirect('/#/integraciones?outlook=error');
     }
   });
 }

@@ -1,0 +1,2 @@
+# SESSION_SECRET de las pruebas del CI (0123456789…): no es de ningún servidor.
+c31c4578f8758b66abafa3e9993ffdb8c344b086:.github/workflows/ci.yml:generic-api-key:102

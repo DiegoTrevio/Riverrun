@@ -133,6 +133,8 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
     let cost = 0, toolCalls = 0, changes = 0, proposals = 0;
     const maxCost = Math.min(limits.turnMaxUsd, req.maxUsd ?? Infinity);
     let limitHit = '';
+    // Costo al llegar la respuesta del modelo: lo que suben sus herramientas (su IA por dentro) se mide contra el tope.
+    let batchCost = 0;
     // Cambios y propuestas ya hechos en este pedido (no se repiten); las consultas se olvidan al cambiar algo.
     const done = new Map<string, string>();
     const reads = new Map<string, string>();
@@ -169,6 +171,12 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
       toolCalls++;
       await cs.countToolCall(turn.id);
       if (toolCalls > limits.maxToolCalls) { limitHit = 'herramientas'; return err('limite', 'Llegué al máximo de acciones por pedido.'); }
+      // AI-12: el tope de costo y de tiempo también entre herramientas de una misma respuesta (varias en paralelo, cada
+      // una con su propia IA por dentro, podían pasarse muchas veces del tope antes de volver a revisarlo).
+      if ((cost >= maxCost && cost > batchCost) || Date.now() - started > limits.turnSeconds * 1000) {
+        limitHit = 'costo';
+        return err('limite', 'Llegué al tope de costo o de tiempo de este pedido; pide el resto en otro mensaje.');
+      }
       const def = defs.find((d) => d.name === call.name);
       if (!def) return err('no_disponible', `«${call.name}» no existe o tu usuario no la puede usar.`);
       let raw: unknown;
@@ -275,6 +283,7 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
       const calls = res.tool_calls;
       history.push({ role: 'assistant', content: res.content || null, tool_calls: calls });
       await cs.addMessage({ thread_id: thread.id, turn_id: turn.id, role: 'assistant', content: res.content, tool_calls: calls });
+      batchCost = cost;
       for (const c of calls) {
         const stopped = await cs.stopRequested(turn.id);
         const content = stopped ? err('detenido', 'No se ejecutó: la persona pidió detener.')

@@ -56,7 +56,11 @@ export function redactTokens(text: string): string {
     .replace(/(#\/(?:invitacion|cambiar-correo|registro-google)\/)[^\s?#]+/g, '$1[oculto]');
 }
 
-export async function deliverMail(mail: Mail): Promise<MailResult> {
+/** Un asunto es una línea: sin saltos ni caracteres de control, espacios juntos y con largo razonable. */
+export const cleanSubject = (s: string) => s.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 150);
+
+export async function deliverMail(input: Mail): Promise<MailResult> {
+  const mail = { ...input, subject: cleanSubject(input.subject) };
   // Sandbox: solo a destinos de prueba. El registro no incluye el destinatario ni el asunto (pueden llevar datos de clientes).
   if (!outboundAllowed(mail.to)) {
     await logEvent({ level: 'warn', source: 'system', message: 'Correo bloqueado (OUTBOUND_MODE=sandbox): el destino no está permitido' });
@@ -66,7 +70,8 @@ export async function deliverMail(mail: Mail): Promise<MailResult> {
   if (!t) {
     outbox.push(mail);
     if (outbox.length > 100) outbox.shift();
-    await logEvent({ level: 'info', source: 'system', message: `Correo (sin SMTP) para ${mail.to}: ${mail.subject}`, details: { text: redactTokens(mail.text) } });
+    // INF-13: sin SMTP no se guarda el cuerpo (lleva datos de clientes y enlaces); solo que hubo un correo.
+    await logEvent({ level: 'info', source: 'system', message: `Correo (sin SMTP) para ${mail.to}: ${mail.subject}`, details: { chars: mail.text.length } });
     return 'skipped';
   }
   try {

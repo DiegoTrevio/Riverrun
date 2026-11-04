@@ -88,11 +88,14 @@ export async function startMetaConnect(accountId: string, userId: string, chatbo
  * Regreso de Facebook: cambia el código por un token de usuario de larga duración y obtiene las páginas (con sus tokens
  * y el Instagram vinculado). Devuelve la sesión para que el negocio elija qué conectar.
  */
-export async function finishMetaConnect(state: string, code: string, nonce: string): Promise<{ sessionId: string; accountId: string } | { error: string }> {
-  if (!nonce) return { error: 'Abre la conexión desde el mismo navegador donde pulsaste «Conectar con Facebook».' };
+/** Por qué no se completó: viaja en la URL como código; el texto lo pone el panel (public/js/meta.js). */
+export type MetaConnectError = 'cancelado' | 'navegador' | 'vencido' | 'fallo';
+
+export async function finishMetaConnect(state: string, code: string, nonce: string): Promise<{ sessionId: string; accountId: string } | { error: MetaConnectError }> {
+  if (!nonce) return { error: 'navegador' };
   const session = await queryOne<{ id: string; account_id: string }>(
     `UPDATE meta_connect_sessions SET state = NULL WHERE state = $1 AND nonce_hash = $2 AND expires_at > now() RETURNING id, account_id`, [state, nonceHash(nonce)]);
-  if (!session) return { error: 'El enlace de conexión venció o ya se usó. Vuelve a pulsar «Conectar con Facebook».' };
+  if (!session) return { error: 'vencido' };
   try {
     const short = await graph('GET', 'oauth/access_token', { client_id: config.meta.appId, client_secret: config.meta.appSecret, redirect_uri: metaRedirectUrl(), code });
     const long = await graph('GET', 'oauth/access_token', { grant_type: 'fb_exchange_token', client_id: config.meta.appId, client_secret: config.meta.appSecret, fb_exchange_token: short.access_token });
@@ -114,7 +117,7 @@ export async function finishMetaConnect(state: string, code: string, nonce: stri
     return { sessionId: session.id, accountId: session.account_id };
   } catch (e: any) {
     await logEvent({ level: 'error', source: 'channel', message: `Facebook: no se pudo completar la conexión: ${e?.message ?? e}`, accountId: session.account_id });
-    return { error: 'Facebook no completó la conexión. Vuelve a intentarlo y acepta todos los permisos.' };
+    return { error: 'fallo' };
   }
 }
 

@@ -6,7 +6,7 @@ const ok=await dbAvailable();
 const t=(name:string,fn:()=>Promise<void>)=>test(name,{skip:!ok&&'PostgreSQL de pruebas no disponible'},fn);
 let h:Awaited<ReturnType<typeof createHarness>>;
 before(async()=>{if(ok)h=await createHarness();});
-beforeEach(async()=>{if(h){if(h.channelId)await pool.query('DELETE FROM channels WHERE id=$1',[h.channelId]);await h.createBot({rules:{verify_facts:false},personality:{emojis:'none'},ai:{typing_simulation:false}});h.reset();h.setScript(()=>({messages:['Con gusto te ayudo.']}));}});
+beforeEach(async()=>{if(h){await pool.query(`DELETE FROM rate_limits WHERE key LIKE 'agent-tests:%'`);if(h.channelId)await pool.query('DELETE FROM channels WHERE id=$1',[h.channelId]);await h.createBot({rules:{verify_facts:false},personality:{emojis:'none'},ai:{typing_simulation:false}});h.reset();h.setScript(()=>({messages:['Con gusto te ayudo.']}));}});
 after(async()=>{if(h)await h.app.close();await pool.end();});
 const endpoint=(suffix:string)=>`/api/chatbots/${h.botId}/${suffix}`;
 async function versions(){const r=await h.authed('GET',endpoint('versions'));assert.equal(r.statusCode,200,r.body);return r.json();}
@@ -202,4 +202,12 @@ t('volver a una versión del historial la aplica de inmediato',async()=>{
  const v=await versions(),restored=await h.authed('POST',endpoint('version-restore'),{revision:v.draft.revision,release_id:a.id});assert.equal(restored.statusCode,200,restored.body);
  assert.equal((await h.authed('POST',endpoint('version-apply'),{revision:restored.json().revision})).statusCode,200);
  assert.equal((await store.getChatbot(h.botId))!.name,'Versión A');
+});
+
+t('AI-13: correr las pruebas tiene tope por cuenta (6 por hora)',async()=>{
+ await suite();
+ for(let i=0;i<6;i++) await evaluate();
+ const v=await versions(),r=await h.authed('POST',endpoint('tests/run'),{revision:v.draft.revision});
+ assert.equal(r.statusCode,429,r.body);
+ assert.match(r.json().error,/muchas pruebas seguidas/);
 });

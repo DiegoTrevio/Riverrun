@@ -20,7 +20,7 @@ async function calendarCard(params, key) {
   const c = CALENDARS[key];
   const g = await api('GET', withAcct(`/api/integrations/${key}`));
   const flash = params.get(key);
-  const note = { ok: [`${c.name} quedó conectado.`, false], cancelado: [`Cancelaste la conexión con ${c.name}.`, false], error: [params.get('msg') || `No se pudo conectar con ${c.name}.`, true] }[flash];
+  const note = { ok: [`${c.name} quedó conectado.`, false], cancelado: [`Cancelaste la conexión con ${c.name}.`, false], error: [`No se pudo conectar con ${c.name}. El motivo quedó en Registros; vuelve a intentarlo.`, true] }[flash];
   if (note) toast(note[0], note[1]);
   const body = !g.available
     ? [h('p', { class: 'muted' }, `Esta instalación todavía no tiene ${c.name} configurado. Quien administra el servidor debe definir ${c.env} (ver docs/integraciones.md).`)]

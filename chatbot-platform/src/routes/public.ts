@@ -154,11 +154,11 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
   /* ------------------------------ Facebook e Instagram con un botón (app de Meta de la plataforma) ------------------------------ */
   app.get('/meta/callback', async (req: any, reply) => {
     const q = req.query as Record<string, string | undefined>;
-    const fail = (msg: string) => reply.redirect(`${config.publicBaseUrl}/#/conectar-facebook?error=${encodeURIComponent(msg)}`);
+    const fail = (code: string) => reply.redirect(`${config.publicBaseUrl}/#/conectar-facebook?error=${code}`);
     const nonce = String(req.cookies?.[META_NONCE_COOKIE] ?? '');
     reply.clearCookie(META_NONCE_COOKIE, { path: '/meta' });
-    // El texto de error de la URL no se muestra (cualquiera puede armar el enlace): solo un mensaje fijo.
-    if (q.error || !q.code || !q.state) return fail('Se canceló la conexión con Facebook o no se aceptaron los permisos.');
+    // La URL lleva un código, nunca un texto: cualquiera puede armar el enlace, y el panel solo muestra mensajes fijos.
+    if (q.error || !q.code || !q.state) return fail('cancelado');
     const r = await finishMetaConnect(String(q.state), String(q.code), nonce);
     if ('error' in r) return fail(r.error);
     return reply.redirect(`${config.publicBaseUrl}/#/conectar-facebook/${r.sessionId}?account_id=${r.accountId}`);

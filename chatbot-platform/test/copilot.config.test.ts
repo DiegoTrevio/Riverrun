@@ -458,3 +458,30 @@ t('AI-9: la IA de la vista previa de una tarjeta cuenta para el pedido; confirma
   const done = ((await owner('GET', `/api/copilot/threads/${th}`)).json().actions as any[]).find((x) => x.id === a.id);
   await undo(done);
 });
+
+t('AI-12: el tope de costo del pedido también corta herramientas de una misma respuesta que gastan IA por dentro', async () => {
+  const { config } = await import('../src/config.js');
+  const saved = config.copilot.turnMaxUsd;
+  h.setScript(() => JSON.stringify({ summary: 'Quité el corte.', question: '', operations: [{ op: 'remove', line: 3, text: '' }] }));
+  // Dos cambios con IA por dentro en la misma respuesta: el primero ya pasa el tope (diminuto), el segundo no se hace.
+  script([
+    { tool_calls: [
+      { name: 'cambiar_instrucciones', arguments: { agente_id: h.botId, cambio: 'quita el precio del corte' } },
+      { name: 'cambiar_instrucciones', arguments: { agente_id: h.botId, cambio: 'quita también el horario' } },
+    ] },
+    'Listo.',
+  ]);
+  config.copilot.turnMaxUsd = 1e-9;
+  try {
+    h.copilotCalls.length = 0;
+    const out = await ask(owner, 'Quita el precio del corte y el horario');
+    const results = (h.copilotCalls.at(-1) as any).messages.filter((m: any) => m.role === 'tool').map((m: any) => String(m.content));
+    assert.equal(results.length, 2);
+    assert.doesNotMatch(results[0], /"error":"limite"/);
+    assert.match(results[1], /"error":"limite"/, results[1]);
+    assert.equal(h.copilotCalls.at(-1)!.tool_choice, 'none', 'después solo resume');
+    await undo(lastAction(out));
+  } finally {
+    config.copilot.turnMaxUsd = saved;
+  }
+});

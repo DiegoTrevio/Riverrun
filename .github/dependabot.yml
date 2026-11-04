@@ -1,0 +1,19 @@
+# INF-15: dependencias y acciones al día. Cada cambio llega como PR y pasa por el CI antes de fusionarse.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /chatbot-platform
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    groups:
+      menores:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+  - package-ecosystem: docker
+    directory: /chatbot-platform
+    schedule: { interval: weekly }
+  - package-ecosystem: docker
+    directory: /chatbot-platform/docker/backup
+    schedule: { interval: weekly }

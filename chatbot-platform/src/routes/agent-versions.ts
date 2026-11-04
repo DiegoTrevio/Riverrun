@@ -3,6 +3,7 @@ import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import { botFor, HttpError, requireRole } from '../access.js';
 import { assertAiAllowed } from '../ai/gate.js';
+import { limited } from '../identity/rate-limit.js';
 import { query, queryOne, withTransaction } from '../db.js';
 import * as store from '../store/index.js';
 import { hydrateChatbot, imageSendWhen, type Chatbot } from '../types.js';
@@ -156,6 +157,8 @@ export async function agentVersionRoutes(api:FastifyInstance,service:ChatService
     await assertAiAllowed(bot.account_id);
     const {revision}=parse(Revision,req.body);
     if(revision!==draft.revision) throw new HttpError(409,'El borrador cambió. Recarga antes de probar.');
+    // AI-13: cada corrida son hasta 40 llamadas a la IA; 6 por hora por cuenta alcanzan para iterar sin gastar de más.
+    if(await limited(`agent-tests:${bot.account_id}`,6,3_600_000)) throw new HttpError(429,'Corriste muchas pruebas seguidas. Intenta de nuevo en un rato.');
     return reply.code(202).send(await startAgentTests(bot,draft,req.user,service,value=>value as Record<string,any>));
   });
   api.get('/api/chatbots/:id/tests/runs/:runId',admin,async(req:any)=>{

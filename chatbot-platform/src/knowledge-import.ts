@@ -60,6 +60,8 @@ interface FetchOptions {
   /** Tamaño máximo de la respuesta (por defecto, el de una página de conocimiento). */
   maxBytes?: number;
   accept?: string;
+  /** Plazo total de la descarga (el de 12 s es sin recibir nada: un servidor que suelta un byte cada 11 s no lo vence). */
+  deadlineMs?: number;
 }
 
 function getOnce(u: URL, opts: FetchOptions = {}): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: Buffer }> {
@@ -68,6 +70,8 @@ function getOnce(u: URL, opts: FetchOptions = {}): Promise<{ status: number; hea
   if (!config.allowPrivateWebhooks && net.isIP(host) && isPrivateIp(host)) throw new HttpError(400, 'Esa dirección no es pública');
   const mod = u.protocol === 'https:' ? https : http;
   return new Promise((resolve, reject) => {
+    const deadline = setTimeout(() => req.destroy(new HttpError(400, 'La página tardó demasiado en llegar completa')), opts.deadlineMs ?? 30_000);
+    deadline.unref?.();
     const req = mod.request(
       u,
       {
@@ -84,12 +88,12 @@ function getOnce(u: URL, opts: FetchOptions = {}): Promise<{ status: number; hea
           if (size > max) return req.destroy(new HttpError(400, 'La página es demasiado grande'));
           chunks.push(c);
         });
-        res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) }));
-        res.on('error', reject);
+        res.on('end', () => { clearTimeout(deadline); resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) }); });
+        res.on('error', (e) => { clearTimeout(deadline); reject(e); });
       },
     );
     req.on('timeout', () => req.destroy(new HttpError(400, 'La página no respondió a tiempo')));
-    req.on('error', (e) => reject(e instanceof HttpError ? e : new HttpError(400, e.message.includes('red interna') ? 'Esa dirección no es pública' : 'No se pudo abrir esa dirección')));
+    req.on('error', (e) => { clearTimeout(deadline); reject(e instanceof HttpError ? e : new HttpError(400, e.message.includes('red interna') ? 'Esa dirección no es pública' : 'No se pudo abrir esa dirección')); });
     req.end();
   });
 }
@@ -97,12 +101,14 @@ function getOnce(u: URL, opts: FetchOptions = {}): Promise<{ status: number; hea
 /** Sigue hasta 4 redirecciones y revisa la IP de cada salto (evita llegar a la red interna). */
 export async function fetchPublic(raw: string, opts: FetchOptions = {}): Promise<{ url: URL; mime: string; body: Buffer }> {
   let u = normalizeUrl(raw);
+  // El plazo es de toda la descarga, redirecciones incluidas.
+  const until = Date.now() + (opts.deadlineMs ?? 30_000);
   for (let hop = 0; hop < 5; hop++) {
     if (!config.allowPrivateWebhooks && !net.isIP(u.hostname.replace(/^\[|\]$/g, ''))) {
       const addrs = await dns.lookup(u.hostname, { all: true }).catch(() => []);
       if (!addrs.length) throw new HttpError(400, 'No se encontró esa dirección web');
     }
-    const res = await getOnce(u, opts);
+    const res = await getOnce(u, { ...opts, deadlineMs: Math.max(1, until - Date.now()) });
     const location = res.headers.location;
     if ([301, 302, 303, 307, 308].includes(res.status) && location) {
       u = normalizeUrl(new URL(location, u).toString());
@@ -430,6 +436,19 @@ export async function importKnowledge(ai: AiProvider, source: Source, hint = '')
 }
 
 /** Límite de importaciones por cuenta (cada una gasta IA): 20 por hora. En la base (todos los procesos). */
+/**
+ * AI-11: la fuente de un conocimiento se guarda, se registra y el agente se la puede citar a un cliente: solo http(s), y
+ * sin usuario, contraseña, query ni fragmento (ahí suelen ir tokens y firmas). null si no es una dirección http(s).
+ */
+export function cleanSourceUrl(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  let u: URL;
+  try { u = new URL(raw); } catch { return null; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+  u.username = ''; u.password = ''; u.search = ''; u.hash = '';
+  return u.toString();
+}
+
 export async function checkImportRate(accountId: string) {
   if (await limited(`ai-import:${accountId}`, 20, 3_600_000)) throw new HttpError(429, 'Hiciste muchas importaciones seguidas. Intenta de nuevo en un rato.');
 }

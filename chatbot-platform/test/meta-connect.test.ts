@@ -86,10 +86,10 @@ t('Conectar con Facebook: inicio de sesión, regreso con las páginas (sin token
   assert.equal(s.accountId, h.accountId, 'el regreso indica la cuenta (el superadministrador vuelve a la misma)');
   // El mismo regreso no se puede usar dos veces.
   const again = await callback(s.state, s.cookie);
-  assert.match(String(again.headers.location), /#\/conectar-facebook\?error=/);
+  assert.match(String(again.headers.location), /#\/conectar-facebook\?error=vencido$/);
   // Cancelar en Facebook vuelve con un mensaje fijo: el texto de la URL no se muestra.
   const cancel = await h.app.inject({ method: 'GET', url: '/meta/callback?error=access_denied&error_description=Llama%20al%20555' });
-  assert.match(decodeURIComponent(String(cancel.headers.location)), /error=Se canceló la conexión/);
+  assert.match(decodeURIComponent(String(cancel.headers.location)), /error=cancelado$/);
   assert.doesNotMatch(decodeURIComponent(String(cancel.headers.location)), /555/);
 });
 

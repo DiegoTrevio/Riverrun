@@ -601,7 +601,22 @@ export function withLink(text: string, a: Pick<Appointment, 'meeting_url'>): str
 
 /* ------------------------------ Calendario .ics ------------------------------ */
 
-const icsEscape = (s: string) => s.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/[,;]/g, (m) => `\\${m}`);
+// RFC 5545: un salto de línea (también un \r solo, que muchos lectores toman como fin de línea) se escribe \n; sin
+// esto, un nombre de cliente con saltos podía meter propiedades o eventos nuevos en el calendario de la cuenta.
+export const icsEscape = (s: string) => s.replace(/\\/g, '\\\\').replace(/\r\n|\r|\n/g, '\\n').replace(/[,;]/g, (m) => `\\${m}`).replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '');
+/** Líneas de más de 75 bytes se doblan (RFC 5545 §3.1) sin partir un carácter. */
+export function icsFold(line: string): string {
+  const out: string[] = [];
+  let cur = '';
+  let bytes = 0;
+  for (const ch of line) {
+    const n = Buffer.byteLength(ch);
+    if (bytes + n > (out.length ? 74 : 75)) { out.push(cur); cur = ''; bytes = 0; }
+    cur += ch; bytes += n;
+  }
+  out.push(cur);
+  return out.join('\r\n ');
+}
 const icsDate = (d: Date) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
 
 export async function buildIcs(accountId: string, accountName: string) {
@@ -622,7 +637,7 @@ export async function buildIcs(accountId: string, accountName: string) {
     );
   }
   lines.push('END:VCALENDAR');
-  return lines.join('\r\n') + '\r\n';
+  return lines.map(icsFold).join('\r\n') + '\r\n';
 }
 
 export { renderTemplate, store };

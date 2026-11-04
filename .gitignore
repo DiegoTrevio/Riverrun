@@ -1,0 +1,15 @@
+# INF-14: lo mismo en la raíz (el repositorio también tiene el sitio de GitHub Pages).
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+*.gpg.tar
+*.tar.enc
+*.dump
+node_modules/
+.DS_Store

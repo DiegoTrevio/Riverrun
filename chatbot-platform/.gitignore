@@ -2,6 +2,23 @@ node_modules/
 dist/
 data/
 .env
+# INF-14: nada con secretos ni datos de clientes entra al repositorio por descuido.
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+# Respaldos (cifrados o no) y volcados de la base.
+*.gpg.tar
+*.tar.enc
+*.sql.gz
+*.dump
+backups/
+uploads/
+*.log
 evals/results/
 .promptfoo/
 # Carpeta de trabajo de la skill design-taste-frontend: capturas y reportes del inspector.
