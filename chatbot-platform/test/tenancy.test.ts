@@ -207,6 +207,25 @@ t('protecciones de usuarios: no autodesactivarse, siempre queda un superadmin, c
   assert.equal((await pool.query(`SELECT count(*)::int AS n FROM users WHERE lower(email) = 'agente@hotel.mx'`)).rows[0].n, 1);
 });
 
+t('una cotización no se puede ligar a un concepto de la lista de precios de otra cuenta', async () => {
+  const { createQuote } = await import('../src/store/quotes.js');
+  const item = (code: string) => ({ code, name: `Concepto ${code}`, price_mode: 'exact', price_min: 10000, iva_mode: 'plus' });
+  const ajeno = await A.api('POST', '/api/price-items', item('AJ-1'));
+  assert.equal(ajeno.statusCode, 200, ajeno.body);
+  const propio = await B.api('POST', '/api/price-items', item('PR-1'));
+  assert.equal(propio.statusCode, 200, propio.body);
+  const q = await createQuote({ accountId: B.id, kind: 'approximate', status: 'pending_approval', source: 'panel', today: '2026-10-20', contactId: B.contact,
+    lines: [{ name: 'Visita', qty: 1, price_mode: 'exact', price_min: 10000, price_max: null, iva_mode: 'plus' }] } as any);
+  const line = (id: string) => ({ price_item_id: id, name: 'Visita', qty: 1, price_mode: 'exact', price_min: 10000 });
+  const r = await B.api('PATCH', `/api/quotes/${q.id}`, { lines: [line(ajeno.json().id), line(propio.json().id)] });
+  assert.equal(r.statusCode, 200, r.body);
+  const saved = (await pool.query(`SELECT price_item_id FROM quote_lines WHERE quote_id = $1 ORDER BY position`, [q.id])).rows.map((x) => x.price_item_id);
+  assert.deepEqual(saved, [null, propio.json().id], 'el concepto ajeno no queda ligado; el propio sí');
+  // Si la otra cuenta borra su concepto, la cotización de esta no cambia.
+  assert.equal((await A.api('DELETE', `/api/price-items/${ajeno.json().id}`)).statusCode, 200);
+  assert.equal((await pool.query(`SELECT count(*)::int AS n FROM quote_lines WHERE quote_id = $1`, [q.id])).rows[0].n, 2);
+});
+
 t('eliminar una cuenta borra todo lo suyo y nada de las demás', async () => {
   // Un archivo de "Archivos" de B (se guarda en disco, fuera de la base).
   const bnd = '----borrado';

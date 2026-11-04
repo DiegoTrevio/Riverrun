@@ -333,6 +333,19 @@ IN-6/7 y PAY-6) sigue pendiente.
 - Reservas: tres solicitudes pendientes con el correo de alguien le impiden reservar durante una hora; el tope de 20 por día por enlace cuenta cada solicitud.
 - Zernio: solo se juntan los avisos con el mismo cuerpo firmado; si Zernio reintentara con un cuerpo distinto, se procesaría dos veces.
 
+## Aislamiento entre cuentas (revisión del 4 de noviembre)
+
+Revisión de todas las rutas (panel, API con llave, enlaces públicos, Copiloto, procesos en segundo plano y cachés): cada
+ruta que recibe un id lo busca dentro de la cuenta de quien llama antes de leer o escribir, y los ids de otros objetos
+que llegan en el cuerpo (asignar a una persona, mover a una etapa, usar un agente, una imagen o una secuencia) también se
+comprueban. La base tiene además llaves foráneas compuestas `(id, account_id)` entre canales, agentes, contactos y
+conversaciones (migración 010). Las 48 pruebas de aislamiento (559 casos) pasan.
+
+| Qué | Arreglo | Prueba |
+|---|---|---|
+| Una línea de cotización guardaba el `price_item_id` tal como llegaba: se podía ligar a un concepto de la lista de precios de otra cuenta (no se leía de vuelta, pero si esa cuenta lo borraba, cambiaba la línea ajena). | Solo se liga a un concepto de la misma cuenta que la cotización; uno ajeno queda vacío. | `tenancy.test.ts` |
+| `POST /api/v1/messages` con `conversation_id` aceptaba conversaciones del simulador (dentro de la propia cuenta); las demás rutas de la API las excluyen. | También las excluye. | `api-v1*.test.ts` |
+
 ## Bajos: IN-8…IN-14, AI-10…AI-13, INF-13…INF-15
 
 | # | Hallazgo | Arreglo | Prueba |

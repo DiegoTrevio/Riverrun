@@ -464,7 +464,8 @@ export async function apiV1Routes(app: FastifyInstance, service: ChatService) {
         }).refine((x) => x.conversation_id || x.contact_id || x.phone !== undefined, { message: 'Indica conversation_id, contact_id o phone', path: ['phone'] }), req.body);
         let convId = b.conversation_id;
         if (convId) {
-          const ok = await queryOne(`SELECT 1 FROM conversations WHERE id = $1 AND account_id = $2`, [convId, account(req)]);
+          // Como en las demás rutas de la API: las conversaciones del simulador no existen para afuera.
+          const ok = await queryOne(`SELECT 1 FROM conversations cv JOIN channels ch ON ch.id = cv.channel_id WHERE cv.id = $1 AND cv.account_id = $2 AND ch.type <> 'playground'`, [convId, account(req)]);
           if (!ok) throw apiError(404, 'not_found', 'Conversación no encontrada', { fields: [{ field: 'conversation_id', message: 'no existe en tu cuenta' }] });
         } else if (b.contact_id) {
           const c = await queryOne<{ id: string; channel_id: string }>(`SELECT c.id, c.channel_id FROM contacts c JOIN channels ch ON ch.id = c.channel_id WHERE c.id = $1 AND c.account_id = $2 AND ch.type <> 'playground'`, [b.contact_id, account(req)]);
