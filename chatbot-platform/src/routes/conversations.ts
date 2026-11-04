@@ -1,3 +1,4 @@
+import { actor, recordSecurity } from '../security-log.js';
 import { cleanFieldValue, listContactFields, TYPE_LABELS } from '../contacts/fields.js';
 import { ipLimitKey, limited } from '../identity/rate-limit.js';
 import { contactWorkspaceRoutes } from './contact-workspace.js';
@@ -371,6 +372,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
     const contact = assertAccount(req.user, await store.getContact(req.params.id), 'Contacto no encontrado');
     const data = await contactDataExport(contact.id);
     await logEvent({ level: 'info', source: 'admin', message: `Descarga de datos de un contacto por ${req.user.email}`, accountId: contact.account_id });
+    await recordSecurity({ kind: 'export.contact', accountId: contact.account_id, ...actor(req), target: contact.id });
     return reply.header('content-disposition', 'attachment; filename="datos-del-contacto.json"').header('cache-control', 'no-store').send(data);
   });
 
@@ -381,6 +383,7 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
     const contact = assertAccount(req.user, await store.getContact(req.params.id), 'Contacto no encontrado');
     const r = await eraseContact(contact.id);
     await logEvent({ level: 'info', source: 'admin', message: `Datos de un contacto eliminados por ${req.user.email} (${r?.conversations ?? 0} conversaciones, ${r?.messages ?? 0} mensajes)`, accountId: contact.account_id });
+    await recordSecurity({ kind: 'contact.erased', accountId: contact.account_id, ...actor(req), target: contact.id, details: { conversations: r?.conversations ?? 0, messages: r?.messages ?? 0 } });
     return { ok: true, ...r };
   });
 
