@@ -106,7 +106,7 @@ Un solo comando para todo lo que sigue:
 | `./riverrun restore [archivo]` | Restaura el último respaldo, o un archivo (por ejemplo en un servidor nuevo) |
 | `./riverrun logs [servicio]` | Registros en vivo |
 | `./riverrun restart` | Aplica cambios hechos a `.env` (antes revisa que la configuración no tenga problemas críticos) |
-| `sudo ./riverrun harden` | Endurece el servidor (Debian/Ubuntu): firewall que también cubre lo que publica Docker, SSH solo con llave (si ya tienes una), fail2ban y actualizaciones de seguridad automáticas |
+| `sudo ./riverrun harden` | Endurece el servidor (Debian, Ubuntu, Fedora, AlmaLinux, Rocky, RHEL): firewall que también cubre lo que publica Docker, SSH solo con llave (si ya tienes una), fail2ban y actualizaciones de seguridad automáticas |
 | `./riverrun keys` | Muestra las llaves que hay que guardar fuera del servidor (`BACKUP_PASSPHRASE`, `SESSION_SECRET`, `DATA_KEY`) |
 | `./riverrun rotate-secret` | Cambia `SESSION_SECRET` (respaldo verificado antes, confirmación escrita; cierra sesiones y pide reconectar Google Calendar) |
 

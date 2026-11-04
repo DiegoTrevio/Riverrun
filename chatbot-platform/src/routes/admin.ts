@@ -1,4 +1,5 @@
-import { actor, listSecurityEvents, loginFingerprint, recordSecurity, recordSecurityOnce } from '../security-log.js';
+import net from 'node:net';
+import { actor, listSecurityEvents, loginFingerprint, recordSecurity, recordSecurityOnce, unblockIp } from '../security-log.js';
 import { partialIp } from '../identity/notices.js';
 import { cleanAlertPrefs } from '../automation/alert-groups.js';
 import type { AlertPrefs } from '../types.js';
@@ -260,6 +261,11 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   const SecurityQuery = z.object({
     kind: z.string().max(60).optional(), email: z.string().max(200).optional(), ip: z.string().max(64).optional(),
     account_id: z.string().uuid().optional(), before: z.coerce.number().int().positive().optional(), limit: z.coerce.number().int().min(1).max(500).optional(),
+  });
+  // Una IP bloqueada por la regla de listas de contraseñas (o por el límite normal) vuelve a poder entrar.
+  api.post('/api/system/security/unblock', superadmin, async (req: any) => {
+    const { ip } = parse(z.object({ ip: z.string().trim().min(2).max(64).refine((v) => net.isIP(v) !== 0 || /^[0-9a-f:]+\/64$/i.test(v), 'IP inválida') }), req.body);
+    return { ok: true, was_blocked: await unblockIp(ip.replace(/\/64$/, ''), actor(req)) };
   });
   api.get('/api/system/security-events', superadmin, async (req: any) => {
     const q = parse(SecurityQuery, req.query);

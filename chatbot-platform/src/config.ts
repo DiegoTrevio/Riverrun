@@ -89,6 +89,18 @@ export const config = {
    */
   /** Etapa 7: días que se conserva la bitácora de seguridad (aunque la cuenta ya no exista). */
   securityLogDays: Math.max(30, Number(env('SECURITY_LOG_DAYS', '365')) || 365),
+  /** Umbrales de las reglas de detección (etapa 7); ver .env.example. */
+  securityRules: {
+    stuffingFailures: Math.max(3, Number(env('SECURITY_STUFFING_FAILURES', '8')) || 8),
+    stuffingEmails: Math.max(2, Number(env('SECURITY_STUFFING_EMAILS', '5')) || 5),
+    globalFailures: Math.max(10, Number(env('SECURITY_GLOBAL_FAILURES', '100')) || 100),
+    bruteForceFailures: Math.max(3, Number(env('SECURITY_BRUTEFORCE_FAILURES', '10')) || 10),
+    exportsPerHour: Math.max(2, Number(env('SECURITY_EXPORTS_PER_HOUR', '5')) || 5),
+    erasuresPerHour: Math.max(2, Number(env('SECURITY_ERASURES_PER_HOUR', '25')) || 25),
+    alertsPerHour: Math.max(1, Number(env('SECURITY_ALERTS_PER_HOUR', '10')) || 10),
+    /** Minutos que una IP que prueba listas de contraseñas queda sin poder entrar (0 = no se bloquea, solo se avisa). */
+    autoblockMinutes: Math.max(0, Number(env('SECURITY_AUTOBLOCK_MINUTES', '60')) || 0),
+  },
   dataKey: env('DATA_KEY', ''),
   dataKeysOld: env('DATA_KEYS_OLD', '').split(',').map((x) => x.trim()).filter(Boolean),
   secureCookies: env('SECURE_COOKIES', 'false') === 'true',

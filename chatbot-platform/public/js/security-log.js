@@ -1,4 +1,4 @@
-import { api, fill, fmtDate, h, select } from './core.js';
+import { api, fill, fmtDate, h, select, toast } from './core.js';
 
 /* ------------------------------ Bitácora de seguridad (etapa 7) ------------------------------ */
 
@@ -8,6 +8,8 @@ const LABELS = {
   'login.failed': 'Contraseña equivocada',
   'login.blocked': 'Acceso frenado por demasiados intentos',
   'login.google_rejected': 'Acceso con Google rechazado',
+  'ip.blocked': 'IP bloqueada por probar listas de contraseñas',
+  'ip.unblocked': 'Desbloqueó una IP',
   'session.revoked': 'Cerró una sesión',
   'session.revoked_others': 'Cerró sus sesiones en otros dispositivos',
   'password_reset.requested': 'Pidió restablecer su contraseña',
@@ -54,7 +56,7 @@ const FILTERS = [
   ['export', 'Descargas de datos'], ['contact.erased', 'Contactos borrados'], ['apikey', 'Llaves de la API'],
 ];
 
-const RISKY = /^(login\.failed|login\.blocked|login\.google_rejected|mfa\.failed|notice\.mfa_locked|password_reset\.failed|alert\.)/;
+const RISKY = /^(login\.failed|login\.blocked|login\.google_rejected|ip\.blocked|mfa\.failed|notice\.mfa_locked|password_reset\.failed|alert\.)/;
 
 /**
  * La bitácora en una tarjeta: filtro por tipo, tabla y «Ver más». `superadmin`: la de toda la plataforma (con los avisos
@@ -80,7 +82,11 @@ export function securityCard({ superadmin = false, accountQuery = '' } = {}) {
     } catch (e) { st.error = e.message; }
     draw();
   };
-  const filters = FILTERS.concat(superadmin ? [['alert', 'Avisos de detección']] : []);
+  const unblock = async (ip) => {
+    try { await api('POST', '/api/system/security/unblock', { ip }); toast(`${ip} ya puede volver a entrar.`); void load(); }
+    catch (e) { toast(e.message, true); }
+  };
+  const filters = FILTERS.concat(superadmin ? [['alert', 'Avisos de detección'], ['ip', 'IP bloqueadas']] : []);
   const draw = () => fill(card,
     h('div', { class: 'row between' },
       h('h2', { style: 'margin:0' }, superadmin ? 'Seguridad' : 'Actividad de seguridad'),
@@ -97,7 +103,9 @@ export function securityCard({ superadmin = false, accountQuery = '' } = {}) {
         h('td', {},
           RISKY.test(r.kind) ? h('span', { class: `badge ${r.kind.startsWith('alert.') ? 'red' : 'orange'}` }, r.kind.startsWith('alert.') ? 'Aviso' : 'Atención') : null, ' ',
           r.kind.startsWith('alert.') ? (r.details?.title || r.kind) : (LABELS[r.kind] ?? r.kind),
-          r.target ? h('span', { class: 'small muted' }, ` · ${r.target}`) : null),
+          r.target ? h('span', { class: 'small muted' }, ` · ${r.target}`) : null,
+          // Solo el superadmin: una IP bloqueada por la regla vuelve a poder entrar.
+          superadmin && r.kind === 'ip.blocked' && r.ip ? [' ', h('button', { class: 'small', onclick: () => unblock(r.ip) }, 'Desbloquear')] : null),
         h('td', { class: 'small' }, r.email || '—'),
         h('td', { class: 'small muted' }, [r.ip, r.user_agent].filter(Boolean).join(' · ') || '—'),
         superadmin ? h('td', { class: 'small' }, r.account_id ? h('code', { title: r.account_id }, r.account_id.slice(0, 8)) : '—') : null)))) : null,

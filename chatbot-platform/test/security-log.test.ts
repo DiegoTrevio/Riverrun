@@ -174,6 +174,43 @@ t('sesiones, invitaciones, altas y bajas del equipo y restablecer la contraseña
   assert.equal((await events(`kind = 'password_reset.failed' AND ip = '10.9.7.2'`)).length, 1);
 });
 
+t('una IP que prueba listas de contraseñas queda bloqueada (aun con la contraseña buena) y el superadmin la desbloquea', async () => {
+  const ip = '10.9.3.3';
+  for (let i = 0; i < 12; i++) await failLogin(`lista${i % 6}@bloqueo.mx`, ip);
+  const blocked = await events(`kind = 'ip.blocked' AND ip = $1`, [ip]);
+  assert.equal(blocked.length, 1);
+  assert.equal(blocked[0].details.minutes, RULES.autoblockMinutes);
+  await settleSecurityAlerts();
+  assert.match(alertsTo(/Muchos accesos fallidos desde una IP/).at(-1)!.text, /ya no puede entrar durante 60 minutos/);
+  const good = () => h.app.inject({ method: 'POST', url: '/api/login', remoteAddress: ip, payload: { email: 'duena@seguridad.mx', password: PASS } });
+  assert.equal((await good()).statusCode, 429, 'bloqueada aunque la contraseña sea la buena');
+  // Un administrador no puede desbloquear; el superadmin sí, y queda anotado.
+  const owner = await h.loginAs('duena@seguridad.mx', PASS);
+  assert.equal((await owner('POST', '/api/system/security/unblock', { ip })).statusCode, 403);
+  const r = await h.authed('POST', '/api/system/security/unblock', { ip });
+  assert.equal(r.statusCode, 200, r.body);
+  assert.equal(r.json().was_blocked, true);
+  assert.equal((await events(`kind = 'ip.unblocked' AND target = $1`, [ip])).length, 1);
+  assert.notEqual((await good()).statusCode, 429, 'vuelve a poder entrar');
+  assert.equal((await h.authed('POST', '/api/system/security/unblock', { ip: 'no-es-ip' })).statusCode, 400);
+});
+
+t('las descargas se comparan con lo normal de cada persona: quien siempre descarga mucho no dispara el aviso', async () => {
+  const heavy = await h.addUser({ account_id: h.accountId, email: 'contadora@seguridad.mx', name: 'Contadora', password: PASS, role: 'admin' });
+  // Su costumbre: 8 descargas en una hora hace dos días.
+  for (let i = 0; i < 8; i++) {
+    await pool.query(`INSERT INTO security_events (kind, account_id, user_id, email, at) VALUES ('export.contacts', $1, $2, 'contadora@seguridad.mx', now() - interval '2 days')`, [h.accountId, heavy.id]);
+  }
+  const api = await h.loginAs('contadora@seguridad.mx', PASS);
+  for (let i = 0; i < RULES.exportsPerHour + 2; i++) assert.equal((await api('GET', '/api/export/contacts.csv')).statusCode, 200);
+  await settleSecurityAlerts();
+  assert.equal((await events(`kind = 'alert.exports' AND target = $1`, [heavy.id])).length, 0, '7 en una hora es menos del doble de su costumbre (8)');
+  // Al doble de lo de siempre, sí avisa.
+  for (let i = 0; i < 9; i++) await api('GET', '/api/export/contacts.csv');
+  await settleSecurityAlerts();
+  assert.equal((await events(`kind = 'alert.exports' AND target = $1`, [heavy.id])).length, 1);
+});
+
 t('se conserva SECURITY_LOG_DAYS aunque la cuenta ya no exista; lo más viejo se depura', async () => {
   await recordSecurity({ kind: 'account.deleted', accountId: '00000000-0000-4000-8000-000000000001', target: 'Cuenta que ya no existe' });
   await pool.query(`INSERT INTO security_events (kind, at) VALUES ('login.ok', now() - make_interval(days => $1))`, [config.securityLogDays + 1]);
