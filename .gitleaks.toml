@@ -1,0 +1,15 @@
+# INF-15: reglas de gitleaks de siempre, sin las pruebas. Las pruebas usan contraseñas y llaves inventadas a propósito
+# («sk_live_prod…», «humo-…», «prueba…»); lo que cuenta es que nada real llegue al código de la plataforma ni a su
+# configuración. Revisado el 4 de noviembre de 2026: los 59 hallazgos del historial eran todos de pruebas.
+title = "Riverrun"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Datos inventados de las pruebas"
+paths = [
+  '''^chatbot-platform/test/''',
+  '''^chatbot-platform/evals/''',
+  '''^chatbot-platform/scripts/(test-|eval-)[^/]+$''',
+]
