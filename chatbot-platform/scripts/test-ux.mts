@@ -616,6 +616,33 @@ try {
       if (width === 390 && theme === 'dark') await p.screenshot({ path: `${output}/copiloto-mobile.png` });
       await ctx.close();
     }
+    // En el celular (390 × 844, táctil): campos de 16px (el iPhone no amplía la página), botones de 44px, Enter hace
+    // otro renglón (se envía con el botón) y Atrás cierra el Copiloto sin salir de la página.
+    {
+      const ctx = await contextFor('admin', { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+      const p = await ctx.newPage(); p.setDefaultTimeout(10000);
+      p.on('pageerror', (error) => results.errors.push({ role: 'admin', message: error.message }));
+      await p.goto(`${base}/#/contact/${conv.contact_id}`); await p.locator('.main h1').waitFor();
+      await p.locator('[data-copilot-launcher]:visible').click();
+      await p.locator('#copilot .cp-chip').first().waitFor();
+      const smallFields = await p.evaluate(() => [...document.querySelectorAll('#copilot textarea, #copilot input:not([type=file]), .main input, .main textarea, .main select')]
+        .filter((e) => (e as HTMLElement).offsetParent !== null).map((e) => ({ field: `${e.tagName.toLowerCase()}.${e.className}[${e.getAttribute('name') ?? e.getAttribute('aria-label') ?? ''}]`, size: parseFloat(getComputedStyle(e).fontSize) })).filter((f) => f.size < 16));
+      assert.deepEqual(smallFields, [], 'campos de menos de 16px: el iPhone amplía la página');
+      const smallButtons = await p.evaluate(() => [...document.querySelectorAll('#copilot button, #copilot .btn')]
+        .filter((b) => (b as HTMLElement).offsetParent !== null && !b.classList.contains('cp-chip-x'))
+        .map((b) => ({ name: b.getAttribute('aria-label') || b.textContent?.trim(), height: Math.round(b.getBoundingClientRect().height) })).filter((b) => b.height < 44));
+      assert.deepEqual(smallButtons, [], 'botones del Copiloto de menos de 44px en el celular');
+      const input = p.locator('#copilot-input');
+      await input.fill('uno');
+      await input.press('Enter');
+      await input.pressSequentially('dos');
+      assert.equal(await input.inputValue(), 'uno\ndos', 'en el celular Enter hace otro renglón');
+      await p.goBack();
+      await p.waitForFunction(() => document.getElementById('copilot')?.hidden === true);
+      assert.ok(p.url().includes('#/contact/'), 'Atrás cierra el Copiloto y se queda en la misma página');
+      await p.screenshot({ path: `${output}/copiloto-celular.png` });
+      await ctx.close();
+    }
     // El agente lo usa con ejemplos de su rol.
     const agentCtx = await contextFor('agent'); const ap = await agentCtx.newPage(); ap.setDefaultTimeout(10000);
     await ap.goto(`${base}/#/conversations`); await ap.locator('.main h1').waitFor();

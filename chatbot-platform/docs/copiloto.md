@@ -446,6 +446,19 @@ Con el clip (y «Tomar foto» en el teléfono) se adjunta una foto, un PDF, un C
 - **Seguridad del navegador (CSP):** el texto del modelo se arma como nodos, nunca con `innerHTML`, y los enlaces solo
   van a rutas `#/` permitidas.
 
+
+**En el celular:**
+- A pantalla completa en el teléfono, también acostado.
+- **Teclado:** el panel se ajusta a la parte visible de la pantalla (`visualViewport`), así que el teclado no tapa
+  Enviar ni la X.
+- **Escribir:** Enter hace otro renglón (se envía con el botón) y el cuadro crece con el texto.
+- **Atrás:** el botón o gesto Atrás lo cierra sin salir de la página.
+- **Tamaños:**
+  - campos de 16 px, para que el iPhone no amplíe la página;
+  - botones de las tarjetas de 44 px, con Confirmar y Descartar separados.
+- **Avisos y fondo:** los avisos se muestran arriba y la página de atrás no se desplaza.
+- **Prueba:** `scripts/test-ux.mts` lo revisa a 390 × 844 táctil.
+
 ## Seguridad
 
 - **Inyección:**

@@ -7,7 +7,10 @@ import { actionCard, readsGroup, renderText } from './copilot-cards.js';
 
 const KEY = 'cp-copilot';
 const dock = window.matchMedia('(min-width: 1280px)');
-const phone = window.matchMedia('(max-width: 768px)');
+// Pantalla completa: teléfono, también acostado (táctil y bajito: ahí el cajón no cabe).
+const phone = window.matchMedia('(max-width: 768px), (pointer: coarse) and (max-height: 500px)');
+// Teclado táctil: Enter hace otro renglón y se envía con el botón (en un teléfono no hay Mayús+Enter).
+const touch = window.matchMedia('(pointer: coarse)');
 
 const s = {
   mounted: false, open: false, view: 'chat', threadId: '', accountId: '',
@@ -15,6 +18,8 @@ const s = {
   refs: [], pageOff: false, pageHash: '', pageLabel: '', busy: new Set(), timer: 0, sending: false,
   // Archivos adjuntos: los que van con el siguiente pedido y lo que se sabe de cada uno (nombre, tipo).
   attached: [], fileMeta: new Map(), uploading: 0,
+  // Se agregó un paso al historial al abrir en pantalla completa: Atrás cierra el Copiloto.
+  pushed: false,
 };
 const el = {};
 
@@ -35,7 +40,7 @@ function build() {
   el.refresh = h('div', { class: 'cp-refresh', hidden: true },
     h('span', {}, 'Cambió algo de esta página.'),
     h('button', { type: 'button', class: 'small', onclick: refreshView }, 'Actualizar vista'));
-  el.input = h('textarea', { id: 'copilot-input', rows: '2', maxlength: '4000', placeholder: 'Pídeme lo que necesites…', 'aria-label': 'Qué necesitas del Copiloto', onkeydown: onKey });
+  el.input = h('textarea', { id: 'copilot-input', rows: '2', maxlength: '4000', placeholder: 'Pídeme lo que necesites…', 'aria-label': 'Qué necesitas del Copiloto', enterkeyhint: touch.matches ? 'enter' : 'send', onkeydown: onKey, oninput: grow });
   el.chips = h('div', { class: 'cp-chips' });
   el.send = h('button', { type: 'submit', class: 'primary', 'aria-label': 'Enviar al Copiloto' }, icon('send', 16), h('span', {}, 'Enviar'));
   el.stop = h('button', { type: 'button', class: 'cp-stop', hidden: true, onclick: stopTurn }, 'Detener');
@@ -73,6 +78,9 @@ function mount() {
   dock.addEventListener('change', layout);
   phone.addEventListener('change', layout);
   window.addEventListener('sessionended', unmount);
+  window.addEventListener('popstate', onBack);
+  window.visualViewport?.addEventListener('resize', fitViewport);
+  window.visualViewport?.addEventListener('scroll', fitViewport);
   if (saved.open && saved.accountId === s.accountId) openCopilot(false);
 }
 
@@ -85,6 +93,9 @@ function unmount() {
   dock.removeEventListener('change', layout);
   phone.removeEventListener('change', layout);
   window.removeEventListener('sessionended', unmount);
+  window.removeEventListener('popstate', onBack);
+  window.visualViewport?.removeEventListener('resize', fitViewport);
+  window.visualViewport?.removeEventListener('scroll', fitViewport);
   Object.assign(s, { mounted: false, threadId: '', messages: new Map(), actions: new Map(), turn: null, rev: 0, refs: [] });
 }
 
@@ -111,8 +122,38 @@ function layout() {
   const full = s.open && phone.matches;
   document.body.classList.toggle('cp-docked', s.open && dock.matches);
   document.body.classList.toggle('cp-open', s.open);
+  document.body.classList.toggle('cp-full', full);
   if (full) { el.root.setAttribute('role', 'dialog'); el.root.setAttribute('aria-modal', 'true'); document.getElementById('app')?.setAttribute('inert', ''); }
   else { el.root.removeAttribute('role'); el.root.removeAttribute('aria-modal'); document.getElementById('app')?.removeAttribute('inert'); }
+  fitViewport();
+}
+
+/**
+ * Teclado del teléfono: solo encoge la parte visible de la página (no el layout), así que el panel fijo quedaría con
+ * Enviar y la X tapados. A pantalla completa, el panel ocupa exactamente la parte visible.
+ */
+function fitViewport() {
+  const vv = window.visualViewport;
+  const full = s.mounted && s.open && phone.matches && vv;
+  el.root.style.top = full ? `${vv.offsetTop}px` : '';
+  el.root.style.height = full ? `${vv.height}px` : '';
+  el.root.style.bottom = full ? 'auto' : '';
+  if (full) grow();
+}
+
+/** El cuadro crece con lo escrito, hasta un 40 % de lo visible (después, se desplaza por dentro). */
+function grow() {
+  if (!el.input) return;
+  const visibleHeight = window.visualViewport?.height || window.innerHeight;
+  el.input.style.height = 'auto';
+  el.input.style.height = `${Math.min(el.input.scrollHeight + 2, Math.max(56, visibleHeight * 0.4))}px`;
+}
+
+/** Atrás (botón o gesto del teléfono) cierra el Copiloto a pantalla completa en lugar de salir de la página. */
+function onBack() {
+  if (!s.pushed) return;
+  s.pushed = false;
+  if (s.open) closeCopilot();
 }
 
 export function toggleCopilot() {
@@ -135,18 +176,23 @@ async function openCopilot(focus = true) {
   s.open = true;
   el.root.hidden = false;
   layout(); syncLaunchers(); save(); syncPaused();
+  // Mismo URL (no cambia la página ni dispara el router): solo un paso para que Atrás lo cierre.
+  if (phone.matches && !s.pushed) { history.pushState({ copilot: true }, '', location.href); s.pushed = true; }
   if (s.view === 'threads') await showThreads();
   else if (s.threadId) await loadThread(s.threadId);
   else render();
   if (focus) el.input.focus();
 }
 
-function closeCopilot(returnFocus = true) {
+function closeCopilot(returnFocus = true, viaLink = false) {
   if (!s.mounted) return;
   s.open = false;
   el.root.hidden = true;
   clearTimeout(s.timer);
   layout(); syncLaunchers(); save();
+  // Se cerró con la X: se quita el paso que agregó al abrir (así Atrás no se queda «en la misma página»). Al seguir un
+  // enlace no: el enlace ya navega.
+  if (s.pushed) { s.pushed = false; if (!viaLink && history.state?.copilot) history.back(); }
   // El foco vuelve al botón que se ve (en el teléfono el del menú lateral está escondido).
   if (returnFocus) [...document.querySelectorAll('[data-copilot-launcher]')].find(visible)?.focus();
 }
@@ -244,6 +290,7 @@ async function send() {
     const r = await api('POST', url(`/threads/${asked}/messages`), { text, page: { hash: s.pageOff ? '' : location.hash }, refs: s.refs.map((x) => x.id), files: s.attached.map((f) => f.id) });
     if (asked !== s.threadId) return;
     el.input.value = '';
+    grow();
     s.refs = []; s.pageOff = false; s.attached = []; renderChips();
     merge({ messages: [r.message], turns: [r.turn] });
     render();
@@ -343,7 +390,7 @@ const handlers = {
     renderChips();
     el.input.focus();
   },
-  visit: () => { if (phone.matches) closeCopilot(false); },
+  visit: () => { if (phone.matches) closeCopilot(false, true); },
 };
 
 async function undoTurn(turnId) {
@@ -383,7 +430,8 @@ function refreshView() {
 }
 
 function onKey(e) {
-  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+  // En pantallas táctiles Enter hace otro renglón: se envía con el botón.
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !touch.matches) { e.preventDefault(); send(); }
 }
 
 function setStatus(text, error = false) {
