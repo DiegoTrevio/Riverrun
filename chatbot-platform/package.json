@@ -60,7 +60,7 @@
   },
   "devDependencies": {
     "@types/mailparser": "^3.9.0",
-    "@types/node": "^22.18.0",
+    "@types/node": "^26.6.6",
     "@types/nodemailer": "^8.0.2",
     "@types/pg": "^8.15.0",
     "axe-core": "4.11.0",
