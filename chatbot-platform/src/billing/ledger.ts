@@ -95,7 +95,12 @@ async function markCardsDisputed(provider: ProviderName, accountId: string, subs
   if (!subscriptionId) return;
   const st = await providers[provider].subscriptionState(subscriptionId, []).catch(() => null);
   if (!st?.cardKey) return;
-  for (const m of await claimMarks({ cardKey: st.cardKey })) {
+  for (const m of await claimMarks({ cardKey: st.cardKey, cardKeys: st.cardKeys })) {
+    // Una marca del formato anterior solo se marca como disputada si existe; no se crea.
+    if (m.legacy) {
+      await query(`UPDATE trial_claims SET disputed = true WHERE kind = $1 AND digest = $2`, [m.kind, m.digest]);
+      continue;
+    }
     await query(
       `INSERT INTO trial_claims (kind, digest, account_id, provider, disputed) VALUES ($1, $2, $3, $4, true)
        ON CONFLICT (kind, digest) DO UPDATE SET disputed = true`,

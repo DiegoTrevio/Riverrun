@@ -63,6 +63,8 @@ export interface SubscriptionState {
   trialEnd?: Date | null;
   /** Huella de la tarjeta (Stripe `card.fingerprint`; Mercado Pago, la armada con `mpCardKey`), para una prueba por tarjeta. */
   cardKey?: string | null;
+  /** Huellas con que se busca la tarjeta: `cardKey` y, en Mercado Pago, la del formato anterior (solo para marcas viejas). */
+  cardKeys?: string[];
 }
 
 export interface WebhookResult {

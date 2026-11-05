@@ -1,4 +1,4 @@
-import { mpCardKey } from './trial-claims.js';
+import { mpCardKey, mpCardKeyLegacy } from './trial-claims.js';
 import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { platformSecret } from '../platform-secrets.js';
@@ -93,6 +93,8 @@ async function readPreapproval(id: string, plans?: Plan[]): Promise<{ p: any; st
       card = await call('GET', `/v1/customers/${encodeURIComponent(String(p.payer_id))}/cards/${encodeURIComponent(String(p.card_id))}`).catch(() => null);
     }
     state.cardKey = card ? mpCardKey(card) : null;
+    // Se buscan también las marcas del formato anterior (con el documento del titular); solo se guarda `cardKey`.
+    state.cardKeys = card && state.cardKey ? [...new Set([state.cardKey, mpCardKeyLegacy(card)!])] : [];
   }
   return { p, state };
 }

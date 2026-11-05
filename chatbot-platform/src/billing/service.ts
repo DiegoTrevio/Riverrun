@@ -17,7 +17,7 @@ import { stripe } from './stripe.js';
 import type pg from 'pg';
 import { openCardCheck, startTrialFromState } from './card-check.js';
 import { chargeCents } from './tax.js';
-import { cardClaim } from './trial-claims.js';
+import { cardClaim, stateCardKeys } from './trial-claims.js';
 import type { BillingProvider, PaymentInfo, Plan, ProviderName, Subscription, SubscriptionState } from './types.js';
 
 export const providers: Record<ProviderName, BillingProvider> = { stripe, mercadopago };
@@ -364,7 +364,7 @@ export async function applyState(state: SubscriptionState, now = new Date(), o: 
     let current = state;
     if (o.refresh) {
       const fresh = await providers[state.provider].subscriptionState(state.subscriptionId, await listPlans(true), now).catch(() => null);
-      if (fresh) current = { ...fresh, accountId: fresh.accountId ?? state.accountId, cardKey: fresh.cardKey ?? state.cardKey };
+      if (fresh) current = { ...fresh, accountId: fresh.accountId ?? state.accountId, cardKey: fresh.cardKey ?? state.cardKey, cardKeys: fresh.cardKeys?.length ? fresh.cardKeys : state.cardKeys };
     }
     return applyStateLocked({ ...current, accountId }, now, later, client);
   });
@@ -490,7 +490,7 @@ async function applyStateLocked(state: SubscriptionState & { accountId: string }
     // Tras perder una disputa, solo otra tarjeta reactiva la cuenta (PAY-5). Con la misma, la suscripción nueva se cancela
     // y se reembolsa; si no se sabe qué tarjeta es, sigue en pausa y lo revisa el superadministrador.
     const lost = acc.status === 'paused' && acc.pause_reason === 'dispute_lost';
-    const sameCard = lost && !!state.cardKey && (await cardClaim(state.cardKey)).disputed;
+    const sameCard = lost && !!state.cardKey && (await cardClaim(stateCardKeys(state))).disputed;
     const cardOk = !lost || (!!state.cardKey && !sameCard);
     if (lost && activate && !cardOk) {
       if (sameCard) {

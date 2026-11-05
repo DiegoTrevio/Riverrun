@@ -37,8 +37,11 @@ t('la migración normaliza igual que el servidor', async () => {
 
 t('la huella de una tarjeta de Mercado Pago', async () => {
   const card = { first_six_digits: '450995', last_four_digits: '3704', expiration_month: 11, expiration_year: 2030 };
-  assert.equal(claims.mpCardKey(card), '450995:3704:11/2030:');
-  assert.equal(claims.mpCardKey({ ...card, cardholder: { identification: { number: 'XAXX010101000' } } }), '450995:3704:11/2030:XAXX010101000');
+  assert.equal(claims.mpCardKey(card), '450995:3704:11/2030');
+  const withId = { ...card, cardholder: { identification: { number: 'XAXX010101000' } } };
+  assert.equal(claims.mpCardKey(withId), '450995:3704:11/2030', 'el documento del titular no entra (PAY-25)');
+  assert.equal(claims.mpCardKeyLegacy(withId), '450995:3704:11/2030:XAXX010101000');
+  assert.equal(claims.mpCardKeyLegacy(card), '450995:3704:11/2030:');
   assert.equal(claims.mpCardKey({ first_six_digits: '450995' }), null);
 });
 

@@ -156,7 +156,7 @@ export async function trialDaysFor(accountId: string): Promise<number> {
 export async function startTrialFromState(state: SubscriptionState & { accountId: string }, name: string, later: Later, client: pg.PoolClient): Promise<'trial' | 'card_used' | 'none'> {
   const { accountId, provider, subscriptionId } = state;
   const p = await person(accountId);
-  const marks = await claimMarks({ email: p?.email, googleSub: p?.googleSub, cardKey: state.cardKey });
+  const marks = await claimMarks({ email: p?.email, googleSub: p?.googleSub, cardKey: state.cardKey, cardKeys: state.cardKeys });
   const used = await lockClaims(client, marks);
   const cardUsed = used.has('card');
   // Sin la huella de la tarjeta no se puede cuidar «una prueba por tarjeta»: se trata como una tarjeta ya usada (PAY-17).
