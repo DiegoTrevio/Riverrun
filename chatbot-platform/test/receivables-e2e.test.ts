@@ -238,3 +238,22 @@ t('un cliente pausa sus recordatorios dos veces por cobro; a la tercera solo se 
   await waitFor(async () => (await pool.query(`SELECT count(*)::int AS n FROM event_logs WHERE message LIKE '%ya pausó sus recordatorios 2 veces%'`)).rows[0].n > 0);
   assert.equal((await get(r.id)).paused_until, null, 'la tercera vez ya no se pausa');
 });
+
+t('el filtro de texto del agente también ve los dígitos de ancho completo y otras formas Unicode (PAY-29)', async () => {
+  const agent = await h.addUser({ account_id: h.accountId, name: 'Agente Cobros', email: 'agente-cobros@e2e.mx', password: 'Pz-145-Qx-345-Kv', role: 'agent' });
+  assert.equal((await h.authed('PUT', `/api/conversations/${convId}/assign`, { user_id: agent.id })).statusCode, 200);
+  const api = await h.loginAs('agente-cobros@e2e.mx', 'Pz-145-Qx-345-Kv');
+  const BAD = 'El concepto y la referencia no pueden llevar enlaces, correos ni números de cuenta o tarjeta: los datos de pago los pone un administrador.';
+  const send = (over: Record<string, unknown>) => api('POST', '/api/receivables', { contact_id: contactId, amount_cents: 30000, due_date: today(5), concept: 'Sesión', ...over });
+  for (const [field, value] of [
+    ['concept', 'Deposita a ０１２３４５６７８９０１'],
+    ['reference', '０１２１ ８０００ １２３４ ５６７８ ９０'],
+    ['concept', 'Deposita a ①②③④⑤⑥⑦⑧⑨⑩'],
+    ['concept', 'Paga en mpago．la/abc'],
+  ]) {
+    const r = await send({ [field]: value });
+    assert.equal(r.statusCode, 400, `${field}: ${value} → ${r.body}`);
+    assert.equal(r.json().error, BAD);
+  }
+  assert.equal((await send({ concept: 'Sesión de seguimiento', reference: 'Factura A-1234' })).statusCode, 201, 'un texto normal sí pasa');
+});

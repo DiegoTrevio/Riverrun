@@ -184,12 +184,14 @@ export async function receivableRoutes(api: FastifyInstance, service: ChatServic
   };
   /**
    * Lo que registra un agente llega al cliente con el concepto y la referencia: sin enlaces, correos ni números de cuenta o
-   * tarjeta (10 dígitos o más, aunque vengan separados), para que no pueda desviar el pago con texto.
+   * tarjeta (10 dígitos o más, aunque vengan separados), para que no pueda desviar el pago con texto. Se revisa el texto
+   * normalizado (NFKC): los dígitos de ancho completo o en círculo («０１２», «①②») también cuentan (PAY-29).
    */
   const assertAgentText = (user: any, ...texts: (string | undefined)[]) => {
     if (user.role !== 'agent') return;
-    for (const t of texts) {
-      if (!t) continue;
+    for (const raw of texts) {
+      if (!raw) continue;
+      const t = raw.normalize('NFKC');
       const f = extractFacts(t);
       if (f.urls.length || f.emails.length || /\d(?:[\s.-]?\d){9,}/.test(t)) throw new HttpError(400, AGENT_TEXT);
     }
