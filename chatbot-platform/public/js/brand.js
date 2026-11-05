@@ -12,7 +12,7 @@ const luminance = (hex) => {
 const ratio = (a, b) => (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 dark.addEventListener('change', () => applyBrand(brand));
 
-const LADDER = ['--accent', '--accent-soft', '--accent-track', '--accent-ink', '--brand-accent', '--accent-foreground'];
+const LADDER = ['--accent', '--accent-soft', '--accent-track', '--accent-ink', '--brand-accent', '--accent-foreground', '--brand-foreground'];
 
 /**
  * Aplica nombre, color y pestaña. Con un color de marca se arma toda la escalera del estilo: el tono en las marcas
@@ -30,6 +30,8 @@ export function applyBrand(b) {
     root.setProperty('--accent', safe);
     root.setProperty('--brand-accent', brand.color);
     root.setProperty('--accent-foreground', ratio(l, 0) >= ratio(l, 1) ? '#000000' : '#ffffff');
+    // El texto sobre el color de la marca tal cual (el campo de color de las pantallas públicas), en claro y en oscuro.
+    root.setProperty('--brand-foreground', ratio(l, 0) >= ratio(l, 1) ? '#000000' : '#ffffff');
     root.setProperty('--accent-soft', `color-mix(in srgb, ${safe} ${dark.matches ? 16 : 8}%, ${surface})`);
     root.setProperty('--accent-track', `color-mix(in srgb, ${safe} ${dark.matches ? 32 : 22}%, ${surface})`);
     root.setProperty('--accent-ink', `color-mix(in srgb, ${safe} 62%, ${dark.matches ? '#ffffff' : '#000000'})`);

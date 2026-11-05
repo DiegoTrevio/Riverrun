@@ -1,4 +1,4 @@
-import { brand, brandMark } from './brand.js';
+import { brand, brandMark, productMark } from './brand.js';
 import { limitsText, per, planPrice, totalText } from './billing.js';
 import { $app, api, field, fill, h, run, select, state, text, toast } from './core.js';
 
@@ -22,7 +22,7 @@ export function renderLogin() {
   try { notice = sessionStorage.getItem('login-notice'); sessionStorage.removeItem('login-notice'); } catch { /* sin storage */ }
   if (notice) setTimeout(() => toast(notice), 0);
   const f = { email: '', password: '' };
-  const signupLink = h('p', { class: 'small', style: 'margin-bottom:0' });
+  const signupLink = h('p', { class: 'auth-signup' });
   const googleSlot = h('div', {});
   const submit = async (e) => {
     e.preventDefault();
@@ -31,19 +31,19 @@ export function renderLogin() {
   };
   publicPage(
     h('form', { class: 'card login', onsubmit: submit },
-      brand.logo ? h('div', { style: 'text-align:center;margin-bottom:8px' }, brandMark(48)) : null,
-      h('h1', {}, brand.name),
+      h('h1', {}, 'Entra a tu cuenta'),
+      h('p', { class: 'auth-sub' }, `Con el correo y la contraseña de tu panel de ${productName()}.`),
       field('Correo', text(f, 'email', { type: 'email', autocomplete: 'username', required: true, placeholder: 'tu@correo.com' })),
       field('Contraseña', text(f, 'password', { type: 'password', autocomplete: 'current-password', required: true })),
-      h('button', { class: 'primary', type: 'submit' }, 'Entrar'),
-      h('p', { class: 'small', style: 'margin-bottom:0' }, h('a', { href: '#/olvide' }, '¿Olvidaste tu contraseña?')),
-      signupLink,
+      h('p', { class: 'auth-forgot' }, h('a', { href: '#/olvide' }, '¿Olvidaste tu contraseña?')),
+      h('button', { class: 'primary wide', type: 'submit' }, 'Entrar'),
       googleSlot,
+      signupLink,
     ),
   );
   api('GET', '/api/signup/info').then((i) => {
     const trial = i.trial_days > 0;
-    if (i.google_login) fill(googleSlot, h('a', { class: 'btn', href: '/oauth/google/login', style: 'display:block;text-align:center;margin-top:12px' }, 'Continuar con Google'), h('p', { class: 'muted small' }, trial ? 'Si aún no tienes cuenta, la creas con tu prueba gratuita después de aceptar los términos del servicio.' : 'Si aún no tienes cuenta, la creas después de aceptar los términos del servicio (la activas al contratar tu plan).'));
+    if (i.google_login) fill(googleSlot, h('p', { class: 'auth-or' }, 'o'), h('a', { class: 'btn wide', href: '/oauth/google/login' }, 'Continuar con Google'), h('p', { class: 'muted small' }, trial ? 'Si aún no tienes cuenta, la creas con tu prueba gratuita después de aceptar los términos del servicio.' : 'Si aún no tienes cuenta, la creas después de aceptar los términos del servicio (la activas al contratar tu plan).'));
     if (i.enabled) fill(signupLink, '¿Aún no tienes cuenta? ', h('a', { href: '#/registro' }, trial ? `Crea una gratis (${i.trial_days} días de prueba)` : 'Crea tu cuenta'));
   }).catch(() => undefined);
 }
@@ -66,9 +66,39 @@ export function publicCard(title, ...kids) {
   publicPage(h('div', { class: 'card login', style: 'max-width:440px' }, h('h1', {}, title), kids));
 }
 
+/** El nombre del producto: el de la marca blanca, o Riverrun con la marca de la plataforma. */
+const productName = () => (brand.name === 'Panel de Chatbots' ? 'Riverrun' : brand.name);
+
+/** Conversación de ejemplo (no es de un cliente): el asistente cotiza y agenda por WhatsApp. */
+const SAMPLE_CHAT = [
+  ['in', 'Hola, ¿cuánto cuesta una limpieza dental?', '10:42'],
+  ['out', 'Hola, la limpieza cuesta $650 e incluye revisión. ¿Te agendo? Tengo el jueves a las 11:00 o a las 16:30.', '10:42'],
+  ['in', 'El jueves a las 4:30 está bien', '10:43'],
+  ['out', 'Listo: quedó tu cita el jueves 13 a las 16:30. Un día antes te mando un recordatorio.', '10:43'],
+];
+
+/**
+ * El campo de color de las pantallas públicas: la marca (logo, o el globo y el nombre), qué hace el producto y una
+ * conversación de ejemplo como muestra del producto. En el teléfono queda como franja arriba, sin la conversación.
+ */
+let chatPlayed = false;
+function brandSide() {
+  // La conversación se anima la primera vez; al volver a pintar (el registro lo hace al cargar los planes) ya está.
+  const played = chatPlayed;
+  chatPlayed = true;
+  return h('aside', { class: 'auth-brand', 'aria-label': productName() },
+    h('div', { class: 'auth-wordmark' }, brand.logo ? h('span', { class: 'auth-logo' }, brandMark(32)) : [productMark(), h('span', {}, productName())]),
+    h('div', { class: 'auth-pitch' },
+      h('p', { class: 'auth-statement' }, 'Tu WhatsApp atiende solo, de día y de noche.'),
+      h('p', { class: 'auth-lede' }, 'Un asistente con la información de tu negocio contesta, cotiza y agenda citas por ti, y te pasa la conversación cuando hace falta una persona.')),
+    h('div', { class: `auth-chat${played ? ' played' : ''}`, 'data-ui': '', 'aria-hidden': 'true' },
+      h('div', { class: 'auth-chat-head' }, h('strong', {}, 'Consultorio Dental Ávila'), h('span', {}, 'Asistente en línea')),
+      SAMPLE_CHAT.map(([side, message, time], i) => h('p', { class: `auth-bubble ${side}`, style: `--i:${i}` }, message, h('time', {}, time)))));
+}
+
 /** Las páginas públicas también son un <main>: el título de la pestaña dice dónde estás y el foco empieza en el título. */
 function publicPage(card) {
-  fill($app, h('main', { id: 'contenido' }, card));
+  fill($app, h('main', { id: 'contenido', class: 'auth' }, brandSide(), h('div', { class: 'auth-pane' }, card)));
   const title = card.querySelector('h1');
   if (!title) return;
   document.title = title.textContent === brand.name ? brand.name : `${title.textContent} · ${brand.name}`;
