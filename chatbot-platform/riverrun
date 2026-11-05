@@ -983,7 +983,9 @@ update_pull() {
 update_preflight() {
   export APP_VERSION; APP_VERSION="$(version)"
   say "Construyendo la nueva versión ($APP_VERSION)…"
-  # --pull: la imagen base de Node (y la del respaldo) con sus parches de seguridad, no la que quedó en caché (INF-3).
+  # --pull: descarga exactamente el digest de las imágenes base que fijan los Dockerfile (Node y la del respaldo), si aún
+  # no está. Los parches de seguridad ya no llegan por aquí: llegan como PRs de Dependabot con el digest nuevo, pasados
+  # por el CI (INF-3, INF-17).
   dc build --pull backend backup || abort_update "No se pudo construir la versión nueva. No se aplicó nada."
   # Redis, Caddy y el convertidor de PDF: se descarga exactamente el digest que fija el compose (los parches llegan como
   # PRs de Dependabot, ya pasados por el CI). Se descargan aquí y se aplican con el resto; PostgreSQL no: cambiar su imagen sobre un volumen existente tiene su propio procedimiento.

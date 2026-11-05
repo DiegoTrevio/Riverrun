@@ -125,7 +125,7 @@ newcommit v2
 [[ "$(cat VERSION)" == v2 ]]
 grep -n "backup.sh now\|up -d --build" "$LOG" | head -2 | cut -d: -f2- | head -1 | grep -q "backup.sh now"
 grep -q "up -d --build" "$LOG"
-# INF-3: la base de Node y del respaldo con parches (--pull), y Redis y Caddy de su misma etiqueta.
+# INF-3/INF-17: las bases de Node y del respaldo (--pull) y Redis, Caddy y el convertidor de PDF, del digest que fija el código.
 grep -q "compose build --pull backend backup" "$LOG" || { cat "$LOG"; echo "ERROR: no construyó con --pull"; exit 1; }
 grep -q "compose pull --quiet redis caddy pdf" "$LOG" || { echo "ERROR: no descargó Redis, Caddy ni el convertidor de PDF"; exit 1; }
 # INF-2: usuarios de PostgreSQL por servicio (después del respaldo, antes de levantar) y Redis con contraseña.
