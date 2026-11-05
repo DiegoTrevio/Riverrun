@@ -625,7 +625,8 @@ primero falló sin el arreglo. Quedan aparte INF-18 (opcional, no se hizo) y PAY
 - AI-15: el audio gasta su contador antes de descargarse; una conversación pausada por el tope sigue leyendo fotos hasta el tope de medios; el simulador también se pausa a los 30 turnos.
 - AI-16: el tope por pedido puede pasarse por la última llamada.
 - ID-18: el respaldo para cookies de reto sin `ec` (`routes/mfa.ts`) es temporal; hay que quitarlo.
-- AI-19: los correos de cobro anteriores al IN-25 usan el `payment_action_url` guardado sin filtrar; un `»` en el motivo del validador cierra la comilla antes (AI-17).
+- IN-25: los correos de cobro anteriores al arreglo usan el `payment_action_url` guardado sin filtrar.
+- AI-17: un `»` en el motivo del validador cierra la comilla antes.
 - IN-24: el recorrido de `check-frontend` no tiene pruebas de casos borde (`${…}` con comillas, regex, plantillas anidadas) y no ve `{ html }` abreviado.
 - IN-23: `/hyperlink$` acepta cualquier `Type` que termine así; faltan pruebas de variantes (entidad en `TargetMode`, prefijo, mayúsculas).
 - INF-20: `gitleaks dir` marca `ci.yml` (`SESSION_SECRET=` con `=`); el CI usa el modo `git` y sale limpio. Los prefijos `clave-`, `humo-`, `prueba-` y `llave-` aceptan cualquier cola, por diseño.
