@@ -4,6 +4,7 @@ import { config } from '../config.js';
 import { platformSecret } from '../platform-secrets.js';
 import { credentialAllowed } from '../outbound-guard.js';
 import { chargeCents } from './tax.js';
+import { acceptedPriceOf, type AcceptedPrice } from './accepted-price.js';
 import { ProviderError, WebhookError, type BillingProvider, type DisputeInfo, type PaymentInfo, type SubStatus, type Plan, type SubscriptionState, type WebhookResult } from './types.js';
 
 const cfg = () => config.billing.mercadopago;
@@ -42,15 +43,25 @@ export const MP_WEBHOOK_TOPICS = [
 
 export const reference = (accountId: string, planKey: string) => `${accountId}:${planKey}`;
 
+/** Lo que cobra la suscripción: `centavos:moneda:meses` ('' si Mercado Pago no informa alguno de los tres). */
+export function preapprovalPriceRef(p: any): string {
+  const ar = p?.auto_recurring ?? {};
+  if (ar.transaction_amount === undefined || !ar.currency_id || ar.frequency === undefined) return '';
+  const months = Math.round(ar.frequency_type === 'days' ? Number(ar.frequency) / 30 : Number(ar.frequency));
+  return `${Math.round(Number(ar.transaction_amount) * 100)}:${String(ar.currency_id).toUpperCase()}:${months}`;
+}
+
 /**
  * La referencia externa la puede cambiar quien tenga acceso a la cuenta de Mercado Pago: el plan que dice solo vale si
  * lo que se cobra corresponde (monto no menor al del plan, misma moneda y periodicidad; PAY-7). Si no, queda '' (no
  * cambia el plan) y se anota en `planMismatch`.
  */
-export function planFromPreapproval(p: any, planKey: string, plans: Plan[] | undefined): { key: string; mismatch: string } {
+export function planFromPreapproval(p: any, planKey: string, plans: Plan[] | undefined, accepted?: AcceptedPrice): { key: string; mismatch: string } {
   if (!planKey || !plans) return { key: planKey, mismatch: '' };
   const plan = plans.find((x) => x.key === planKey);
   if (!plan) return { key: '', mismatch: `el plan ${planKey} no existe` };
+  // Quien ya aceptó este mismo cobro (monto, moneda y periodo) conserva su plan aunque el plan haya subido de precio (PAY-28).
+  if (accepted?.ref && accepted.planKey === plan.key && preapprovalPriceRef(p) === accepted.ref) return { key: plan.key, mismatch: '' };
   const ar = p.auto_recurring ?? {};
   if (ar.currency_id && String(ar.currency_id).toUpperCase() !== plan.currency.toUpperCase()) return { key: '', mismatch: `la moneda (${ar.currency_id}) no es la del plan ${plan.key}` };
   const months = ar.frequency_type === 'days' ? Number(ar.frequency) / 30 : Number(ar.frequency ?? 0);
@@ -59,9 +70,9 @@ export function planFromPreapproval(p: any, planKey: string, plans: Plan[] | und
   return { key: plan.key, mismatch: '' };
 }
 
-export function stateFromPreapproval(p: any, plans?: Plan[]): SubscriptionState {
+export function stateFromPreapproval(p: any, plans?: Plan[], accepted?: AcceptedPrice): SubscriptionState {
   const [accountId, refPlan] = String(p.external_reference ?? '').split(':');
-  const fromRef = planFromPreapproval(p, refPlan ?? '', plans);
+  const fromRef = planFromPreapproval(p, refPlan ?? '', plans, accepted);
   const next = p.next_payment_date ? new Date(p.next_payment_date) : null;
   const start = p.auto_recurring?.start_date ? new Date(p.auto_recurring.start_date) : null;
   return {
@@ -70,6 +81,7 @@ export function stateFromPreapproval(p: any, plans?: Plan[]): SubscriptionState 
     customerId: String(p.payer_id ?? ''),
     subscriptionId: String(p.id),
     planKey: fromRef.key,
+    ...(preapprovalPriceRef(p) ? { priceRef: preapprovalPriceRef(p) } : {}),
     ...(fromRef.mismatch ? { planMismatch: fromRef.mismatch } : {}),
     status: STATUS[p.status] ?? 'incomplete',
     periodEnd: next && !Number.isNaN(next.getTime()) ? next : null,
@@ -83,7 +95,7 @@ export function stateFromPreapproval(p: any, plans?: Plan[]): SubscriptionState 
 /** La suscripción y, si su primer cobro es a futuro (una prueba), la huella de su tarjeta (para una prueba por tarjeta). */
 async function readPreapproval(id: string, plans?: Plan[]): Promise<{ p: any; state: SubscriptionState }> {
   const p = await call('GET', `/preapproval/${encodeURIComponent(id)}`);
-  const state = stateFromPreapproval(p, plans);
+  const state = stateFromPreapproval(p, plans, await acceptedPriceOf('mercadopago', String(p.id)));
 
   if (state.trialEnd && p.card_id && p.payer_id) {
     // Sin la tarjeta no hay prueba (PAY-17): un fallo pasajero de la consulta se reintenta antes de rendirse.

@@ -436,8 +436,8 @@ async function applyStateLocked(state: SubscriptionState & { accountId: string }
   // El periodo ya pagado no se pierde si el proveedor no lo informa.
   const periodEnd = state.periodEnd ?? (prev?.provider_subscription_id === state.subscriptionId ? prev.current_period_end : null);
   await query(
-    `INSERT INTO subscriptions (account_id, provider, provider_customer_id, provider_subscription_id, plan_key, status, current_period_end, cancel_at_period_end, past_due_since)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+    `INSERT INTO subscriptions (account_id, provider, provider_customer_id, provider_subscription_id, plan_key, status, current_period_end, cancel_at_period_end, past_due_since, accepted_price_ref)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$13)
      ON CONFLICT (account_id) DO UPDATE SET provider = $2, provider_customer_id = $3, provider_subscription_id = $4, plan_key = $5, status = $6,
        current_period_end = $7, cancel_at_period_end = $8, past_due_since = $9,
        dunning_step = CASE WHEN $6 = 'past_due' THEN subscriptions.dunning_step ELSE 0 END,
@@ -448,9 +448,12 @@ async function applyStateLocked(state: SubscriptionState & { accountId: string }
        pending_plan_since = CASE WHEN $10 <> '' THEN $11::timestamptz WHEN subscriptions.provider_subscription_id = $4 THEN subscriptions.pending_plan_since END,
        pending_amount_cents = CASE WHEN $10 <> '' THEN $12::int WHEN subscriptions.provider_subscription_id = $4 THEN subscriptions.pending_amount_cents ELSE 0 END,
        collection_paused = CASE WHEN subscriptions.provider_subscription_id = $4 THEN subscriptions.collection_paused ELSE false END,
+       -- El precio aceptado se renueva solo cuando el plan guardado es el que el precio cobrado dio (PAY-28).
+       accepted_price_ref = CASE WHEN $13 <> '' THEN $13 WHEN subscriptions.provider_subscription_id = $4 THEN subscriptions.accepted_price_ref ELSE '' END,
        updated_at = now()`,
     [accountId, state.provider, state.customerId, state.subscriptionId, planKey, state.status, periodEnd, state.cancelAtPeriodEnd, pastDueSince,
-      scheduled?.key ?? '', scheduled ? now : null, scheduled ? chargeCents(scheduled) : 0],
+      scheduled?.key ?? '', scheduled ? now : null, scheduled ? chargeCents(scheduled) : 0,
+      !state.planMismatch && state.priceRef && state.planKey && state.planKey === planKey ? state.priceRef : ''],
   );
 
   // Stripe: el plan programado (anual → mensual) llegó con la renovación, o la suscripción se va a cancelar: ya no está pendiente.

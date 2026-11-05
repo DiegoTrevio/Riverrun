@@ -49,6 +49,8 @@ export interface Subscription {
 export interface SubscriptionState {
   /** Stripe: por qué el precio cobrado no dio un plan (se avisa al superadministrador, PAY-7). */
   planMismatch?: string;
+  /** Referencia del precio que se cobra (Stripe: id del precio; Mercado Pago: `centavos:moneda:meses`); ver `accepted_price_ref`. */
+  priceRef?: string;
   /** Los cobros están detenidos (Stripe `pause_collection`, Mercado Pago `paused`). */
   collectionPaused?: boolean;
   provider: ProviderName;
