@@ -21,7 +21,8 @@ por eso se llama **Copiloto**.
   pasó los 22 casos de la prueba con la IA real a unos 0.003 USD por pedido). Se cobra del presupuesto de IA de la cuenta
   (`kind = 'copilot'`).
 - **Activación:**
-  - Se enciende cuenta por cuenta (`accounts.copilot_enabled`) desde Cuentas, sin volver a desplegar.
+  - Viene encendido en todas las cuentas, nuevas y existentes (`accounts.copilot_enabled`, migración 114).
+  - El superadmin lo apaga o lo vuelve a encender cuenta por cuenta desde Cuentas, sin volver a desplegar.
   - `COPILOT_ENABLED=false` lo apaga para todas.
 
 ## Un turno
@@ -41,12 +42,14 @@ Límites por turno:
 
 | Límite | Valor |
 |---|---|
-| Pasos del modelo | 8 |
-| Herramientas | 20 |
-| Cambios | 15 |
-| Propuestas | 5 |
-| Duración | 180 s |
-| Costo | 0.50 USD |
+| Pasos del modelo | 16 |
+| Herramientas | 40 |
+| Cambios | 30 |
+| Propuestas | 8 |
+| Duración | 300 s |
+| Costo | 1.00 USD |
+
+Alcanzan para armar un agente completo en un solo pedido (crearlo, sus preguntas, su objetivo y un flujo).
 
 Turnos en curso:
 - Un solo turno en curso por hilo y por usuario.
@@ -54,6 +57,9 @@ Turnos en curso:
   paso.
 - Un turno cuyo latido (`heartbeat_at`) tiene más de 45 s pasa a `interrupted`. Una acción que quedó a medias pasa a
   `unknown` («no sabemos si se aplicó; revísalo»).
+  - Mientras una acción corre, quien la ejecuta renueva su plazo (`lease_until`, 90 s) cada 30 s. Una herramienta que
+    tarda, porque lleva IA por dentro (diseñar un flujo, importar información), sigue «ejecutándose».
+  - Solo cuando el plazo vence (el proceso se cayó) pasa a `unknown`. Renovar el plazo no mueve `rev` (migración 113).
 
 Límites de uso:
 - 30 turnos por hora por usuario y 300 al día por cuenta, contados en la base de datos.
@@ -70,6 +76,39 @@ Lo que se le manda al modelo, para gastar poco:
   esquema de `crear_regla`.
 - La lista de la conversación lleva solo los cambios y las propuestas (las últimas 12), no las consultas.
 - Los resultados de herramientas de turnos más viejos que los últimos 2 se recortan.
+- Herramientas por paquetes (siguiente sección): cada paso lleva el núcleo y solo las áreas que hacen falta.
+
+## Herramientas por paquetes
+
+El catálogo crece, pero cada paso no manda todas las herramientas (`src/copilot/packs.ts`, migración 115).
+
+**Qué va siempre:**
+- El **núcleo** (`base`): `contexto_cuenta`, `contar_etiquetas`, buscar y ver contactos, `editar_contacto`,
+  `etiquetar`, buscar y leer conversaciones, y `usar_herramientas`.
+
+**Qué paquetes se cargan además en un pedido:**
+- El de la **página abierta**. Por ejemplo, en la agenda van las herramientas de citas desde el primer paso.
+- Los de las herramientas cuyas llamadas se **repiten en el historial** (los últimos 6 turnos completos), porque un
+  proveedor rechaza una llamada a una herramienta que no está en la lista.
+- Los que tuvo el **pedido anterior** de la misma conversación (`copilot_turns.packs`).
+- Los que el modelo pide con **`usar_herramientas({areas})`**. Las instrucciones llevan un índice fijo por rol con el
+  área de cada herramienta. `usar_herramientas` no deja tarjeta.
+
+**Si el modelo llama una herramienta de su rol cuyo paquete no está cargado:**
+- se carga;
+- si sus argumentos son válidos, se ejecuta;
+- si no, responde «ya cargué su esquema, vuelve a intentarlo».
+- El rol se sigue revisando igual: lo que su rol no puede usar no se carga ni se ejecuta.
+
+**Orden y caché:**
+- El orden es fijo: primero el núcleo y después los paquetes en el orden de `PACKS` (`registry.ts`), sin importar cuándo
+  se cargó cada uno. Así el inicio de la petición se aprovecha de la caché.
+
+**Topes de tamaño** (`test/copilot.unit.test.ts`):
+- núcleo: menos de 12 000 caracteres para administrador y menos de 9 000 para agente;
+- cada paquete: menos de 14 000.
+
+**Interruptor:** `COPILOT_TOOL_PACKS=false` manda todas las herramientas en cada paso, como antes.
 
 ## Herramientas: las mismas rutas del panel
 
@@ -108,6 +147,35 @@ Resultados que ve el modelo:
 | `read` | Se ejecuta. |
 | `reversible` | Se ejecuta. Guarda la foto de antes, la de después y la receta para deshacer. |
 | `confirm` | No se ejecuta: crea una propuesta con vista previa (texto exacto, destinatario, cuántos). |
+| `code` | Igual que `confirm`, pero se confirma escribiendo el **código de verificación** en la tarjeta. Es para lo que en el panel pide el código. |
+
+**Confirmar con código (`code`, migración 117)**
+
+Es para lo que en el panel pide el código de verificación. Hoy: reglas que mandan datos de clientes a números de fuera.
+Después se suman el equipo, los webhooks, borrar un contacto, la retención y la exportación.
+- El código va en la **tarjeta**, nunca en el chat. Un mensaje que es solo un código, con una propuesta `code`
+  pendiente, se rechaza (`code_in_chat`), y el modelo tiene dicho que nunca lo pida.
+- `POST …/confirm` con `code` (también sirve un código de recuperación):
+  - Primero revisa estado, vigencia y `seen_hash`, y después el código (`verifySessionCode`, `identity/mfa.ts`).
+  - Usa los mismos contadores y el mismo bloqueo que el diálogo del panel: 5 por sesión en 15 minutos y el tope por
+    persona.
+  - Sin código responde `code_required`; con un código equivocado, `bad_code`, y la propuesta sigue como estaba.
+- Con el código bueno se crea un **permiso de un uso** (`identity/copilot-grant.ts`):
+  - **Dónde vive:** en memoria. Las rutas lo revisan sin `await` (`assertRecentMfa`) y la herramienta corre en el mismo
+    proceso.
+  - **A qué está atado:** la persona, su sesión, la acción y las rutas que la herramienta declara en `grants`.
+  - **Vigencia:** 120 s y una sola petición; se revoca al terminar.
+  - **Cómo viaja:** en la cabecera `x-copilot-grant`, que solo pone `confirmAction`. Nunca llega al modelo, a la base
+    ni a los registros.
+- **Qué abre y qué no:**
+  - `stepUpHook` y `assertRecentMfa` lo aceptan en lugar del código reciente.
+  - `ownerHook` y `assertOwner` solo quitan el bloqueo del Copiloto: **siguen exigiendo ser el dueño**.
+  - `NEVER_FROM_COPILOT` no se abre nunca: cobro, la cuenta entera, `/api/me`, `/api/2fa`, llaves de API, secretos y
+    toda ruta que rote un secreto, planes, marcas, sistema, precios de IA, borrar cuentas y reiniciar el 2FA de otra
+    persona.
+- **Después:** queda `copilot.code_confirmed` en la bitácora de seguridad. Lo confirmado con código no se deshace desde
+  la tarjeta, porque deshacerlo también sería una acción delicada.
+- **Interruptor:** `COPILOT_CODE_ACTIONS=false` hace que el Copiloto no proponga estas acciones.
 
 **Propuestas (`confirm`):**
 - Solo el clic de quien la pidió la ejecuta, con los **argumentos guardados**. El cuerpo de la petición nunca trae
@@ -161,6 +229,35 @@ Cómo funciona:
     «[Referencias]» con la herramienta, el registro y el estado.
 - La página abierta es contexto: «este contacto» se entiende sin decir cuál. El nombre del registro lo busca el
   servidor con permisos; no se confía en lo que manda el panel.
+
+## Confirmar y seguir
+
+Un pedido de varios pasos («crea el agente, ponle preguntas y hazle un flujo») se detiene en la primera propuesta,
+porque lo que sigue necesita lo que se crea al confirmarla (migración 116, `src/copilot/continue.ts`).
+
+**Cómo funciona:**
+- Si el pedido tiene más pasos, el Copiloto anota lo que falta con `seguir_al_confirmar({faltan})`. Esa herramienta no
+  deja tarjeta y solo vale si el pedido dejó algo por confirmar.
+- La tarjeta de la única propuesta pendiente de ese pedido dice **Confirmar y seguir** y «Después: …».
+- Al confirmar (`POST …/confirm` con `seguir: true`) arranca solo un pedido de continuación (`origin = 'continuation'`,
+  hijo del anterior, `chain_depth` + 1).
+  - No lleva texto nuevo.
+  - Ve el aviso «Confirmaste…» con el **resultado** de lo confirmado (el id de lo que se creó) y lo que anotó que
+    faltaba.
+- El aviso de cada confirmación lleva la acción como referencia, y el historial le agrega su resultado (hasta 1 200
+  caracteres).
+
+**Cuándo no sigue solo:**
+- si se descartó, falló o caducó;
+- si queda otra propuesta pendiente de ese pedido (sigue al confirmar la última);
+- si ya hay un pedido más nuevo o en curso;
+- si se llegó a `COPILOT_MAX_CONTINUATIONS` continuaciones seguidas (4; 0 = nunca).
+
+**Límites:**
+- La continuación cuenta para los mismos límites que un pedido escrito (`turnAllowance`): por hora, por día, el tope de
+  USD del día y el presupuesto de IA.
+- Si un límite lo impide, queda el aviso «No seguí solo: … escríbeme «sigue»».
+- Solo arranca por el clic de una persona, así que no hay ciclos.
 
 ## Catálogo
 
@@ -233,21 +330,63 @@ Las reglas del Copiloto no llevan acciones que mandan datos a otros sistemas (`w
 sale al panel: la revisión del flujo, la campaña, la cotización). Si cambió antes de confirmar, la acción falla y pide
 volver a proponerla.
 
-**No incluido en esta versión:** plantillas de WhatsApp, probar reglas o al agente en el simulador, ajustes de
-cotización, avisos al equipo y activación del agente.
+**Agente completo (fase 1, solo administradores):**
+
+| Archivo | Herramientas | Riesgo |
+|---|---|---|
+| `agente-config.ts` (paquete `agente`) | `cambiar_preguntas` (lista completa en orden; conserva caminos y lo demás de las que ya existían), `cambiar_objetivo` (objetivo, etapas con `flow_step_map`, saludo y qué pasa al cumplirlo), `ajustes_avanzados_del_agente`, `mensajes_guardados`, `cotizaciones_del_agente` (manda el objeto `ai.quotes` completo y revisa formato y campos) | V |
+| | `cambiar_activacion` (cuándo responde), `modelo_del_agente` (solo modelos con precio: `GET /api/ai-models`) | C |
+| `agente-vida.ts` (paquete `agentes`) | `crear_agente` (asistente de creación con el `request_id` de la vista previa; nace apagado), `duplicar_agente`, `borrar_agente`, `reiniciar_conversaciones_del_agente`, `restaurar_version` | C |
+| | `ver_versiones`, `probar_agente` (simulador; lo que contesta va en `datos_del_cliente`), `probar_palabras`, `ver_pruebas`, `correr_pruebas`, `ver_resultado_pruebas` | R |
+| | `editar_pruebas` | V |
+| `conocimiento.ts` (paquete `conocimiento`) | `importar_informacion` (página, Google Sheets, texto o archivo adjunto; la tarjeta muestra todo lo que se guardará y se guarda eso mismo) | C |
+| | `estado_del_indice`, `ver_fotos` | R |
+| | `subir_foto` (de un archivo adjunto, con `call.upload`), `editar_foto` | V |
+| | `borrar_foto` | C |
+| `canales.ts` (paquete `canales`) | `ver_canales` (nunca el token del canal) | R |
+| | `crear_chat_web` (con su código para la página), `crear_whatsapp` (el QR lo escanea la persona en la pantalla enlazada) | V |
+| | `asignar_canal` | C |
+
+La pestaña abierta del agente carga su paquete: Conocimiento y Fotos cargan `conocimiento`, Conexiones carga
+`canales`, y Probar y Empezar cargan `agentes`.
 
 **Fuera del Copiloto** (dice dónde hacerlo):
-- canales;
-- planes;
-- presupuesto y modelo de IA;
-- usuarios e invitaciones;
-- llaves de API, webhooks y secretos;
-- borrar o exportar la cuenta o los datos de un contacto;
-- consentimiento, baja y retención;
-- crear, duplicar o borrar agentes;
-- subir archivos;
-- redes sociales;
-- funciones de superadmin.
+- pagar, cambiar o cancelar el plan de la plataforma, el método de pago y los datos fiscales;
+- exportar o borrar toda la cuenta, y transferir el dueño;
+- la contraseña, la verificación en dos pasos, las sesiones y los dispositivos de alguien;
+- llaves de API, secretos y su rotación;
+- escanear el QR de WhatsApp o dar permisos de Facebook, Instagram o calendarios (lo hace la persona; el Copiloto
+  enlaza la pantalla);
+- planes, marcas y sistema de superadmin, y precios de IA.
+
+## Archivos adjuntos
+
+Con el clip (y «Tomar foto» en el teléfono) se adjunta una foto, un PDF, un CSV o un documento al pedido (migración 118,
+`src/copilot/files.ts`).
+
+**Subida:**
+- Va a `POST /api/copilot/threads/:id/files`.
+- El tipo sale de los bytes (`readUpload`): fotos y documentos; nada de HTML, ejecutables ni comprimidos.
+- Antes de subirlas, el panel reduce las fotos grandes a 2048 px y a JPEG de menos de 4.5 MB. Eso además les quita la
+  ubicación.
+
+**Topes:** 20 archivos por hora por persona, 20 vigentes por conversación, 200 MB vigentes por cuenta y 4 por pedido.
+
+**Qué ve el modelo:**
+- Solo una línea por archivo: «[Archivos adjuntos] - archivo_id … · «nombre» (foto, 1.2 MB)». Nunca ve el contenido
+  ni una ruta de disco.
+- Las herramientas reciben el `archivo_id`; `fileForTool` revisa que sea de esta conversación y que siga vigente.
+  `call.upload` arma el multipart para la ruta del panel.
+- Lo que una herramienta lea de un archivo se trata como dato, no como instrucción.
+
+**Cuándo se borran:**
+- a las 24 horas (`COPILOT_FILE_HOURS`), por la limpieza de datos (`applyRetention` → `sweepCopilotFiles`);
+- al borrar la conversación;
+- al borrar los datos de un cliente (los de esos pedidos);
+- al borrar la cuenta.
+- La limpieza también quita los archivos de `uploads/<cuenta>/copilot/` que se quedaron sin fila.
+
+`GET /api/copilot/files/:id` los descarga, siempre como archivo adjunto y con `nosniff`.
 
 ## Datos (migración 092)
 

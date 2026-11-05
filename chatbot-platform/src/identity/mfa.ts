@@ -209,6 +209,21 @@ export async function verifyUserCode(user: ChallengeUser, code: string): Promise
   return wrongCode(user, hits);
 }
 
+/**
+ * El código escrito con la sesión abierta (verificación reciente y confirmar con código en el Copiloto): 5 por sesión en
+ * 15 minutos, contados antes de revisarlos (ID-15), además del tope por persona. Ambos caminos comparten contadores y
+ * bloqueo: confirmar en el Copiloto no da intentos de más.
+ */
+export async function verifySessionCode(userId: string, sessionId: string, code: string): Promise<{ result: 'ok' | 'bad' | 'locked' | 'too_many' | 'no_user'; recoveryRemaining?: number }> {
+  const user = await loadMfaUser(userId);
+  if (!user) return { result: 'no_user' };
+  const key = `mfa-session:${sessionId}`;
+  if ((await countHit(key, LIMITS.codePerSession.windowMs)) > LIMITS.codePerSession.max) return { result: 'too_many' };
+  const check = await verifyUserCode(user, code);
+  if (check.result === 'ok') await releaseHit(key);
+  return check;
+}
+
 /** Códigos revisados de verdad (las pruebas comprueban que los topes se aplican antes de revisar). */
 export const mfaChecks = { count: 0 };
 

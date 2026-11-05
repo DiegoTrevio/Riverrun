@@ -22,7 +22,12 @@ export function parsePage(raw: string | undefined | null): Page {
     case 'contacts': return page({ kind: 'contacts', area: 'contactos' });
     case 'conversation': return page({ kind: 'conversation', id: id(parts[1]), area: 'conversaciones' });
     case 'conversations': return page({ kind: 'conversations', area: 'conversaciones' });
-    case 'bot': return page({ kind: 'bot', id: id(parts[1]), area: 'agente', label: parts[2] && /^[a-z]{1,20}$/.test(parts[2]) ? parts[2] : undefined });
+    case 'bot': {
+      // La pestaña abierta decide qué herramientas van de entrada (conocimiento y fotos, conexiones, probar…).
+      const tab = parts[2] && /^[a-z]{1,20}$/.test(parts[2]) ? parts[2] : undefined;
+      const area = tab === 'conocimiento' || tab === 'imagenes' ? 'conocimiento' : tab === 'conexiones' ? 'canales' : tab === 'probar' || tab === 'empezar' ? 'agentes' : 'agente';
+      return page({ kind: 'bot', id: id(parts[1]), area, tab });
+    }
     case 'automation':
       if (parts[1] === 'lienzo' && id(parts[2])) return page({ kind: 'board', id: id(parts[2]), area: 'automatizacion' });
       if (parts[1] === 'rules' && id(parts[2])) return page({ kind: 'rule', id: id(parts[2]), area: 'automatizacion' });
@@ -35,7 +40,7 @@ export function parsePage(raw: string | undefined | null): Page {
     case 'agenda': return page({ kind: 'agenda', area: 'agenda' });
     case 'cobros': return page({ kind: 'receivables', id: id(params.get('contact')), area: 'cobros' });
     case 'estadisticas': case 'consumo': return page({ kind: 'stats', area: 'datos' });
-    case undefined: case 'agentes': case 'asistentes': return page({ kind: 'agents', area: 'agente' });
+    case undefined: case 'agentes': case 'asistentes': return page({ kind: parts[1] === 'nuevo' ? 'new_agent' : 'agents', area: 'agentes' });
     default: return page({ kind: /^[a-z-]{1,30}$/.test(parts[0]) ? parts[0] : 'otra', area: 'cuenta' });
   }
 }
@@ -43,7 +48,7 @@ export function parsePage(raw: string | undefined | null): Page {
 const KIND_NAMES: Record<string, string> = {
   contact: 'Contacto', conversation: 'Conversación', bot: 'Agente', board: 'Flujo', rule: 'Regla', sequence: 'Secuencia',
   campaign: 'Campaña', pipeline: 'Oportunidades', quote: 'Cotización', receivables: 'Cobros de un cliente',
-  contacts: 'Lista de contactos', conversations: 'Bandeja de conversaciones', agents: 'Agentes', agenda: 'Agenda',
+  contacts: 'Lista de contactos', new_agent: 'Crear un agente', conversations: 'Bandeja de conversaciones', agents: 'Agentes', agenda: 'Agenda',
   quotes: 'Cotizaciones', stats: 'Estadísticas', settings: 'Horario y avisos', automation: 'Automatización',
 };
 
@@ -73,6 +78,7 @@ export async function describePage(page: Page, call: Caller): Promise<Page & { c
   }
   // El nombre de un cliente lo escribió él: va entre comillas, en una línea y dicho como tal.
   const shown = String(name).replace(/\s+/g, ' ').trim().slice(0, 80);
-  const label = !shown ? kind : contactId ? `${kind} · «${shown}» (nombre escrito por el cliente)` : `${kind} · ${shown}`;
+  const base = !shown ? kind : contactId ? `${kind} · «${shown}» (nombre escrito por el cliente)` : `${kind} · ${shown}`;
+  const label = page.kind === 'bot' && page.tab ? `${base} (pestaña ${page.tab})` : base;
   return { ...page, label, ...(contactId ? { contactId } : {}) };
 }

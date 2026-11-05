@@ -5,7 +5,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { notifyUser } from '../identity/notices.js';
-import { challengeKey, challengeUser, confirmEnrollment, finishChallenge, loadMfaUser, sendEnrollLink, startEnrollment, useEnrollLink, verifyUserCode } from '../identity/mfa.js';
+import { challengeKey, challengeUser, confirmEnrollment, finishChallenge, loadMfaUser, sendEnrollLink, startEnrollment, useEnrollLink, verifySessionCode, verifyUserCode } from '../identity/mfa.js';
 import { forgetTrustedDevices, listTrustedDevices } from '../identity/devices.js';
 import { hasRecentMfa, stepUp } from '../identity/step-up.js';
 import { notFound } from '../access.js';
@@ -98,15 +98,13 @@ export async function mfaPublicRoutes(app: FastifyInstance) {
 export async function mfaRoutes(api: FastifyInstance) {
   api.post('/api/2fa/step-up', async (req, reply) => {
     const b = parse(Code, req.body);
-    const user = await loadMfaUser(req.user.id);
-    if (!user) return reply.code(401).send({ error: 'No autenticado' });
-    // 5 códigos por sesión en 15 minutos, contados antes de revisarlos (ID-15); además del tope por persona.
-    const key = `mfa-session:${req.sessionId}`;
-    if ((await countHit(key, LIMITS.codePerSession.windowMs)) > LIMITS.codePerSession.max) return reply.code(429).send({ error: TOO_MANY });
-    const check = await verifyUserCode(user, b.code);
+    // 5 códigos por sesión en 15 minutos, contados antes de revisarlos (ID-15); además del tope por persona. Los mismos
+    // contadores que confirmar con código en el Copiloto.
+    const check = await verifySessionCode(req.user.id, String(req.sessionId), b.code);
+    if (check.result === 'no_user') return reply.code(401).send({ error: 'No autenticado' });
+    if (check.result === 'too_many') return reply.code(429).send({ error: TOO_MANY });
     if (check.result === 'locked') return reply.code(429).send({ error: LOCKED });
     if (check.result !== 'ok') return wrongCode(reply);
-    await releaseHit(key);
     await query(`UPDATE user_sessions SET mfa_at = now() WHERE id = $1 AND user_id = $2`, [req.sessionId, req.user.id]);
     return { ok: true, ...(check.recoveryRemaining !== undefined ? { recovery_remaining: check.recoveryRemaining } : {}) };
   });

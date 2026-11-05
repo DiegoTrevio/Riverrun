@@ -7,6 +7,7 @@ import { removeAttachmentFile } from './attachments.js';
 import { logEvent } from './logs.js';
 import * as astore from './automation/store.js';
 import { pruneThreads, redactContact } from './copilot/store.js';
+import { sweepCopilotFiles } from './copilot/files.js';
 import { config } from './config.js';
 import { effectiveRetention, type Retention } from './automation/types.js';
 
@@ -122,6 +123,8 @@ export async function applyRetention(now = new Date()): Promise<{ accounts: numb
   await deleteInBatches('api_idempotency', `created_at < $1`, [new Date(now.getTime() - 86400_000)]);
   // Conversaciones con el Copiloto: 90 días sin actividad (COPILOT_RETENTION_DAYS).
   await pruneThreads(now);
+  // Archivos adjuntos al Copiloto: 24 horas (COPILOT_FILE_HOURS), y los que quedaron sin conversación.
+  await sweepCopilotFiles(now);
   // Estadísticas de las redes (totales por día, sin datos de personas): poco más de un año.
   await query(`DELETE FROM social_account_stats WHERE day < ($1::timestamptz AT TIME ZONE 'UTC')::date - 400`, [now]);
   const accounts = await query<{ id: string; name: string; settings: unknown }>(`SELECT id, name, settings FROM accounts WHERE active`);

@@ -154,7 +154,12 @@ Los medios y bajos de identidad de [la revisión del 31 de octubre](revision-seg
 **Cambios que nota la gente:**
 - Quien entra por primera vez con su contraseña (o después de «Restablecer 2FA») ve «Revisa tu correo»: abre el enlace en el mismo navegador y después escanea el QR. Hay «Mandar otro enlace».
 - Al restablecer la contraseña por correo, una app de verificación configurada antes de este cambio se quita y se configura otra vez.
-- El Copiloto ya no hace nada que pida el código o que sea del dueño: lo hace la persona desde el panel.
+- El Copiloto ya no hace nada que pida el código o que sea del dueño: lo hace la persona desde el panel. *(Actualización,
+  noviembre: ahora puede hacerlo, pero solo con el código escrito en la tarjeta de esa propuesta.)*
+  - Ese código crea un permiso de un uso, atado a la persona, la sesión, la acción y sus rutas.
+  - El permiso no hace dueño a nadie.
+  - Nunca abre cobro, la cuenta entera, el perfil, llaves, secretos, planes, marcas ni sistema.
+  - Detalles en [copiloto.md](copiloto.md#riesgo); pruebas en `copilot-code.test.ts` y `copilot-grant.unit.test.ts`.
 - Dar de baja a alguien deja sus citas futuras sin asignar.
 - El enlace para borrar la cuenta sirve una vez.
 

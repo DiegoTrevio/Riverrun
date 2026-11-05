@@ -5,6 +5,7 @@
  */
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { HttpError } from '../access.js';
+import { copilotGranted } from './copilot-grant.js';
 
 export const STEP_UP_MS = 15 * 60_000;
 const MESSAGE = 'Escribe tu código de verificación para continuar';
@@ -30,15 +31,25 @@ export function hasRecentMfa(req: FastifyRequest): boolean {
 export const fromCopilot = (req: FastifyRequest) => !!(req.headers['x-copilot'] || req.headers['x-copilot-action']);
 export const COPILOT_BLOCKED = 'El Copiloto no hace esta acción: hazla tú desde el panel.';
 
-/** Gancho de las rutas con sesión (después de requireAuth). */
+/**
+ * Gancho de las rutas con sesión (después de requireAuth). El Copiloto solo pasa con el permiso de un uso que se crea
+ * cuando la persona escribe su código en la tarjeta de esa propuesta (`copilot-grant.ts`): ese código cuenta como la
+ * verificación reciente de esta única petición.
+ */
 export async function stepUpHook(req: FastifyRequest, reply: FastifyReply) {
   if (!req.routeOptions.config?.stepUp) return;
-  if (fromCopilot(req)) return reply.code(403).send({ error: COPILOT_BLOCKED, code: 'copilot_blocked' });
+  if (fromCopilot(req)) {
+    if (copilotGranted(req)) return;
+    return reply.code(403).send({ error: COPILOT_BLOCKED, code: 'copilot_blocked' });
+  }
   if (!hasRecentMfa(req)) return reply.code(403).send({ error: MESSAGE, code: 'step_up' });
 }
 
 /** Lo mismo dentro de una ruta, cuando solo algunos cambios lo piden. */
 export function assertRecentMfa(req: FastifyRequest): void {
-  if (fromCopilot(req)) throw new HttpError(403, COPILOT_BLOCKED, undefined, { code: 'copilot_blocked' });
+  if (fromCopilot(req)) {
+    if (copilotGranted(req)) return;
+    throw new HttpError(403, COPILOT_BLOCKED, undefined, { code: 'copilot_blocked' });
+  }
   if (!hasRecentMfa(req)) throw new HttpError(403, MESSAGE, undefined, { code: 'step_up' });
 }

@@ -385,6 +385,14 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   /** Precios por modelo para estimar el costo cuando el proveedor no lo reporta (solo superadmin). */
   api.get('/api/ai-prices', { preHandler: requireRole('superadmin') }, async () => query(`SELECT * FROM ai_prices ORDER BY model`));
 
+  /**
+   * Los modelos que un agente puede usar: los que tienen precio en la plataforma (uno sin precio falla al contestar).
+   * Solo los nombres, sin precios: para el selector del agente y para el Copiloto.
+   */
+  api.get('/api/ai-models', { preHandler: requireRole('admin') }, async () => ({
+    models: (await query<{ model: string }>(`SELECT model FROM ai_prices ORDER BY model`)).map((r) => r.model),
+  }));
+
   api.put('/api/ai-prices/:model', { preHandler: requireRole('superadmin'), ...stepUp }, async (req: any) => {
     const n = z.number().min(0).max(10000);
     const b = parse(z.object({ input_per_mtok: n.default(0), cached_per_mtok: n.default(0), output_per_mtok: n.default(0), per_audio_minute: n.default(0),is_free:z.boolean().default(false) }), req.body);

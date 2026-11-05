@@ -13,17 +13,23 @@ import { insertAiRun } from '../store/index.js';
 import { logEvent } from '../logs.js';
 import type { User } from '../types.js';
 import { makeCaller, ToolError, type Inject } from './executor.js';
-import { allowed, toolSpec, type Ctx, type ToolDef } from './registry.js';
+import { allowed, packOf, toolSpec, type Ctx, type ToolDef } from './registry.js';
 import { assessRisk } from './risk.js';
 import { forModel } from './summarize.js';
 import { describePage } from './page.js';
 import { accountSnapshot, systemMessage, touchesCustomers } from './prompt.js';
-import { buildHistory, FULL_TURNS } from './history.js';
+import { buildHistory, FULL_TURNS, replayedToolNames } from './history.js';
+import { activePacks, packIndex, visibleTools } from './packs.js';
+import { threadFiles } from './files.js';
 import * as cs from './store.js';
 
 export interface RunnerDeps { ai: AiProvider; inject: Inject; tools: ToolDef[] }
 /** `maxUsd`: lo que le queda a la cuenta del tope diario del Copiloto (el pedido no gasta más que eso). */
-export interface TurnRequest { thread: cs.Thread; turn: cs.Turn; user: User; cookie: string; ip?: string; refs: string[]; maxUsd?: number }
+export interface TurnRequest {
+  thread: cs.Thread; turn: cs.Turn; user: User; cookie: string; ip?: string; refs: string[]; maxUsd?: number;
+  /** Pedido que sigue solo después de confirmar («Confirmar y seguir»), con lo que el anterior anotó que faltaba. */
+  continuation?: { plan: string };
+}
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const inflight = new Set<Promise<void>>();
@@ -62,10 +68,14 @@ function idsIn(value: unknown, out: Set<string>) {
 /** Contexto de una herramienta: quién, en qué cuenta, con qué sesión y qué página tiene abierta. */
 export async function contextFor(o: {
   deps: RunnerDeps; user: User; accountId: string; cookie: string; ip?: string; threadId: string; turnId: string; page: cs.Page; actionId?: string;
+  /** Permiso de un uso del código escrito en la tarjeta (solo al confirmar una propuesta `code`). */
+  grant?: string;
 }): Promise<Ctx> {
-  const { timezone } = await accountInfo(o.accountId);
-  const call = makeCaller({ inject: o.deps.inject, cookie: o.cookie, accountId: o.accountId, superadmin: o.user.role === 'superadmin', ip: o.ip, actionId: o.actionId });
-  return { user: o.user, accountId: o.accountId, timezone, call, page: o.page, threadId: o.threadId, turnId: o.turnId, scope: new Set(), tainted: false };
+  const [{ timezone }, attached] = await Promise.all([accountInfo(o.accountId), threadFiles(o.threadId)]);
+  const call = makeCaller({ inject: o.deps.inject, cookie: o.cookie, accountId: o.accountId, superadmin: o.user.role === 'superadmin', ip: o.ip, actionId: o.actionId, grant: o.grant });
+  // Los archivos vigentes de esta conversación: las herramientas los leen por su id (`fileForTool`).
+  const files = new Map(attached.filter((f) => new Date(f.expires_at).getTime() > Date.now()).map((f) => [f.id, f]));
+  return { user: o.user, accountId: o.accountId, timezone, call, page: o.page, threadId: o.threadId, turnId: o.turnId, scope: new Set(), tainted: false, files };
 }
 
 function errorText(e: unknown): string {
@@ -118,15 +128,29 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
     // Lo que se leyó de clientes en los turnos que el modelo vuelve a ver completos sigue en el historial.
     if (await cs.recentlyTainted(thread.id, turn.id, FULL_TURNS)) ctx.tainted = true;
 
-    const defs = toolsFor(user, deps.tools);
-    const specs = defs.map(toolSpec);
+    // Todas las que puede usar su rol; al modelo solo van las de los paquetes cargados (núcleo + los que hacen falta).
+    const all = toolsFor(user, deps.tools);
     const snapshot = await accountSnapshot(ctx.call);
     const [stored, actions] = await Promise.all([cs.threadMessages(thread.id), cs.threadActions(thread.id)]);
+    const packs = activePacks({ all, page, replayed: replayedToolNames(stored), previous: await cs.previousPacks(thread.id, turn.id) });
+    let visible = visibleTools(all, packs);
+    let specs = visible.map(toolSpec);
+    let packsChanged = false;
+    ctx.packs = packs;
+    ctx.loadPacks = (more) => {
+      for (const p of more) packs.add(p);
+      packsChanged = true;
+      return all.filter((d) => more.includes(packOf(d))).map((d) => d.name);
+    };
+    await cs.markTurn(turn.id, { packs: [...packs] });
     // AI-5: los títulos de las acciones sobre clientes (con sus nombres) entran al prompt; el turno cuenta como contaminado.
     const listed = [...actions.filter((a) => a.risk !== 'read').slice(-12), ...(await cs.actionsByIds(req.refs, thread.id))];
     if (listed.some(touchesCustomers)) ctx.tainted = true;
-    const system = systemMessage({ model: limits.model, user, accountName: account.name, timezone: ctx.timezone, snapshot, page, actions });
-    const history: AnyMessage[] = buildHistory(stored, actions);
+    const system = systemMessage({
+      model: limits.model, user, accountName: account.name, timezone: ctx.timezone, snapshot, page, actions,
+      index: limits.toolPacks ? packIndex(all) : '', continuing: req.continuation?.plan,
+    });
+    const history: AnyMessage[] = buildHistory(stored, actions, await threadFiles(thread.id));
     const ai = accountAi(deps.ai, thread.account_id, null, 'copilot');
     const fallback = limits.fallbackModels.length ? limits.fallbackModels : 'none' as const;
 
@@ -138,6 +162,12 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
     // Cambios y propuestas ya hechos en este pedido (no se repiten); las consultas se olvidan al cambiar algo.
     const done = new Map<string, string>();
     const reads = new Map<string, string>();
+    // «Confirmar y seguir»: solo si este pedido dejó algo por confirmar.
+    ctx.planContinuation = async (faltan) => {
+      if (!proposals) return false;
+      await cs.setContinuePlan(turn.id, faltan);
+      return true;
+    };
 
     const ask = async (toolChoice: 'auto' | 'none') => {
       const res = await ai.complete({
@@ -177,12 +207,20 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
         limitHit = 'costo';
         return err('limite', 'Llegué al tope de costo o de tiempo de este pedido; pide el resto en otro mensaje.');
       }
-      const def = defs.find((d) => d.name === call.name);
+      const def = all.find((d) => d.name === call.name);
       if (!def) return err('no_disponible', `«${call.name}» no existe o tu usuario no la puede usar.`);
+      // Una herramienta de su rol cuyo paquete no estaba cargado: se carga (el siguiente paso ya trae su esquema).
+      const loadedNow = !visible.includes(def);
+      if (loadedNow) ctx.loadPacks!([packOf(def)]);
       let raw: unknown;
       try { raw = JSON.parse(call.arguments || '{}'); } catch { return err('datos_invalidos', 'Los argumentos no son un JSON válido.'); }
       const parsed = def.schema.safeParse(raw);
-      if (!parsed.success) return JSON.stringify({ error: 'datos_invalidos', mensaje: 'Argumentos inválidos', detalles: parsed.error.issues.slice(0, 6).map((i) => `${i.path.join('.') || 'argumentos'}: ${i.message}`) });
+      if (!parsed.success) {
+        return JSON.stringify({
+          error: 'datos_invalidos', mensaje: loadedNow ? 'Argumentos inválidos. Ya cargué su esquema: vuelve a intentarlo con los argumentos correctos.' : 'Argumentos inválidos',
+          detalles: parsed.error.issues.slice(0, 6).map((i) => `${i.path.join('.') || 'argumentos'}: ${i.message}`),
+        });
+      }
       const args = parsed.data;
       const key = `${def.name}:${cs.stableJson(args)}`;
       const prior = done.get(key) ?? reads.get(key);
@@ -204,7 +242,8 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
           }
           if (r.untrusted) ctx.tainted = true;
           if (r.untrusted || r.contactIds?.length) await cs.markTurn(turn.id, { tainted: r.untrusted, contactIds: r.contactIds });
-          await cs.insertAction({ thread_id: thread.id, turn_id: turn.id, account_id: thread.account_id, user_id: user.id, tool_call_id: call.id, tool: def.name, args: args as Record<string, unknown>, risk: 'read', status: 'done', title: r.title ?? def.label(args), links: r.links ?? [], contact_ids: r.contactIds ?? [], executed_at: new Date() });
+          // Las del propio Copiloto (cargar herramientas) no son acciones sobre la cuenta: no dejan tarjeta.
+          if (!def.meta) await cs.insertAction({ thread_id: thread.id, turn_id: turn.id, account_id: thread.account_id, user_id: user.id, tool_call_id: call.id, tool: def.name, args: args as Record<string, unknown>, risk: 'read', status: 'done', title: r.title ?? def.label(args), links: r.links ?? [], contact_ids: r.contactIds ?? [], executed_at: new Date() });
           const text = forModel(r.data);
           reads.set(key, text);
           return text;
@@ -219,7 +258,7 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
         changes++;
         const action = await cs.insertAction({ thread_id: thread.id, turn_id: turn.id, account_id: thread.account_id, user_id: user.id, tool_call_id: call.id, tool: def.name, args: args as Record<string, unknown>, risk: 'reversible', risk_reasons: risk.reasons, status: 'executing', title: def.label(args) });
         try {
-          const r = await def.execute(args, { ...ctx, call: makeCaller({ inject: deps.inject, cookie: req.cookie, accountId: thread.account_id, superadmin: user.role === 'superadmin', ip: req.ip, actionId: action.id }) });
+          const r = await cs.withLease(action.id, () => def.execute(args, { ...ctx, call: makeCaller({ inject: deps.inject, cookie: req.cookie, accountId: thread.account_id, superadmin: user.role === 'superadmin', ip: req.ip, actionId: action.id }) }));
           const title = r.title ?? def.label(args);
           if (!ctx.tainted) r.contactIds?.forEach((id) => ctx.scope.add(id));
           if (r.untrusted) ctx.tainted = true;
@@ -241,7 +280,9 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
         }
       }
 
-      // Confirmar: no se ejecuta; queda una propuesta con su vista previa.
+      // Confirmar (o confirmar con código): no se ejecuta; queda una propuesta con su vista previa.
+      const withCode = risk.level === 'code';
+      if (withCode && !limits.codeActions) return err('sin_permiso', 'Esta acción la tienes que hacer tú desde el panel.');
       if (proposals >= limits.maxProposals) { limitHit = 'propuestas'; return err('limite', 'Ya dejé varias propuestas por confirmar; pide el resto cuando las revises.'); }
       let preview: cs.Preview;
       let contactIds: string[] = [];
@@ -254,11 +295,16 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
       proposals++;
       const action = await cs.insertAction({
         thread_id: thread.id, turn_id: turn.id, account_id: thread.account_id, user_id: user.id, tool_call_id: call.id, tool: def.name,
-        args: args as Record<string, unknown>, args_hash: cs.argsHash(def.name, args, preview), risk: 'confirm', risk_reasons: risk.reasons,
+        args: args as Record<string, unknown>, args_hash: cs.argsHash(def.name, args, preview), risk: withCode ? 'code' : 'confirm', risk_reasons: risk.reasons,
         status: 'proposed', title: preview.title, preview, contact_ids: contactIds, expires_at: new Date(Date.now() + limits.proposalMinutes * 60_000),
       });
       if (contactIds.length) await cs.markTurn(turn.id, { contactIds });
-      const text = JSON.stringify({ estado: 'pendiente_de_confirmacion', accion: `A${action.id.slice(0, 8)}`, resumen: preview.title, ...(risk.reasons.length ? { motivo: risk.reasons } : {}), nota: 'Todavía no se hace: la persona debe confirmarlo en la tarjeta.' });
+      const text = JSON.stringify({
+        estado: 'pendiente_de_confirmacion', accion: `A${action.id.slice(0, 8)}`, resumen: preview.title, ...(risk.reasons.length ? { motivo: risk.reasons } : {}),
+        ...(withCode
+          ? { con_codigo: true, nota: 'Todavía no se hace: la persona lo confirma escribiendo su código de verificación en la tarjeta. Nunca le pidas el código en el chat.' }
+          : { nota: 'Todavía no se hace: la persona debe confirmarlo en la tarjeta.' }),
+      });
       done.set(key, text);
       return text;
     };
@@ -292,6 +338,13 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
           : await runTool(c);
         history.push({ role: 'tool', tool_call_id: c.id, content });
         await cs.addMessage({ thread_id: thread.id, turn_id: turn.id, role: 'tool', tool_call_id: c.id, content });
+      }
+      // Paquetes nuevos: el siguiente paso ya manda sus herramientas (y el siguiente pedido los conserva).
+      if (packsChanged) {
+        packsChanged = false;
+        visible = visibleTools(all, packs);
+        specs = visible.map(toolSpec);
+        await cs.markTurn(turn.id, { packs: [...packs] });
       }
     }
   } catch (e: any) {

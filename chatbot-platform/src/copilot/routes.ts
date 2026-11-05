@@ -8,8 +8,15 @@ import { HttpError, notFound } from '../access.js';
 import { cookieName } from '../auth.js';
 import { config } from '../config.js';
 import { query } from '../db.js';
-import { budgetPolicy, normalize, platformAiCap } from '../ai/budget.js';
 import { assertAiAllowed } from '../ai/gate.js';
+import { turnAllowance } from './allowance.js';
+import { maybeContinue } from './continue.js';
+import { tidy } from './prompt.js';
+import { deleteFile, FILE_LIMITS, getOwnFile, ownFiles, saveCopilotFile, threadFiles } from './files.js';
+import { attachmentAbsolutePath } from '../attachments.js';
+import { countHit } from '../identity/rate-limit.js';
+import { readUpload } from '../routes/util.js';
+import fs from 'node:fs/promises';
 import * as store from '../store/index.js';
 import { parse } from '../routes/util.js';
 import { confirmAction, declineAction, undoAction, undoTurn } from './actions.js';
@@ -20,6 +27,8 @@ import * as cs from './store.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const Id = z.string().regex(UUID, 'Id inválido');
+/** Un mensaje que es solo un código (6 dígitos, o uno de recuperación con letras, números y guiones). */
+const CODE_SHAPE = /^\s*(\d{3}\s?\d{3}|[a-z0-9]{4,5}(-[a-z0-9]{4,5}){1,3})\s*$/i;
 
 /** Cuenta en la que trabaja esta petición, si tiene el Copiloto encendido. */
 async function copilotAccount(req: FastifyRequest): Promise<string> {
@@ -41,43 +50,11 @@ function sessionCookie(req: FastifyRequest): string {
   return `${name}=${value}`;
 }
 
-/** ¿El gasto de IA ya pasó el 80 % de un límite? Así el Copiloto no deja sin IA al agente que atiende a los clientes. */
-async function budgetTight(accountId: string): Promise<boolean> {
-  const { settings } = await budgetPolicy(accountId);
-  const model = normalize(config.copilot.model);
-  const caps = [
-    ...(settings.monthly_usd !== null ? [{ period: 'month', limit: settings.monthly_usd, model: null as string | null }] : []),
-    ...(settings.daily_usd !== null ? [{ period: 'day', limit: settings.daily_usd, model: null as string | null }] : []),
-    ...settings.models.filter((m) => normalize(m.model) === model).map((m) => ({ period: m.period, limit: m.limit_usd, model })),
-  ];
-  for (const cap of caps) {
-    if (cap.limit <= 0) return true;
-    const [row] = await query<{ used: string }>(
-      `SELECT coalesce(sum(coalesce(charged_usd, reserved_usd)), 0) AS used FROM ai_spend
-        WHERE account_id = $1 AND created_at >= date_trunc($2, now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AND ($3::text IS NULL OR $3 = ANY(models)) AND state <> 'rejected'`,
-      [accountId, cap.period, cap.model],
-    );
-    if (Number(row.used) >= cap.limit * 0.8) return true;
-  }
-  // PAY-6: el tope de la plataforma (plan, prueba o excepción de la cuenta) también: una cuenta sin cupo no usa el Copiloto.
-  const platform = await platformAiCap(accountId);
-  if (platform !== null) {
-    if (platform <= 0) return true;
-    const [row] = await query<{ used: string }>(
-      `SELECT coalesce(sum(coalesce(charged_usd, reserved_usd)), 0) AS used FROM ai_spend
-        WHERE account_id = $1 AND created_at >= date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AND state <> 'rejected'`,
-      [accountId],
-    );
-    if (Number(row.used) >= platform * 0.8) return true;
-  }
-  return false;
-}
-
 // --- Lo que ve el panel ----------------------------------------------------------------------------------------------
 
 function messageOut(m: cs.Message) {
   if (m.role === 'tool' || (m.role === 'assistant' && !m.content)) return null;
-  return { id: Number(m.id), role: m.role, content: m.redacted ? '' : m.content, redacted: m.redacted, turn_id: m.turn_id, refs: m.refs, created_at: m.created_at, rev: Number(m.rev) };
+  return { id: Number(m.id), role: m.role, content: m.redacted ? '' : m.content, redacted: m.redacted, turn_id: m.turn_id, refs: m.refs, files: m.redacted ? [] : m.files ?? [], created_at: m.created_at, rev: Number(m.rev) };
 }
 
 function actionOut(a: cs.Action) {
@@ -93,7 +70,16 @@ function actionOut(a: cs.Action) {
 
 function turnOut(t: cs.Turn | null) {
   if (!t) return null;
-  return { id: t.id, status: t.status, step_label: t.step_label, error: t.error, started_at: t.started_at, finished_at: t.finished_at, steps: t.steps, tool_calls: t.tool_calls, rev: Number(t.rev) };
+  return {
+    id: t.id, status: t.status, step_label: t.step_label, error: t.error, started_at: t.started_at, finished_at: t.finished_at, steps: t.steps, tool_calls: t.tool_calls, rev: Number(t.rev),
+    // «Confirmar y seguir»: si sigue solo de otro pedido y lo que anotó que falta (para la tarjeta).
+    origin: t.origin, continue_plan: t.continue_plan ? tidy(t.continue_plan, 300) : '',
+  };
+}
+
+/** Un archivo adjunto, como lo ve el panel (sin su ruta en disco). */
+function fileOut(f: { id: string; name: string; kind: string; size_bytes: number; expires_at: Date }) {
+  return { id: f.id, name: f.name, kind: f.kind, size_bytes: f.size_bytes, expires_at: f.expires_at, expired: new Date(f.expires_at).getTime() < Date.now() };
 }
 
 const maxRev = (...lists: { rev: string }[][]) => lists.flat().reduce((n, x) => Math.max(n, Number(x.rev)), 0);
@@ -141,9 +127,10 @@ export async function copilotRoutes(api: FastifyInstance, deps: RunnerDeps) {
   api.get('/api/copilot/threads/:id', async (req: any) => {
     const thread = await ownThread(req);
     await cs.sweepStale(thread.id);
-    const [messages, actions, turn] = await Promise.all([cs.threadMessages(thread.id, 300), cs.threadActions(thread.id), cs.currentTurn(thread.id)]);
+    const [messages, actions, turn, files] = await Promise.all([cs.threadMessages(thread.id, 300), cs.threadActions(thread.id), cs.currentTurn(thread.id), threadFiles(thread.id)]);
     return {
       thread: { id: thread.id, title: thread.title },
+      files: files.map(fileOut),
       messages: messages.map(messageOut).filter(Boolean),
       actions: actions.map(actionOut),
       turn: turnOut(turn),
@@ -168,26 +155,27 @@ export async function copilotRoutes(api: FastifyInstance, deps: RunnerDeps) {
     const thread = await ownThread(req);
     await assertAiAllowed(thread.account_id);
     const b = parse(z.object({
-      text: z.string().trim().min(1, 'Escribe qué necesitas').max(4000),
+      text: z.string().trim().max(4000).default(''),
       page: z.object({ hash: z.string().max(300).default('') }).default({ hash: '' }),
       refs: z.array(Id).max(5).default([]),
-    }), req.body);
+      // Archivos ya subidos a esta conversación (foto, PDF, CSV…): el pedido puede ser solo el archivo.
+      files: z.array(Id).max(FILE_LIMITS.perMessage).default([]),
+    }).refine((x) => x.text.length > 0 || x.files.length > 0, 'Escribe qué necesitas'), req.body);
     await cs.sweepStale(thread.id);
     await cs.sweepStaleUser(req.user.id);
-    const used = await cs.recentTurns(req.user.id, thread.account_id);
-    if (used.user_hour >= config.copilot.turnsPerHour) throw new HttpError(429, 'Llegaste al límite de pedidos al Copiloto por hora; intenta en un rato');
-    if (used.account_day >= config.copilot.accountTurnsPerDay) throw new HttpError(429, 'La cuenta llegó al límite de pedidos al Copiloto de hoy');
-    const dayCap = config.copilot.accountUsdPerDay;
-    if (dayCap > 0 && used.account_day_usd >= dayCap) throw new HttpError(429, 'La cuenta llegó al tope de gasto del Copiloto de las últimas 24 horas; intenta más tarde');
-    if (await budgetTight(thread.account_id)) throw new HttpError(409, 'El presupuesto de IA de la cuenta está por acabarse: el Copiloto se pausa para no dejar sin IA a tu agente. Revísalo en Consumo de IA.');
+    // Un código de verificación escrito en el chat (en vez de en la tarjeta) llegaría a la IA y quedaría guardado.
+    if (CODE_SHAPE.test(b.text) && (await cs.pendingCodeProposals(thread.id)) > 0) {
+      throw new HttpError(400, 'No escribas tu código aquí: escríbelo en la tarjeta de la propuesta.', undefined, { code: 'code_in_chat' });
+    }
+    const { maxUsd } = await turnAllowance(req.user.id, thread.account_id);
     const refs = (await cs.actionsByIds(b.refs, thread.id)).map((a) => a.id);
+    const files = (await ownFiles(b.files, thread.id, req.user.id)).map((f) => f.id);
+    if (files.length !== b.files.length) throw new HttpError(400, 'Uno de los archivos ya no está (vence a las 24 horas): adjúntalo otra vez');
     const cookie = sessionCookie(req);
     const turn = await cs.startTurn(thread, parsePage(b.page.hash), config.copilot.model);
     if (!turn) throw new HttpError(409, 'Todavía estoy trabajando en tu pedido anterior');
-    const message = await cs.addMessage({ thread_id: thread.id, turn_id: turn.id, role: 'user', content: b.text, refs });
-    await cs.touchThread(thread.id, b.text.slice(0, 60));
-    // Un pedido no gasta más de lo que le queda a la cuenta en el día.
-    const maxUsd = dayCap > 0 ? dayCap - used.account_day_usd : undefined;
+    const message = await cs.addMessage({ thread_id: thread.id, turn_id: turn.id, role: 'user', content: b.text, refs, files });
+    await cs.touchThread(thread.id, (b.text || 'Archivo adjunto').slice(0, 60));
     void startTurnInBackground(deps, { thread, turn, user: req.user, cookie, ip: req.ip, refs, maxUsd });
     return reply.code(202).send({ turn: turnOut(turn), message: messageOut(message) });
   });
@@ -210,8 +198,16 @@ export async function copilotRoutes(api: FastifyInstance, deps: RunnerDeps) {
 
   api.post('/api/copilot/actions/:id/confirm', async (req: any) => {
     const action = await ownAction(req);
-    const b = parse(z.object({ seen_hash: z.string().min(1).max(64) }), req.body);
-    return actionOut(await confirmAction(deps, { action, user: req.user, cookie: sessionCookie(req), ip: req.ip, seenHash: b.seen_hash }));
+    const b = parse(z.object({
+      seen_hash: z.string().min(1).max(64), seguir: z.boolean().default(false),
+      // Propuestas que se confirman con el código de verificación (o un código de recuperación).
+      code: z.string().trim().max(40).optional(),
+    }), req.body);
+    const cookie = sessionCookie(req);
+    const done = await confirmAction(deps, { action, user: req.user, cookie, ip: req.ip, seenHash: b.seen_hash, code: b.code, sessionId: req.sessionId });
+    // «Confirmar y seguir»: si el pedido anotó lo que faltaba, el Copiloto sigue solo (con los mismos límites).
+    const continued = b.seguir && done.status === 'done' ? await maybeContinue(deps, { action: done, user: req.user, cookie, ip: req.ip }) : null;
+    return { ...actionOut(done), continued_turn: turnOut(continued) };
   });
 
   api.post('/api/copilot/actions/:id/decline', async (req: any) => {
@@ -222,6 +218,33 @@ export async function copilotRoutes(api: FastifyInstance, deps: RunnerDeps) {
   api.post('/api/copilot/actions/:id/undo', async (req: any) => {
     const action = await ownAction(req);
     return actionOut(await undoAction(deps, { action, user: req.user, cookie: sessionCookie(req), ip: req.ip }));
+  });
+
+  /** Adjuntar un archivo a la conversación (foto de la cámara o la galería, PDF, CSV, documento): vive 24 horas. */
+  api.post('/api/copilot/threads/:id/files', async (req: any) => {
+    const thread = await ownThread(req);
+    if ((await countHit(`copilot-files:${req.user.id}`, 3600_000)) > 20) throw new HttpError(429, 'Llegaste al límite de archivos por hora; intenta en un rato');
+    const { file } = await readUpload(req);
+    if (!file) throw new HttpError(400, 'Adjunta un archivo');
+    return fileOut(await saveCopilotFile({ accountId: thread.account_id, threadId: thread.id, userId: req.user.id, file }));
+  });
+
+  /** Ver un archivo adjunto propio (siempre como descarga y sin adivinar el tipo). */
+  api.get('/api/copilot/files/:id', async (req: any, reply) => {
+    const accountId = await copilotAccount(req);
+    const f = await getOwnFile(parse(Id, req.params.id), req.user.id, accountId);
+    if (!f || new Date(f.expires_at).getTime() < Date.now()) throw notFound('Archivo no encontrado');
+    const name = f.name.replace(/[^\w .()-]/g, '_').slice(0, 120) || 'archivo';
+    return reply.header('content-type', f.mime).header('x-content-type-options', 'nosniff').header('cache-control', 'private, no-store')
+      .header('content-disposition', `attachment; filename="${name}"`).send(await fs.readFile(attachmentAbsolutePath(f.file_path)));
+  });
+
+  api.delete('/api/copilot/files/:id', async (req: any) => {
+    const accountId = await copilotAccount(req);
+    const f = await getOwnFile(parse(Id, req.params.id), req.user.id, accountId);
+    if (!f) throw notFound('Archivo no encontrado');
+    await deleteFile(f.id);
+    return { ok: true };
   });
 
   /** Etiquetas de la cuenta con cuántos contactos tiene cada una (un agente, solo de sus contactos). */
