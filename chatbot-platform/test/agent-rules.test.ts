@@ -168,6 +168,24 @@ t('pasado el tope de turnos, una emergencia sí recibe el mensaje fijo y pasa a 
   }
 });
 
+t('el simulador no cuenta para el tope de turnos por contacto, como la cuota mensual (AI-15)', async () => {
+  const { config } = await import('../src/config.js');
+  const original = config.openai.turnsPerContactHour;
+  config.openai.turnsPerContactHour = 2;
+  try {
+    h.reset();
+    h.setScript(() => ({ messages: ['Claro, dime.'] }));
+    for (let i = 0; i < 4; i++) {
+      const r = await h.authed('POST', `/api/chatbots/${h.botId}/playground`, { session: 'tope-simulador', text: `prueba del simulador ${i}` });
+      assert.equal(r.statusCode, 200, r.body);
+      assert.notEqual(r.json().result.status, 'paused', `el turno ${i + 1} del simulador no se pausa`);
+    }
+    assert.equal(decisions(), 4, 'los cuatro llegan a la IA');
+  } finally {
+    config.openai.turnsPerContactHour = original;
+  }
+});
+
 t('AI_TURNS_PER_CONTACT_HOUR=0 apaga el tope: el primer turno no pausa a nadie (AI-15)', async () => {
   const { config } = await import('../src/config.js');
   const original = config.openai.turnsPerContactHour;

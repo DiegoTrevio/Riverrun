@@ -622,7 +622,7 @@ primero falló sin el arreglo. Quedan aparte INF-18 (opcional, no se hizo) y PAY
 - PAY-25: una marca vieja de Mercado Pago con documento solo se reconoce si se vuelve a escribir el mismo documento (hasta noviembre de 2028).
 - PAY-28: una suscripción anterior a la migración 113 no tiene precio aceptado hasta su siguiente aviso o refresco; una subida de precio antes de eso la marca como hasta ahora.
 - ID-21: el contador que rechaza no se libera; con 10 por día en la plataforma, un tercero puede agotar el cupo de un correo (lo pide el requisito).
-- AI-15: el audio gasta su contador antes de descargarse; una conversación pausada por el tope sigue leyendo fotos hasta el tope de medios; el simulador también se pausa a los 30 turnos.
+- AI-15: el audio gasta su contador antes de descargarse; una conversación pausada por el tope sigue leyendo fotos hasta el tope de medios.
 - AI-16: el tope por pedido puede pasarse por la última llamada.
 - ID-18: el respaldo para cookies de reto sin `ec` (`routes/mfa.ts`) es temporal; hay que quitarlo.
 - IN-25: los correos de cobro anteriores al arreglo usan el `payment_action_url` guardado sin filtrar.

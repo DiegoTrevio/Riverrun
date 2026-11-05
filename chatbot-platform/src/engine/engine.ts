@@ -271,8 +271,8 @@ export class Engine {
     // 1b) Tope de turnos de IA por contacto y hora (AI-15): un desconocido que escribe sin parar no debe gastar el
     // presupuesto de IA del negocio. Solo cuenta aquí, cuando de verdad se va a gastar IA. Pasado el tope, el asistente
     // se pausa una hora en esta conversación, sin mensaje al cliente, y el equipo recibe un aviso por hora y contacto.
-    // AI_TURNS_PER_CONTACT_HOUR=0 lo apaga.
-    if (config.openai.turnsPerContactHour > 0 && await limited(`ai-contact:${conv.contact_id}`, config.openai.turnsPerContactHour, 3_600_000)) {
+    // AI_TURNS_PER_CONTACT_HOUR=0 lo apaga. El simulador no cuenta, como la cuota mensual de mensajes.
+    if (config.openai.turnsPerContactHour > 0 && channel.type !== 'playground' && await limited(`ai-contact:${conv.contact_id}`, config.openai.turnsPerContactHour, 3_600_000)) {
       await store.setAgentOff(conv.id, PAUSE_TURN_CAP, new Date(Date.now() + 3_600_000));
       await store.markProcessed(conv.id, lastPendingId);
       await log('warn', 'engine', 'Asistente en pausa una hora: el contacto pasó el tope de turnos de IA por hora');
