@@ -190,7 +190,7 @@ export async function signupRoutes(app: FastifyInstance) {
       `${user.name} <${user.email}> registró "${account.name}" (${BUSINESS_TYPES.find((t) => t.key === businessType)?.label}). ${state.pauseReason === 'card' ? 'Esperando tarjeta.' : trialEndsAt ? `Prueba hasta ${trialEndsAt.toISOString().slice(0, 10)}.` : 'Sin prueba: se activa al pagar.'}${purchase ? ` Eligió el plan ${purchase.plan.name}.` : ''}`,
     );
     // Antes de ver el panel configura su verificación en dos pasos (la sesión se abre al terminar).
-    const begin = await beginLogin(reply, { ...user, password_hash: passwordHash }, 'signup');
+    const begin = await beginLogin(reply, { ...user, password_hash: passwordHash }, 'signup', { emailVerified: verified });
     // El plan elegido queda recordado (signup_plan): el pago se abre desde Mi plan, con el correo verificado y el 2FA.
     return { ok: true, user, account: store.publicAccount((await store.getAccount(account.id))!), verification_sent: !verified, ...begin };
   });

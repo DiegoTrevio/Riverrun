@@ -314,3 +314,52 @@ t('restablecer la contraseña por correo quita una app que se configuró sin pas
 t('ninguna ruta abre sesión por su cuenta', async () => {
   for (const f of fs.readdirSync('src/routes')) assert.doesNotMatch(fs.readFileSync(`src/routes/${f}`, 'utf8'), /setSessionCookie|openSession/, f);
 });
+
+// ID-18: registrarse con un correo ajeno no cuenta como correo comprobado.
+const userRow = async (email: string) => (await pool.query(`SELECT totp_enabled_at, totp_email_confirmed FROM users WHERE email = $1`, [email])).rows[0];
+/** Se registra (sin verificar el correo) y devuelve el reto para configurar la app; con `patch` re-firma la cookie. */
+const signupChallenge = async (email: string) => {
+  const s = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: `10.63.0.${++ip}`, payload: { name: 'Quien sea', company: `Empresa ${email}`, business_type: 'servicios', email, password: PASS, accept_terms: true } });
+  assert.equal(s.statusCode, 200, s.body);
+  assert.equal(s.json().verification_sent, true, 'el registro deja el correo sin verificar');
+  return cookieOf(s, 'cp_mfa')!;
+};
+const enrollWith = async (c: string) => {
+  const { secret } = (await get('/api/2fa/enroll', c)).json();
+  const r = await post('/api/2fa/enroll', c, { code: totpAt(secret, currentStep()) });
+  assert.equal(r.statusCode, 200, r.body);
+};
+
+t('quien se registra con un correo sin verificar y configura su app la pierde si el dueño del correo restablece la contraseña', async () => {
+  const c = await signupChallenge('victima@prueba.mx');
+  await enrollWith(c);
+  assert.equal((await userRow('victima@prueba.mx')).totp_email_confirmed, false);
+  assert.ok((await userRow('victima@prueba.mx')).totp_enabled_at);
+  await resetByEmail('victima@prueba.mx', 'Otra-Clave-Larga-951');
+  assert.equal((await userRow('victima@prueba.mx')).totp_enabled_at, null);
+});
+
+t('quien se registra y verifica su correo después no pierde la app al entrar', async () => {
+  const c = await signupChallenge('duena@prueba.mx');
+  await enrollWith(c);
+  const mail = [...outbox].reverse().find((m) => m.to === 'duena@prueba.mx' && m.text.includes('#/verificar?token='))!;
+  const token = decodeURIComponent(/#\/verificar\?token=([^\s]+)/.exec(mail.text)![1]);
+  assert.equal((await h.app.inject({ method: 'POST', url: '/api/verify-email', payload: { token } })).statusCode, 200);
+  const row = await userRow('duena@prueba.mx');
+  assert.ok(row.totp_enabled_at);
+  assert.equal(row.totp_email_confirmed, false, 'verificar el correo después no confirma una app ya configurada');
+  assert.deepEqual((await login('duena@prueba.mx', PASS)).json().mfa, 'verify', 'entrar sigue pidiendo el código y la app sigue');
+});
+
+t('un reto de registro emitido antes del cambio (sin ec) se trata como correo sin comprobar; invitación y Google siguen comprobados', async () => {
+  const c = await signupChallenge('vieja@prueba.mx');
+  const legacy = resign(c, { ec: undefined });
+  await enrollWith(legacy);
+  assert.equal((await userRow('vieja@prueba.mx')).totp_email_confirmed, false);
+  // Un reto viejo de invitación o Google (ev sin ec) sigue contando como comprobado.
+  await newUser('inv-vieja@login.mx');
+  const r = await login('inv-vieja@login.mx', PASS);
+  const viejo = resign(cookieOf(r, 'cp_mfa')!, { via: 'invite', ev: true, ec: undefined });
+  await enrollWith(viejo);
+  assert.equal((await userRow('inv-vieja@login.mx')).totp_email_confirmed, true);
+});

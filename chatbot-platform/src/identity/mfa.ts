@@ -25,8 +25,12 @@ import { matchTotp, newTotpSecret, otpauthUri } from './totp.js';
 const CHALLENGE_MS = 15 * 60_000;
 
 export type ChallengePurpose = 'verify' | 'enroll';
-/** `ev`: el correo de la cuenta ya se comprobó en este reto (registro, invitación, Google o el enlace de enrolamiento). */
-export interface Challenge { uid: string; pv: string; via: SessionVia; purpose: ChallengePurpose; cid: string; exp: number; ev?: boolean }
+/**
+ * `ev`: el correo de la cuenta ya se comprobó en este reto (registro, invitación, Google o el enlace de enrolamiento): deja
+ * configurar la app sin el enlace. `ec`: el correo de la cuenta está comprobado de verdad; un registro con el correo sin
+ * verificar tiene `ev` pero no `ec`, porque quien se registra puede no ser el dueño del correo (ID-18).
+ */
+export interface Challenge { uid: string; pv: string; via: SessionVia; purpose: ChallengePurpose; cid: string; exp: number; ev?: boolean; ec?: boolean }
 
 /** Puertas que ya prueban que el correo es de quien entra: su primer enrolamiento no pide el enlace (ID-16). */
 const EMAIL_PROVEN: SessionVia[] = ['signup', 'invite', 'google'];
@@ -82,7 +86,7 @@ async function openSession(reply: FastifyReply, user: SessionUser, via: SessionV
  * La contraseña (o Google) ya se comprobó: deja el reto del segundo paso. Responde `{ mfa: 'verify' }` si la persona ya
  * tiene la app configurada y `{ mfa: 'enroll' }` si todavía no.
  */
-export async function beginLogin(reply: FastifyReply, user: SessionUser & { totp_enabled_at?: Date | null }, via: SessionVia): Promise<{ mfa: ChallengePurpose } | { ok: true }> {
+export async function beginLogin(reply: FastifyReply, user: SessionUser & { totp_enabled_at?: Date | null }, via: SessionVia, o: { emailVerified?: boolean } = {}): Promise<{ mfa: ChallengePurpose } | { ok: true }> {
   // Dispositivo recordado (nunca el del superadmin): entra sin código, pero sin verificación reciente.
   if (user.totp_enabled_at && (await trustedDeviceFor(reply.request, user))) {
     await openSession(reply, user, via, null);
@@ -90,7 +94,7 @@ export async function beginLogin(reply: FastifyReply, user: SessionUser & { totp
   }
   const purpose: ChallengePurpose = user.totp_enabled_at ? 'verify' : 'enroll';
   const c: Challenge = { uid: user.id, pv: passwordVersion(user.password_hash), via, purpose, cid: crypto.randomBytes(12).toString('base64url'), exp: Date.now() + CHALLENGE_MS,
-    ...(EMAIL_PROVEN.includes(via) ? { ev: true } : {}) };
+    ...(EMAIL_PROVEN.includes(via) ? { ev: true, ec: via !== 'signup' || !!o.emailVerified } : {}) };
   setChallenge(reply, c);
   return { mfa: purpose };
 }
@@ -140,7 +144,7 @@ export async function useEnrollLink(reply: FastifyReply, c: Challenge, token: st
     [c.uid, sha256(token), ENROLL_LINK_MS / 1000],
   );
   if (!used) return false;
-  setChallenge(reply, { ...c, ev: true, exp: Date.now() + CHALLENGE_MS });
+  setChallenge(reply, { ...c, ev: true, ec: true, exp: Date.now() + CHALLENGE_MS });
   return true;
 }
 

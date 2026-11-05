@@ -86,7 +86,9 @@ export async function mfaPublicRoutes(app: FastifyInstance) {
     if (!found.challenge.ev) return emailRequired(reply, false, found.user.email);
     const key = challengeKey(found.challenge);
     if ((await countHit(key, CHALLENGE_WINDOW_MS)) > LIMITS.codePerChallenge) return expired(reply);
-    if (!(await confirmEnrollment(found.user.id, b.code, { emailConfirmed: true }))) return wrongCode(reply);
+    // `ec` falta en los retos emitidos antes de ID-18 (duran 15 min): el registro no cuenta, lo demás con `ev` sí.
+    const emailConfirmed = found.challenge.ec ?? (found.challenge.ev === true && found.challenge.via !== 'signup');
+    if (!(await confirmEnrollment(found.user.id, b.code, { emailConfirmed }))) return wrongCode(reply);
     const codes = await replaceRecoveryCodes(found.user.id);
     void notifyUser(found.user, 'mfa_enabled');
     await finishChallenge(reply, found.user, found.challenge);
