@@ -240,8 +240,8 @@ export async function signupRoutes(app: FastifyInstance) {
     await store.markEmailVerified(userId);
     await query(`UPDATE users SET mfa_locked_until = NULL WHERE id = $1`, [userId]);
     await clearHits(`mfa-user:${userId}`);
-    // Una app que se configuró sin pasar por el correo (solo con la contraseña) puede ser de quien la filtró: se quita y se
-    // configura otra vez, ya con el enlace al correo (ID-16).
+    // Una app que se configuró sin pasar por el correo (solo con la contraseña) puede ser de quien la filtró: se quita y la
+    // persona la configura otra vez al entrar con su contraseña nueva (ID-16).
     const unproven = await queryOne(`SELECT 1 FROM users WHERE id = $1 AND totp_enabled_at IS NOT NULL AND NOT totp_email_confirmed`, [userId]);
     if (unproven) {
       await resetMfa(userId);
