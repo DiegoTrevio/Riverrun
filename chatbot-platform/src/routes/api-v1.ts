@@ -444,13 +444,13 @@ export async function apiV1Routes(app: FastifyInstance, service: ChatService) {
 
       /**
        * La conversación tal como la recibe la app en el evento `conversation.sent`: resumen, completa o ambos.
-       * refresh=true actualiza antes el resumen si hay información nueva (usa IA).
+       * refresh=true actualiza antes el resumen si hay información nueva (usa IA); solo lo hace una llave de escritura (ID-20).
        */
       v1.get('/conversations/:id/export', async (req: any) => {
         const q = input(z.object({ content: ExportContentSchema.default('both'), refresh: z.enum(['true', 'false']).default('false') }), req.query);
         const conv = await queryOne<{ id: string }>(`SELECT cv.id FROM conversations cv JOIN channels ch ON ch.id = cv.channel_id WHERE cv.id = $1 AND cv.account_id = $2 AND ch.type <> 'playground'`, [req.params.id, account(req)]);
         if (!conv) throw new HttpError(404, 'Conversación no encontrada');
-        return conversationExport(conv.id, { content: q.content, refresh: q.refresh === 'true' ? (id) => service.summarize(id) : undefined, reason: `API (${req.apiKey.name})` });
+        return conversationExport(conv.id, { content: q.content, refresh: q.refresh === 'true' && req.apiKey.scope === 'write' ? (id) => service.summarize(id) : undefined, reason: `API (${req.apiKey.name})` });
       });
 
       /**
