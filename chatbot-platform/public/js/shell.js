@@ -241,7 +241,7 @@ function accountBanner() {
       location.hash.split('?')[0] === '#/plan' ? null : h('a', { class: 'btn', href: '#/plan' }, 'Cancelar el borrado'), { role: 'status' }));
   }
   const due = account.payment_due;
-  if (due && due.action_url && account.status !== 'paused' && isAdmin()) {
+  if (due && /^https:\/\//i.test(due.action_url || '') && account.status !== 'paused' && isAdmin()) {
     // El banco detuvo el cobro hasta que se confirme (3DS): la tarjeta está bien, solo hay que confirmarlo.
     items.push(notice('warn', [h('strong', {}, 'Tu banco pide que confirmes el pago de tu plan. '),
       `Confírmalo antes del ${new Date(due.grace_ends_at).toLocaleDateString('es-MX', { day: 'numeric', month: 'long' })} para que tu asistente siga respondiendo. `],

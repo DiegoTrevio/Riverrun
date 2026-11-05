@@ -147,6 +147,21 @@ t('Stripe: cobro fallido → gracia → pausa; el pago recupera la cuenta', asyn
   assert.equal(mails('Recibimos tu pago'), 1);
 });
 
+t('IN-25: «Confirmar pago» solo guarda enlaces https://', async () => {
+  fake.stripe.subs.sub_1.status = 'past_due';
+  try {
+    await stripeHook('invoice.payment_action_required', { id: 'in_js', subscription: 'sub_1', hosted_invoice_url: 'javascript:alert(1)' });
+    assert.equal((await sub()).payment_action_url, '');
+    await stripeHook('invoice.payment_action_required', { id: 'in_http', subscription: 'sub_1', hosted_invoice_url: 'http://invoice.stripe.test/i/1' });
+    assert.equal((await sub()).payment_action_url, '');
+    await stripeHook('invoice.payment_action_required', { id: 'in_ok', subscription: 'sub_1', hosted_invoice_url: 'https://invoice.stripe.test/i/1' });
+    assert.equal((await sub()).payment_action_url, 'https://invoice.stripe.test/i/1');
+  } finally {
+    fake.stripe.subs.sub_1.status = 'active';
+    await stripeHook('invoice.paid', { subscription: 'sub_1' });
+  }
+});
+
 t('si el superadmin reactiva a mano una cuenta pausada por pago, no se vuelve a pausar', async () => {
   fake.stripe.subs.sub_1.status = 'past_due';
   await stripeHook('invoice.payment_failed', { subscription: 'sub_1' }, 'evt_pf2');

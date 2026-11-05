@@ -466,7 +466,7 @@ export const stripe: BillingProvider = {
     }
     if (!SUB_EVENTS.has(event.type)) return result;
     if (event.type === 'invoice.paid' || event.type === 'invoice.payment_succeeded') result.payment = paymentFromInvoice(obj) ?? undefined;
-    if (event.type === 'invoice.payment_action_required' && obj.hosted_invoice_url) result.actionUrl = String(obj.hosted_invoice_url);
+    if (event.type === 'invoice.payment_action_required' && /^https:\/\//i.test(String(obj.hosted_invoice_url ?? ''))) result.actionUrl = String(obj.hosted_invoice_url);
     const subId: string | undefined =
       event.type.startsWith('customer.subscription.') ? obj.id : obj.subscription ?? obj.parent?.subscription_details?.subscription ?? undefined;
     if (!subId) return result;

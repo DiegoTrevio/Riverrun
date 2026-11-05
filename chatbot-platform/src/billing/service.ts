@@ -695,7 +695,7 @@ export async function notePaymentAction(provider: ProviderName, subscriptionId: 
     `SELECT s.account_id, s.status, s.payment_action_url, a.name FROM subscriptions s JOIN accounts a ON a.id = s.account_id WHERE s.provider = $1 AND s.provider_subscription_id = $2`,
     [provider, subscriptionId],
   );
-  if (!prev || !url) return;
+  if (!prev || !/^https:\/\//i.test(url)) return; // solo enlaces https:// (IN-25)
   await query(`UPDATE subscriptions SET payment_action_url = $2, updated_at = now() WHERE account_id = $1`, [prev.account_id, url]);
   await logEvent({ level: 'warn', source: 'admin', message: `El banco pide confirmar el cobro (${provider})`, accountId: prev.account_id });
   if (prev.status === 'past_due' && prev.payment_action_url !== url) await tell(prev.account_id, 'Confirma tu pago con tu banco', confirmText(prev.name, url));
