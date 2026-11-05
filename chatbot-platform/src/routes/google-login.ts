@@ -81,15 +81,15 @@ export async function googleLoginRoutes(app: FastifyInstance) {
       if (!sub) return fail('error');
       if (!email || claims.email_verified !== true) return fail('sin-correo');
 
-      // Primero por su identificador de Google (sigue aunque cambie su correo aquí). Por correo solo se liga si los dos
-      // lados lo tienen verificado; un correo sin verificar aquí no entra con Google (lo verifica con su contraseña).
+      // Primero por su identificador de Google (sigue aunque cambie su correo aquí); si no, por correo (Google ya lo
+      // verificó), aunque aquí no esté confirmado: no pide confirmar el correo para entrar. Ligarla no cambia la
+      // contraseña ni marca el correo como verificado, y el código de la app sigue siendo obligatorio.
       let user = await store.getUserForGoogle(sub);
       if (!user) {
         const byEmail = await store.getUserForLogin(email);
         if (byEmail) {
           if (byEmail.role === 'superadmin') return rejected('solo-contrasena', byEmail);
           if (byEmail.google_sub) return rejected('otra-cuenta', byEmail);
-          if (!byEmail.email_verified_at) return rejected('sin-verificar', byEmail);
           await query(`UPDATE users SET google_sub = $2 WHERE id = $1 AND google_sub IS NULL`, [byEmail.id, sub]);
           user = { ...byEmail, google_sub: sub };
         }

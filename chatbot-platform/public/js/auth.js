@@ -8,7 +8,6 @@ const GOOGLE_MSG = {
   'sin-correo': 'Google no confirmó tu correo.',
   desactivada: 'Esta cuenta está desactivada.',
   'solo-contrasena': 'Esta cuenta solo entra con correo y contraseña.',
-  'sin-verificar': 'Ese correo no está verificado en tu cuenta: entra con tu contraseña y verifícalo para usar Google.',
   'otra-cuenta': 'Tu usuario ya entra con otra cuenta de Google: usa esa o entra con tu contraseña.',
   'sin-cuenta': 'No hay una cuenta con ese correo y el registro está cerrado.',
   demasiados: 'Demasiados intentos, espera un poco.',
