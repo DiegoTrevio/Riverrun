@@ -618,7 +618,7 @@ aparte INF-18 (opcional, no se hizo) y PAY-26 (descartado).
 **Cambios que nota la gente:**
 - Un mismo cliente que manda más de 30 mensajes por hora a la IA queda en pausa una hora, sin respuesta, y el equipo recibe un aviso (una vez por hora). Los topes se cambian con `AI_TURNS_PER_CONTACT_HOUR` y `AI_MEDIA_PER_CONTACT_HOUR`: enteros ≥ 0, `0` los apaga y un valor inválido usa el de por omisión con un aviso de la revisión de configuración (AI-15).
 - El Copiloto atiende como máximo 3 pedidos a la vez por cuenta (`COPILOT_CONCURRENT_PER_ACCOUNT`; `0` = sin tope, como los demás límites); el cuarto recibe un 429 (AI-16).
-- Quien se registró antes de verificar su correo y restablece la contraseña tiene que configurar su app de autenticación otra vez (ID-18).
+- Quien se registró antes de verificar su correo, configuró su app con solo la contraseña (sin pasar por el enlace del correo) y restablece la contraseña tiene que configurar su app de autenticación otra vez; quien la configuró con el enlace del correo ya queda con el correo verificado y conserva la app (ID-18).
 - `./riverrun preflight` avisa si `REDIS_PASSWORD` está vacío y si `update` no exige firma (INF-19, INF-21). Son avisos: no bloquean.
 - Los contenedores quedan endurecidos (sin privilegios de más, la mayoría de solo lectura). Antes de producción hay que probarlo en staging con la sección 9 de [`prueba-en-staging.md`](prueba-en-staging.md); Caddy lleva un volumen nuevo (`caddy_config`) que se crea solo (INF-16).
 - Dependabot abre PR semanales para los digests de las imágenes; cada uno pasa el CI antes de `./riverrun update`. La imagen de pgvector se cambia a mano, con el procedimiento de PostgreSQL (INF-17).
