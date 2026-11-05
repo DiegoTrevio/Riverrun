@@ -24,11 +24,11 @@ function capAdd(b: string): string[] {
 
 /**
  * Postgres, el respaldo y la restauración arrancan como root y se bajan a su usuario (gosu): SETUID/SETGID, y CHOWN,
- * DAC_OVERRIDE y FOWNER para preparar el directorio de datos y leer volúmenes de otros dueños. Redis solo cambia el dueño
- * de /data y baja de usuario. Caddy solo abre los puertos 80 y 443.
+ * DAC_OVERRIDE y FOWNER para preparar el directorio de datos y leer volúmenes de otros dueños. Redis corre como root (su command
+ * esquiva el entrypoint oficial) y ./riverrun restore deja /data a nombre de «redis»: necesita CHOWN, DAC_OVERRIDE y FOWNER. Caddy solo abre los puertos 80 y 443.
  */
 const ADD: Record<string, string[]> = {
-  postgres: ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETGID', 'SETUID'], redis: ['CHOWN', 'SETGID', 'SETUID'],
+  postgres: ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETGID', 'SETUID'], redis: ['CHOWN', 'DAC_OVERRIDE', 'FOWNER'],
   caddy: ['NET_BIND_SERVICE'], backup: ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETGID', 'SETUID'], restore: ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETGID', 'SETUID'],
   backend: [], evolution: [], pdf: [],
 };

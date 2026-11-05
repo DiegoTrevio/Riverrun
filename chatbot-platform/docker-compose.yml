@@ -45,8 +45,10 @@ services:
     logging: *logging
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
-    # Solo cambia el dueño de /data y baja de usuario. Sistema de solo lectura: escribe en /data (redisdata) y /tmp.
-    cap_add: [CHOWN, SETGID, SETUID]
+    # Corre como root: el command (sh -c) esquiva el entrypoint oficial, que no cambia de usuario. ./riverrun restore deja
+    # /data a nombre de «redis» (redis-load.sh hace chown), así que root necesita DAC_OVERRIDE/FOWNER para seguir escribiendo
+    # ahí. Solo lectura: escribe en /data (redisdata) y /tmp.
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
     read_only: true
     tmpfs: [/tmp]
     image: redis:7-alpine
@@ -343,7 +345,7 @@ services:
     logging: *logging
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
-    # Root del contenedor: cifra con gpg, lee los volúmenes de otros dueños (DAC_OVERRIDE) y baja a «postgres» para pg_dump.
+    # Corre como root: cifra con gpg y lee los volúmenes de otros dueños (DAC_OVERRIDE); pg_dump se conecta por TCP.
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
     build: ./docker/backup
     restart: unless-stopped
