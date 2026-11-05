@@ -547,8 +547,9 @@ Revisión independiente: encontró que la vuelta atrás dejaba al backend anteri
 ## Revisión del 4 de noviembre: lo que se corrigió
 
 Los hallazgos de [la revisión del 4 de noviembre](revision-seguridad-2026-11-04.md), en cinco grupos de commits
-(`2e2baa9..3cfa669`, [plan](superpowers/plans/2026-11-04-seguridad-revision-correcciones.md)). Todos llevan su prueba, que
-primero falló sin el arreglo. Quedan aparte INF-18 (opcional, no se hizo) y PAY-26 (descartado).
+(`2e2baa9..3cfa669`, [plan](superpowers/plans/2026-11-04-seguridad-revision-correcciones.md)) y lo que encontró la revisión
+final de la rama (los commits después de `ec4d0bc`). Todos llevan su prueba, que primero falló sin el arreglo. Quedan
+aparte INF-18 (opcional, no se hizo) y PAY-26 (descartado).
 
 ### PR 0: secretos
 
@@ -600,6 +601,20 @@ primero falló sin el arreglo. Quedan aparte INF-18 (opcional, no se hizo) y PAY
 | IN-26 | El `verify_token` de Meta se comparaba con `===`. | `safeEqual`. | `meta-connect.test.ts` |
 | IN-27 | La página pública del pool armaba el HTML sin escapar. | `esc()` en título y texto (el ayudante pasó a `routes/util.ts`). | `pools.test.ts` |
 
+### Revisión final de la rama
+
+| # | Hallazgo | Arreglo | Prueba |
+|---|---|---|---|
+| INF-17 (crítico) | El primer `./riverrun update` con esta versión abortaba en todos los servidores: la imagen de PostgreSQL pasó de `pgvector/pgvector:0.8.7-pg16` a la misma etiqueta con `@sha256:…`, y la guardia de PostgreSQL (con `--pg-before`, porque `riverrun` también cambió) lo tomaba como un cambio de imagen. | Si el ref anterior no tiene digest y el nuevo es el mismo ref con `@sha256:X`, sigue cuando la imagen del contenedor de PostgreSQL que corre tiene `X` entre sus `RepoDigests`. Si no, se detiene con su propio mensaje (la misma etiqueta, otra compilación: otra glibc o collation), remite a `docs/semantic-activation.md` y a `--accept-db-image-change`. Cualquier otro cambio, como antes. | `scripts/test-cli.sh` |
+| AI-15 | La pausa automática por el tope de turnos (y la del bucle) iba antes de la detección de emergencias: ese cliente quedaba una hora sin el mensaje fijo de seguridad y sin el 🚨 al equipo. | En una pausa que puso el propio motor, un mensaje de riesgo llega igual al motor (el servicio ya no lo detiene en la puerta) y el paso 0 corre sin IA: mensaje fijo, pasa a una persona y aviso 🚨. Las pausas que pone una persona del equipo siguen igual (solo el aviso). | `agent-rules.test.ts` |
+| AI-20, PAY-24 | Al desplegar, cada cuenta activa sin plan ni excepción recibe el tope por omisión con el gasto del mes ya contado, y sus modelos sin precio pasan a `price_unknown`, sin aviso. | Al arrancar se avisa al superadmin una vez al día (deduplicado en `system_state`): cuántas son, cuáles pasaron el 80 % del tope y qué modelos de sus asistentes no tienen precio. Paso «Antes de actualizar» en [`produccion.md`](produccion.md). | `ai-platform-cap.test.ts` |
+| AI-15, AI-16 | `Number(env)` inválido daba `NaN` y apagaba el tope; `AI_TURNS_PER_CONTACT_HOUR=0` pausaba a todos en su primer turno; `COPILOT_CONCURRENT_PER_ACCOUNT=0` se volvía 3. | Los tres son enteros ≥ 0 y `0` = sin tope (como los demás límites de `.env.example`); un valor inválido usa el de por omisión y la revisión de configuración avisa. | `config-check.test.ts`, `agent-rules.test.ts`, `ai-gate.test.ts`, `copilot.config.test.ts` |
+| PAY-24 | Con tope de la plataforma, una tarifa propia con `per_audio_minute` volvía «de audio» un modelo que la plataforma cobra por tokens. | `per_audio_minute` solo cuenta si la plataforma ya cobra ese modelo por minuto. | `ai-platform-cap.test.ts` |
+| AI-15 | El simulador se pausaba a los 30 turnos. | El canal `playground` no cuenta para el tope, como la cuota mensual. | `agent-rules.test.ts` |
+| INF-17 | Dependabot solo lee líneas `FROM`: el `COPY --from=redis…` del respaldo nunca se actualizaba. | Etapa `FROM redis:7-alpine@sha256:… AS rediscli` y `COPY --from=rediscli`. | `compose-hardening.test.ts` |
+| ID-18 | Las apps de 2FA ya configuradas al registrarse sin verificar el correo seguían marcadas como configuradas por correo. | Migración 114: con 2FA activo y `email_verified_at` nulo, `totp_email_confirmed = false`. | `migration.test.ts` |
+| Docs | `--pull` ya no trae parches (INF-3); la llave de `allowed_signers` era la del servidor (INF-21); una viñeta mezclaba IN-25 y AI-17; `.env.example` decía que el tope de lecturas pausa al asistente. | Corregidos: los parches llegan por los PR de Dependabot; la llave es la de la computadora de quien publica y el correo, su `user.email`; las viñetas con su ID; el tope de lecturas solo deja el archivo sin leer. | — |
+
 **Cambios que nota la gente:**
 - Un mismo cliente que manda más de 30 mensajes por hora a la IA queda en pausa una hora, sin respuesta, y el equipo recibe un aviso (una vez por hora). Los topes se cambian con `AI_TURNS_PER_CONTACT_HOUR` y `AI_MEDIA_PER_CONTACT_HOUR`: enteros ≥ 0, `0` los apaga y un valor inválido usa el de por omisión con un aviso de la revisión de configuración (AI-15).
 - El Copiloto atiende como máximo 3 pedidos a la vez por cuenta (`COPILOT_CONCURRENT_PER_ACCOUNT`; `0` = sin tope, como los demás límites); el cuarto recibe un 429 (AI-16).
@@ -624,7 +639,7 @@ primero falló sin el arreglo. Quedan aparte INF-18 (opcional, no se hizo) y PAY
 - ID-21: el contador que rechaza no se libera; con 10 por día en la plataforma, un tercero puede agotar el cupo de un correo (lo pide el requisito).
 - AI-15: el audio gasta su contador antes de descargarse; una conversación pausada por el tope sigue leyendo fotos hasta el tope de medios.
 - AI-16: el tope por pedido puede pasarse por la última llamada.
-- ID-18: el respaldo para cookies de reto sin `ec` (`routes/mfa.ts`) es temporal; hay que quitarlo.
+- ID-18: el respaldo para cookies de reto sin `ec` (`routes/mfa.ts`) es temporal; hay que quitarlo. La migración 114 también quita la marca a quien configuró su app con el enlace por correo (ID-16) sin tener `email_verified_at` (el enlace prueba el correo pero no lo marca): tras restablecer la contraseña por correo, configura la app otra vez.
 - IN-25: los correos de cobro anteriores al arreglo usan el `payment_action_url` guardado sin filtrar.
 - AI-17: un `»` en el motivo del validador cierra la comilla antes.
 - IN-24: el recorrido de `check-frontend` no tiene pruebas de casos borde (`${…}` con comillas, regex, plantillas anidadas) y no ve `{ html }` abreviado.
