@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { HttpError, notFound } from '../access.js';
 import { cookieName } from '../auth.js';
 import { config } from '../config.js';
-import { query } from '../db.js';
+import { query, withTransaction } from '../db.js';
 import { budgetPolicy, normalize, platformAiCap } from '../ai/budget.js';
 import { assertAiAllowed } from '../ai/gate.js';
 import * as store from '../store/index.js';
@@ -174,15 +174,21 @@ export async function copilotRoutes(api: FastifyInstance, deps: RunnerDeps) {
     }), req.body);
     await cs.sweepStale(thread.id);
     await cs.sweepStaleUser(req.user.id);
-    const used = await cs.recentTurns(req.user.id, thread.account_id);
-    if (used.user_hour >= config.copilot.turnsPerHour) throw new HttpError(429, 'Llegaste al límite de pedidos al Copiloto por hora; intenta en un rato');
-    if (used.account_day >= config.copilot.accountTurnsPerDay) throw new HttpError(429, 'La cuenta llegó al límite de pedidos al Copiloto de hoy');
-    const dayCap = config.copilot.accountUsdPerDay;
-    if (dayCap > 0 && used.account_day_usd >= dayCap) throw new HttpError(429, 'La cuenta llegó al tope de gasto del Copiloto de las últimas 24 horas; intenta más tarde');
     if (await budgetTight(thread.account_id)) throw new HttpError(409, 'El presupuesto de IA de la cuenta está por acabarse: el Copiloto se pausa para no dejar sin IA a tu agente. Revísalo en Consumo de IA.');
     const refs = (await cs.actionsByIds(b.refs, thread.id)).map((a) => a.id);
     const cookie = sessionCookie(req);
-    const turn = await cs.startTurn(thread, parsePage(b.page.hash), config.copilot.model);
+    const dayCap = config.copilot.accountUsdPerDay;
+    // Revisar el uso y abrir el turno van juntos bajo un candado de la cuenta: sin él, pedidos en paralelo leen el mismo
+    // uso y todos pasan. El candado solo dura estas dos consultas (no mientras corre el pedido).
+    const { turn, used } = await withTransaction(async (client) => {
+      await client.query(`SELECT pg_advisory_xact_lock(hashtextextended('copilot-turns:' || $1::text, 0))`, [thread.account_id]);
+      const used = await cs.recentTurns(req.user.id, thread.account_id, client);
+      if (used.user_hour >= config.copilot.turnsPerHour) throw new HttpError(429, 'Llegaste al límite de pedidos al Copiloto por hora; intenta en un rato');
+      if (used.account_day >= config.copilot.accountTurnsPerDay) throw new HttpError(429, 'La cuenta llegó al límite de pedidos al Copiloto de hoy');
+      if (dayCap > 0 && used.account_day_usd >= dayCap) throw new HttpError(429, 'La cuenta llegó al tope de gasto del Copiloto de las últimas 24 horas; intenta más tarde');
+      if (used.account_running >= config.copilot.concurrentPerAccount) throw new HttpError(429, 'Ya hay varios pedidos al Copiloto en curso en tu cuenta; espera a que terminen');
+      return { turn: await cs.startTurn(thread, parsePage(b.page.hash), config.copilot.model, client), used };
+    });
     if (!turn) throw new HttpError(409, 'Todavía estoy trabajando en tu pedido anterior');
     const message = await cs.addMessage({ thread_id: thread.id, turn_id: turn.id, role: 'user', content: b.text, refs });
     await cs.touchThread(thread.id, b.text.slice(0, 60));

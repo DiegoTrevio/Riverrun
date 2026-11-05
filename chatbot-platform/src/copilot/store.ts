@@ -97,17 +97,16 @@ export async function deleteThread(id: string) {
 
 // --- Turnos ----------------------------------------------------------------------------------------------------------
 
-/** Abre un turno; `null` si ya hay uno en curso en ese hilo o de esa persona (índices únicos parciales). */
-export async function startTurn(thread: Thread, page: Page, model: string): Promise<Turn | null> {
-  try {
-    return await queryOne<Turn>(
-      `INSERT INTO copilot_turns (thread_id, account_id, user_id, page, model) VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [thread.id, thread.account_id, thread.user_id, JSON.stringify(page), model],
-    );
-  } catch (e: any) {
-    if (e?.code === '23505') return null;
-    throw e;
-  }
+/**
+ * Abre un turno; `null` si ya hay uno en curso en ese hilo o de esa persona (índices únicos parciales).
+ * Con `client` corre dentro de la transacción de quien llama (el candado de la cuenta).
+ */
+export async function startTurn(thread: Thread, page: Page, model: string, client?: pg.PoolClient): Promise<Turn | null> {
+  // ON CONFLICT DO NOTHING: una violación única no aborta la transacción de quien llama.
+  const sql = `INSERT INTO copilot_turns (thread_id, account_id, user_id, page, model) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING RETURNING *`;
+  const params = [thread.id, thread.account_id, thread.user_id, JSON.stringify(page), model];
+  if (client) return (await client.query<Turn>(sql, params)).rows[0] ?? null;
+  return queryOne<Turn>(sql, params);
 }
 
 export async function getTurn(id: string): Promise<Turn | null> {
@@ -171,14 +170,21 @@ export async function recentlyTainted(threadId: string, exceptTurnId: string, tu
   ));
 }
 
-export async function recentTurns(userId: string, accountId: string) {
-  return (await queryOne<{ user_hour: number; account_day: number; account_day_usd: number }>(
-    `SELECT (SELECT count(*)::int FROM copilot_turns WHERE user_id = $1 AND started_at > now() - interval '1 hour') AS user_hour,
-            day.turns AS account_day, day.usd AS account_day_usd
-       FROM (SELECT count(*)::int AS turns, coalesce(sum(cost_usd), 0)::float8 AS usd
-               FROM copilot_turns WHERE account_id = $2 AND started_at > now() - interval '24 hours') day`,
-    [userId, accountId],
-  ))!;
+/**
+ * Uso reciente. Un pedido en curso cuenta como `turnMaxUsd` (lo máximo que puede gastar) hasta que termina, no como
+ * su costo parcial: así los pedidos en paralelo no se cuelan bajo el tope del día.
+ */
+export async function recentTurns(userId: string, accountId: string, client?: pg.PoolClient) {
+  const sql = `SELECT (SELECT count(*)::int FROM copilot_turns WHERE user_id = $1 AND started_at > now() - interval '1 hour') AS user_hour,
+            day.turns AS account_day, day.running AS account_running,
+            (day.usd + day.running * $3::float8)::float8 AS account_day_usd
+       FROM (SELECT count(*)::int AS turns,
+                    count(*) FILTER (WHERE status = 'running')::int AS running,
+                    coalesce(sum(cost_usd) FILTER (WHERE status <> 'running'), 0)::float8 AS usd
+               FROM copilot_turns WHERE account_id = $2 AND started_at > now() - interval '24 hours') day`;
+  const params = [userId, accountId, config.copilot.turnMaxUsd];
+  const row = client ? (await client.query(sql, params)).rows[0] : await queryOne(sql, params);
+  return row as { user_hour: number; account_day: number; account_running: number; account_day_usd: number };
 }
 
 // --- Mensajes --------------------------------------------------------------------------------------------------------
