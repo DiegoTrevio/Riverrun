@@ -20,16 +20,8 @@ const cookieOf = (r: any, name: string) => [r.headers['set-cookie'] ?? []].flat(
 const login = (email: string, password: string) => h.app.inject({ method: 'POST', url: '/api/login', remoteAddress: `10.61.0.${++ip}`, payload: { email, password } });
 const get = (url: string, cookie: string) => h.app.inject({ method: 'GET', url, headers: { cookie } });
 const post = (url: string, cookie: string, payload: unknown) => h.app.inject({ method: 'POST', url, headers: { cookie }, payload: payload as any });
-/** El reto tras la contraseña; para configurar la app, ya con el enlace del correo abierto en este navegador (ID-16). */
-const challenge = async (email: string, password: string) => {
-  const r = await login(email, password);
-  const c = cookieOf(r, 'cp_mfa')!;
-  if (r.json().mfa !== 'enroll') return c;
-  if ((await get('/api/2fa/enroll', c)).statusCode !== 403) return c;
-  const l = await post('/api/2fa/enroll/link', c, { token: h.enrollTokenFor(email) });
-  assert.equal(l.statusCode, 200, l.body);
-  return cookieOf(l, 'cp_mfa')!;
-};
+/** La cookie del reto que deja la contraseña. */
+const challenge = async (email: string, password: string) => cookieOf(await login(email, password), 'cp_mfa')!;
 const resetStep = (email: string) => pool.query(`UPDATE users SET totp_last_step = 0 WHERE email = $1`, [email]);
 /** La misma cookie de reto con otros datos, firmada como la firma el servidor. */
 const resign = (cookie: string, patch: Record<string, unknown>) => {
@@ -208,6 +200,8 @@ t('registro e invitación piden configurar antes de abrir sesión', async () => 
 t('cambiar la contraseña sigue en la sesión y avisa; restablecer por correo no abre sesión y avisa', async () => {
   await newUser('olvida@login.mx');
   const { secret } = await enroll('olvida@login.mx');
+  // Como una app configurada por correo (registro, invitación o Google): restablecer por correo no la quita (ID-16).
+  await pool.query(`UPDATE users SET totp_email_confirmed = true WHERE email = 'olvida@login.mx'`);
   await resetStep('olvida@login.mx');
   const r = await post('/api/login/2fa', await challenge('olvida@login.mx', PASS), { code: totpAt(secret, currentStep()) });
   const session = cookieOf(r, 'cp_session')!;
@@ -240,73 +234,45 @@ const resetByEmail = async (email: string, password: string) => {
   assert.equal(r.statusCode, 200, r.body);
 };
 
-t('una cuenta existente sin app recibe un enlace al correo y sin él no ve el QR (ID-16)', async () => {
-  await newUser('filtrada@login.mx');
+t('una cuenta existente sin app ve el QR directo, sin enlace al correo; su app no queda confirmada por correo', async () => {
+  await newUser('directa@login.mx');
   outbox.length = 0;
-  const r = await login('filtrada@login.mx', PASS);
+  const r = await login('directa@login.mx', PASS);
   assert.deepEqual(r.json(), { mfa: 'enroll' });
   const c = cookieOf(r, 'cp_mfa')!;
   const q = await get('/api/2fa/enroll', c);
-  assert.equal(q.statusCode, 403);
-  assert.equal(q.json().code, 'email_required');
-  assert.equal(q.json().secret, undefined, 'sin QR');
-  assert.match(q.json().error, /^Te mandamos un enlace a f•+@login\.mx/);
-  const mail = outbox.find((m) => m.to === 'filtrada@login.mx' && m.subject === 'Configura tu verificación en dos pasos');
-  assert.ok(mail, 'llega el enlace');
-  assert.match(mail!.text, /mismo navegador/);
-  assert.equal((await post('/api/2fa/enroll', c, { code: '123456' })).json().code, 'email_required', 'tampoco confirma una app');
-  // Recargar no manda otro correo ni invalida el que llegó (tampoco pasados 2 minutos): eso es «Mandar otro enlace».
-  await get('/api/2fa/enroll', c);
-  await pool.query(`UPDATE users SET mfa_enroll_sent_at = now() - interval '3 minutes' WHERE email = 'filtrada@login.mx'`);
-  for (let i = 0; i < 8; i++) await get('/api/2fa/enroll', c);
-  assert.equal(outbox.filter((m) => m.subject === 'Configura tu verificación en dos pasos').length, 1);
-  const resent = await post('/api/2fa/enroll/resend', c, {});
-  assert.equal(resent.json().sent, true, 'recargar no gastó el tope de correos');
-  assert.equal(outbox.filter((m) => m.subject === 'Configura tu verificación en dos pasos').length, 2);
-  assert.equal((await post('/api/2fa/enroll/resend', c, {})).json().sent, false, 'otro antes de 2 minutos, no');
-  // El enlace abierto en otro navegador (sin el reto) no abre nada; uno inventado tampoco.
-  const token = h.enrollTokenFor('filtrada@login.mx');
-  const other = await h.app.inject({ method: 'POST', url: '/api/2fa/enroll/link', payload: { token } });
-  assert.deepEqual([other.statusCode, other.json().code], [400, 'other_browser']);
-  assert.equal((await post('/api/2fa/enroll/link', c, { token: 'x'.repeat(43) })).statusCode, 400);
-  assert.equal((await get('/api/2fa/enroll', c)).statusCode, 403, 'sigue sin QR');
+  assert.equal(q.statusCode, 200, q.body);
+  assert.ok(q.json().secret, 've el QR');
+  assert.equal(q.json().account, 'directa@login.mx');
+  assert.equal(outbox.filter((m) => m.to === 'directa@login.mx').length, 0, 'no le llega ningún correo');
+  assert.equal((await post('/api/2fa/enroll', c, { code: totpAt(q.json().secret, currentStep()) })).statusCode, 200);
+  assert.equal((await pool.query(`SELECT totp_email_confirmed FROM users WHERE email = 'directa@login.mx'`)).rows[0].totp_email_confirmed, false);
+  // Las rutas del enlace ya no existen.
+  for (const url of ['/api/2fa/enroll/link', '/api/2fa/enroll/resend']) assert.equal((await post(url, c, { token: 'x'.repeat(43) })).statusCode, 404, url);
 });
 
-t('con el enlace del correo enrola normal; el enlace sirve una vez (ID-16)', async () => {
-  await newUser('conenlace@login.mx');
-  const r = await login('conenlace@login.mx', PASS);
-  const c = cookieOf(r, 'cp_mfa')!;
-  await get('/api/2fa/enroll', c);
-  const token = h.enrollTokenFor('conenlace@login.mx');
-  const l = await post('/api/2fa/enroll/link', c, { token });
-  assert.equal(l.statusCode, 200, l.body);
-  const proven = cookieOf(l, 'cp_mfa')!;
-  assert.equal((await post('/api/2fa/enroll/link', proven, { token })).statusCode, 400, 'un solo uso');
-  const { secret } = (await get('/api/2fa/enroll', proven)).json();
-  assert.ok(secret);
-  assert.equal((await post('/api/2fa/enroll', proven, { code: totpAt(secret, currentStep()) })).statusCode, 200);
-  assert.equal((await pool.query(`SELECT totp_email_confirmed FROM users WHERE email = 'conenlace@login.mx'`)).rows[0].totp_email_confirmed, true);
-});
-
-t('una cuenta nueva del registro (o por Google o invitación) enrola sin enlace (ID-16)', async () => {
+t('una cuenta nueva del registro (o por Google o invitación) enrola con la app confirmada por correo', async () => {
   const s = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: '10.62.0.9', payload: { name: 'Lalo', company: 'Taller Lalo', business_type: 'servicios', email: 'lalo@taller.mx', password: PASS, accept_terms: true } });
   assert.equal(s.statusCode, 200, s.body);
-  const q = await get('/api/2fa/enroll', cookieOf(s, 'cp_mfa')!);
+  const c = cookieOf(s, 'cp_mfa')!;
+  const q = await get('/api/2fa/enroll', c);
   assert.equal(q.statusCode, 200, q.body);
   assert.ok(q.json().secret);
+  assert.equal((await post('/api/2fa/enroll', c, { code: totpAt(q.json().secret, currentStep()) })).statusCode, 200);
+  assert.equal((await pool.query(`SELECT totp_email_confirmed FROM users WHERE email = 'lalo@taller.mx'`)).rows[0].totp_email_confirmed, true);
 });
 
 t('restablecer la contraseña por correo quita una app que se configuró sin pasar por el correo (ID-16)', async () => {
+  // Configurada solo con la contraseña: no queda confirmada por correo.
   await newUser('vieja@login.mx');
   await enroll('vieja@login.mx');
-  // Como una app configurada antes de este cambio (solo con la contraseña).
-  await pool.query(`UPDATE users SET totp_email_confirmed = false WHERE email = 'vieja@login.mx'`);
   await resetByEmail('vieja@login.mx', 'Pz-941-Qx-942-Kv');
   assert.equal((await pool.query(`SELECT totp_enabled_at FROM users WHERE email = 'vieja@login.mx'`)).rows[0].totp_enabled_at, null);
-  assert.deepEqual((await login('vieja@login.mx', 'Pz-941-Qx-942-Kv')).json(), { mfa: 'enroll' }, 'la configura otra vez, con el enlace');
-  // Una configurada por correo se queda.
+  assert.deepEqual((await login('vieja@login.mx', 'Pz-941-Qx-942-Kv')).json(), { mfa: 'enroll' }, 'la configura otra vez');
+  // Una configurada por correo (registro, invitación o Google) se queda.
   await newUser('buena@login.mx');
   await enroll('buena@login.mx');
+  await pool.query(`UPDATE users SET totp_email_confirmed = true WHERE email = 'buena@login.mx'`);
   await resetByEmail('buena@login.mx', 'Pz-943-Qx-944-Kv');
   assert.deepEqual((await login('buena@login.mx', 'Pz-943-Qx-944-Kv')).json(), { mfa: 'verify' });
 });

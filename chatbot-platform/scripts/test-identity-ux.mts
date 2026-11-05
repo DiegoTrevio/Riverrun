@@ -66,21 +66,10 @@ try {
     await page.getByRole('button', { name: 'Entrar' }).click();
   };
 
-  // Primera vez: entró solo con la contraseña, así que primero abre el enlace que le llega al correo (ID-16).
+  // Primera vez: entró solo con la contraseña y pasa directo a configurar la app, sin enlace al correo.
   await enter('nuria@identidad.mx', PASS);
   await page.waitForURL(/#\/login\/configurar/);
-  await page.getByRole('heading', { name: 'Revisa tu correo' }).waitFor();
-  await page.getByText(/^Te mandamos un enlace a n•+@identidad\.mx/).waitFor();
-  assert.equal(await page.locator('[data-totp-secret]').count(), 0, 'sin el enlace no ve el QR');
-  await accessible(page, 'Revisa tu correo (enlace para configurar)');
-  // «Mandar otro enlace» recién mandado uno: pide esperar. «Ya abrí el enlace» sin abrirlo: sigue pidiendo el correo.
-  await page.getByRole('button', { name: 'Mandar otro enlace' }).click();
-  await page.getByText('Espera un par de minutos para pedir otro enlace').first().waitFor();
-  await page.getByRole('button', { name: 'Ya abrí el enlace' }).click();
-  await page.getByRole('heading', { name: 'Revisa tu correo' }).waitFor();
-  assert.equal(await page.locator('[data-totp-secret]').count(), 0);
-  await page.goto(`${base}/#/login/configurar?correo=${h.enrollTokenFor('nuria@identidad.mx')}`);
-  checks.push('Entrar solo con la contraseña pide abrir el enlace del correo antes de ver el QR («Mandar otro enlace» y «Ya abrí el enlace»)');
+  checks.push('Entrar solo con la contraseña lleva directo al QR (sin «Revisa tu correo»)');
   await page.getByRole('heading', { name: 'Activa la verificación en dos pasos' }).waitFor();
   await page.getByText('Escanea este código con tu app de autenticación').waitFor();
   await page.getByRole('img', { name: 'Código QR para tu app de autenticación' }).waitFor();

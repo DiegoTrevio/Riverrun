@@ -123,17 +123,17 @@ t('por correo solo se liga si los dos lo tienen verificado, y entonces guarda el
   assert.equal(other.session, undefined);
 });
 
-t('con el correo sin verificar aquí, Google no entra: no cambia la contraseña ni lo marca verificado', async () => {
+t('con el correo sin verificar aquí, Google entra sin pedir confirmarlo: pasa al código, no cambia la contraseña ni lo marca verificado', async () => {
   const { hashPassword } = await import('../src/auth.js');
   const hash = await hashPassword('clave-de-quien-registro-1');
   await pool.query(`INSERT INTO accounts (name, status) VALUES ('Sin Verificar SA', 'trial')`);
   const acc = (await pool.query(`SELECT id FROM accounts WHERE name = 'Sin Verificar SA'`)).rows[0].id;
   await pool.query(`INSERT INTO users (account_id, role, name, email, password_hash) VALUES ($1, 'admin', 'Vic', 'vic@empresa.mx', $2)`, [acc, hash]); // sin verificar
   const r = await flow({ sub: 'g-vic', email: 'vic@empresa.mx', email_verified: true, name: 'Vic' });
-  assert.equal(r.location, '/#/login?google=sin-verificar');
-  assert.equal(r.session, undefined);
+  assert.equal(r.location, '/#/login/configurar');
+  assert.equal(r.session?.name, 'cp_mfa', 'falta el segundo paso: no abre sesión por sí sola');
   const row = (await pool.query(`SELECT password_hash, email_verified_at, google_sub FROM users WHERE email = 'vic@empresa.mx'`)).rows[0];
-  assert.deepEqual(row, { password_hash: hash, email_verified_at: null, google_sub: null });
+  assert.deepEqual(row, { password_hash: hash, email_verified_at: null, google_sub: 'g-vic' });
 });
 
 t('se rechaza: correo sin verificar en Google, state alterado, sin cookie, cancelación, sin sub y superadmin', async () => {

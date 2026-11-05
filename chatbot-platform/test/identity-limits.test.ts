@@ -56,11 +56,7 @@ t('10 contraseñas malas a una cuenta la bloquean, salvo desde su dispositivo re
   // Su navegador de siempre: configura el 2FA y pide recordar el dispositivo.
   const first = await login('jo@lim.mx', PASS, '10.71.0.1');
   const jar = cookiesOf(first);
-  let challenge = jar.join('; ');
-  // Entró solo con la contraseña: primero abre el enlace del correo en este navegador (ID-16).
-  await h.app.inject({ method: 'GET', url: '/api/2fa/enroll', headers: { cookie: challenge } });
-  const link = await h.app.inject({ method: 'POST', url: '/api/2fa/enroll/link', headers: { cookie: challenge }, payload: { token: h.enrollTokenFor('jo@lim.mx') } });
-  challenge = [...jar.filter((c: string) => !c.startsWith('cp_mfa=')), ...cookiesOf(link)].join('; ');
+  const challenge = jar.join('; ');
   const e = await h.app.inject({ method: 'GET', url: '/api/2fa/enroll', headers: { cookie: challenge } });
   h.totpSecrets.set('jo@lim.mx', e.json().secret);
   const done = await h.app.inject({ method: 'POST', url: '/api/2fa/enroll', headers: { cookie: challenge }, payload: { code: await h.codeFor('jo@lim.mx') } });

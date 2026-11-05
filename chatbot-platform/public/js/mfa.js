@@ -85,23 +85,9 @@ export async function renderMfaVerify() {
       h('p', { class: 'small', style: 'margin:0' }, h('a', { href: '#/login' }, 'Entrar con otra cuenta'))));
 }
 
-export async function renderMfaEnroll(params = new URLSearchParams()) {
-  // El enlace del correo (ID-16): se usa en este navegador, el que tiene el reto de la contraseña.
-  const token = params.get('correo');
-  if (token) {
-    history.replaceState(null, '', '#/login/configurar');
-    try { await api('POST', '/api/2fa/enroll/link', { token }); } catch (e) {
-      publicCard('Activa la verificación en dos pasos', h('div', { class: 'stack' },
-        h('p', { class: 'banner warn', role: 'alert' }, e.message),
-        h('p', { class: 'small', style: 'margin:0' }, h('a', { href: '#/login' }, 'Volver a entrar'))));
-      return;
-    }
-  }
+export async function renderMfaEnroll() {
   let data;
-  try { data = await api('GET', '/api/2fa/enroll'); } catch (e) {
-    if (e.code === 'email_required') renderEnrollEmail(e.message);
-    return;
-  }
+  try { data = await api('GET', '/api/2fa/enroll'); } catch { return; } // sin reto: core lleva a entrar con el aviso
   const f = { code: '' };
   const box = h('div', { class: 'stack' });
   publicCard('Activa la verificación en dos pasos', box);
@@ -129,19 +115,6 @@ export async function renderMfaEnroll(params = new URLSearchParams()) {
     h('form', { class: 'stack', onsubmit: submit },
       field('Código de 6 dígitos', codeInput(f)),
       h('button', { class: 'primary', type: 'submit' }, 'Activar')));
-}
-
-/** Entró solo con su contraseña: antes de configurar la app tiene que abrir el enlace que le mandamos al correo. */
-function renderEnrollEmail(message) {
-  publicCard('Revisa tu correo', h('div', { class: 'stack' },
-    h('p', { role: 'status' }, message),
-    h('p', { class: 'muted small', style: 'margin:0' }, 'Así comprobamos que eres tú antes de activar la verificación en dos pasos. El enlace vence en una hora.'),
-    h('button', { class: 'primary', type: 'button', onclick: () => renderMfaEnroll() }, 'Ya abrí el enlace'),
-    h('button', { type: 'button', onclick: async () => {
-      const r = await run(() => api('POST', '/api/2fa/enroll/resend'));
-      if (r) toast(r.sent ? 'Te mandamos otro enlace' : 'Espera un par de minutos para pedir otro enlace');
-    } }, 'Mandar otro enlace'),
-    h('p', { class: 'small', style: 'margin:0' }, h('a', { href: '#/login' }, 'Entrar con otra cuenta'))));
 }
 
 /**
