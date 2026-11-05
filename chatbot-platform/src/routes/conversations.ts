@@ -5,7 +5,7 @@ import { contactWorkspaceRoutes } from './contact-workspace.js';
 import { describeConversation } from '../automation/alert-format.js';
 import fs from 'node:fs';
 import type { FastifyInstance } from 'fastify';
-import { stepUp } from '../identity/step-up.js';
+import { assertRecentMfa, stepUp } from '../identity/step-up.js';
 import { z } from 'zod';
 import { assertAccount, contactFor, conversationFor, HttpError, scopeAccount, requireRole } from '../access.js';
 import { query, withTransaction } from '../db.js';
@@ -289,6 +289,8 @@ export async function conversationRoutes(api: FastifyInstance, service: ChatServ
     const b = parse(ReportSendSchema, req.body);
     const external = b.emails.length + b.phones.length > 0;
     if (external && req.user.role !== 'admin' && req.user.role !== 'superadmin') throw new HttpError(403, 'Solo un administrador puede enviar reportes fuera del equipo');
+    // Mandar datos de un cliente fuera del equipo pide el código reciente, como los demás envíos hacia afuera (ID-19).
+    if (external) assertRecentMfa(req);
     if (!b.user_ids.length && !external) throw new HttpError(400, 'Elige al menos un destinatario');
     if (await limited(`report:${req.user.id}`, 20, 10 * 60_000)) throw new HttpError(429, 'Demasiados reportes enviados: espera unos minutos');
     const users = await reportRecipients(conv.account_id, { userIds: b.user_ids });

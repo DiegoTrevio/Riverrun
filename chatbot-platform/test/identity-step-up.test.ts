@@ -181,3 +181,21 @@ t('el Copiloto no llega a ninguna ruta delicada', async () => {
   assert.deepEqual([...used].filter((u) => sensitive.has(u)), ['/api/users'], 'solo lee el equipo');
   assert.doesNotMatch(src, /send<[^>]*>\(\s*'(POST|PUT|DELETE)',\s*'\/api\/users/);
 });
+
+t('enviar el reporte fuera del equipo pide verificación reciente; al equipo, no (ID-19)', async () => {
+  await h.webhook('Hola, quiero un reporte');
+  await h.idle();
+  const conv = await h.conversationFor('5215511112222');
+  const url = `/api/conversations/${conv.id}/report/send`;
+  const teamIds = [(await pool.query(`SELECT id FROM users WHERE email = 'mia@paso.mx'`)).rows[0].id];
+  await age('admin@test.mx', 16);
+  const external = await h.authed('POST', url, { emails: ['fuera@x.mx'], refresh: false });
+  assert.equal(external.statusCode, 403, external.body);
+  assert.equal(external.json().code, 'step_up');
+  const phone = await h.authed('POST', url, { phones: ['5215599999999'], refresh: false });
+  assert.equal(phone.json().code, 'step_up', 'un número también es externo');
+  const team = await h.authed('POST', url, { user_ids: teamIds, refresh: false });
+  assert.equal(team.statusCode, 200, `al equipo no pide el código: ${team.body}`);
+  await age('admin@test.mx', 1);
+  assert.equal((await h.authed('POST', url, { emails: ['fuera@x.mx'], refresh: false })).statusCode, 200, 'con verificación reciente pasa');
+});
