@@ -32,15 +32,31 @@ export async function budgetPolicy(accountId:string) {
  return {revision:row?.revision??0,settings:BudgetSettings.parse(row?.settings??{})};
 }
 type Quote={model:string;input_per_mtok:number;cached_per_mtok?:number;output_per_mtok:number;per_audio_minute:number};
-async function price(model:string,policy:BudgetPolicy,client?:import('pg').PoolClient):Promise<Quote|null> {
+/** Tarifa de la plataforma (`ai_prices`, y el respaldo de embeddings); null si no hay o no tiene precio. */
+export async function platformPrice(model:string,client?:import('pg').PoolClient):Promise<Quote|null> {
  const name=normalize(model);
- const local=policy.prices.filter(p=>name===normalize(p.model)||name.startsWith(normalize(p.model)+'-')).sort((a,b)=>b.model.length-a.model.length)[0];
- if(local)return local.is_free||local.input_per_mtok+local.output_per_mtok+local.per_audio_minute>0?{...local,model:name}:null;
  const sql=`SELECT * FROM ai_prices WHERE starts_with($1::text,regexp_replace(model,'^openai/','')) ORDER BY length(model) DESC LIMIT 1`;
  const found=client?(await client.query(sql,[name])).rows[0]:await queryOne(sql,[name]);
  if(found)return found.is_free||Number(found.input_per_mtok)+Number(found.output_per_mtok)+Number(found.per_audio_minute)>0?{model:name,input_per_mtok:Number(found.input_per_mtok),cached_per_mtok:Number(found.cached_per_mtok),output_per_mtok:Number(found.output_per_mtok),per_audio_minute:Number(found.per_audio_minute)}:null;
  if(name==='text-embedding-3-small')return {model:name,input_per_mtok:config.knowledgeSearch.pricePerMillion??0.02,output_per_mtok:0,per_audio_minute:0};
  return null;
+}
+/**
+ * Tarifa con la que se reserva y se liquida. Con `platformCap` (la cuenta tiene tope de la plataforma, PAY-24) manda la
+ * de la plataforma y la propia del cliente solo cuenta si es mayor, campo por campo (`is_free` propio no cuenta); sin
+ * tarifa de la plataforma el modelo es desconocido. Sin tope de la plataforma, la propia manda como siempre.
+ */
+async function price(model:string,policy:BudgetPolicy,client?:import('pg').PoolClient,o:{platformCap?:boolean}={}):Promise<Quote|null> {
+ const name=normalize(model);
+ const local=policy.prices.filter(p=>name===normalize(p.model)||name.startsWith(normalize(p.model)+'-')).sort((a,b)=>b.model.length-a.model.length)[0];
+ if(o.platformCap){
+  const base=await platformPrice(model,client);
+  if(!base)return null;
+  if(!local)return base;
+  return {...base,input_per_mtok:Math.max(base.input_per_mtok,local.input_per_mtok),output_per_mtok:Math.max(base.output_per_mtok,local.output_per_mtok),per_audio_minute:Math.max(base.per_audio_minute,local.per_audio_minute)};
+ }
+ if(local)return local.is_free||local.input_per_mtok+local.output_per_mtok+local.per_audio_minute>0?{...local,model:name}:null;
+ return platformPrice(model,client);
 }
 type Spec={kind:string;models:string[];input:number;output:number;seconds?:number};
 const constrained=(p:BudgetPolicy,models:string[])=>p.monthly_usd!==null||p.daily_usd!==null||p.models.some(m=>models.includes(normalize(m.model)));
@@ -63,7 +79,7 @@ export async function unpricedModels():Promise<string[]> {
  const empty=BudgetSettings.parse({});
  const models=[config.openai.defaultModel,...config.openai.fallbackModels,config.openai.summaryModel,config.openai.transcriptionModel,config.openai.mediaModel,config.knowledgeSearch.model,config.copilot.model,...config.copilot.fallbackModels];
  const out:string[]=[];
- for(const m of [...new Set(models.filter(Boolean))])if(!(await price(m,empty)))out.push(m);
+ for(const m of [...new Set(models.filter(Boolean))])if(!(await platformPrice(m)))out.push(m);
  return out;
 }
 /** Tope de IA al mes que pone la plataforma: la excepción de la cuenta, el de su plan o el de la prueba (null = sin tope). */
@@ -82,10 +98,11 @@ async function reserve(accountId:string,chatbotId:string|null,spec:Spec) {
   await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`ai-budget:${accountId}`]);
   const row=(await client.query('SELECT revision,settings FROM ai_budget_settings WHERE account_id=$1',[accountId])).rows[0];
   // Con tope de la plataforma (PAY-20) la llamada también va limitada: sin precio conocido no se puede cuidar el tope.
+  // Se calcula antes de las tarifas: con tope, cuenta la tarifa de la plataforma y no la que el cliente edita (PAY-24).
   const platform=await platformAiCap(accountId,client);
   const policy=BudgetSettings.parse(row?.settings??{}),limited=constrained(policy,spec.models)||platform!==null;
   const output=limited&&spec.kind!=='transcription'?Math.min(spec.output,policy.max_output_tokens):spec.output;
-  const prices=await Promise.all(spec.models.map(m=>price(m,policy,client)));
+  const prices=await Promise.all(spec.models.map(m=>price(m,policy,client,{platformCap:platform!==null})));
   if(limited&&prices.some(p=>!p))throw new AiBudgetBlocked('price_unknown');
   if(limited&&prices.some(p=>p!.per_audio_minute>0)&&spec.seconds===undefined)throw new AiBudgetBlocked('audio_duration_unknown');
   const estimates=prices.map(p=>p?cost({...p,input_per_mtok:Math.max(p.input_per_mtok,p.cached_per_mtok??0)},spec.input,output,spec.seconds):null);

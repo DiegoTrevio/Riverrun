@@ -139,3 +139,58 @@ t('PAY-6: una cuenta sin cupo no transcribe audios ni empieza pedidos al Copilot
     assert.equal((await h.authed('PUT', `/api/accounts/${h.accountId}`, { ai_usd_override: null })).statusCode, 200);
   }
 });
+
+// PAY-24: la tarifa propia del cliente (ai_budget_settings.prices) no puede abaratar lo que cuenta contra el tope de la plataforma.
+const setPrices = async (prices: object[]) => {
+  const rev = (await pool.query(`SELECT revision FROM ai_budget_settings WHERE account_id = $1`, [h.accountId])).rows[0]?.revision ?? 0;
+  const r = await h.authed('PUT', `/api/ai-budget?account_id=${h.accountId}`, { revision: rev, settings: { prices } });
+  assert.equal(r.statusCode, 200, r.body);
+};
+const setCap = async (usd: number | null) => {
+  await pool.query(`UPDATE accounts SET ai_usd_override = $2${usd === null ? `, plan = '', status = 'active'` : ''} WHERE id = $1`, [h.accountId, usd]);
+};
+const lastCharged = async () => Number((await pool.query(`SELECT charged_usd FROM ai_spend WHERE account_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1`, [h.accountId])).rows[0].charged_usd);
+const blockedWith = async (model: string) => {
+  try {
+    await accountAi(h.ai, h.accountId, h.botId).complete({ ...req, model, fallback_models: 'none' });
+    return '';
+  } catch (e: any) {
+    assert.ok(e instanceof AiBudgetBlocked, String(e));
+    return e.code as string;
+  }
+};
+
+t('PAY-24: con tope de la plataforma, una tarifa propia más baja no abarata lo que se cobra', async () => {
+  try {
+    await setCap(5); await setPrices([]); await call();
+    const base = await lastCharged();
+    assert.ok(base > 0);
+    await setPrices([{ model: 'gpt-4.1-mini', input_per_mtok: 0.000001, output_per_mtok: 0.000001 }]); await call();
+    assert.equal(await lastCharged(), base);
+    await setPrices([{ model: 'gpt-4.1-mini', input_per_mtok: 0, output_per_mtok: 0, is_free: true }]); await call();
+    assert.equal(await lastCharged(), base);
+  } finally {
+    await setPrices([]); await setCap(null);
+  }
+});
+
+t('PAY-24: con tope de la plataforma, un modelo que solo tiene tarifa propia se bloquea como price_unknown', async () => {
+  try {
+    await setCap(5); await setPrices([{ model: 'modelo-propio', input_per_mtok: 1, output_per_mtok: 1 }]);
+    assert.equal(await blockedWith('modelo-propio'), 'price_unknown');
+  } finally {
+    await setPrices([]); await setCap(null);
+  }
+});
+
+t('PAY-24: sin tope de la plataforma, la tarifa propia sigue mandando', async () => {
+  const saved = config.signup.planDefaultAiUsd;
+  config.signup.planDefaultAiUsd = 0;
+  try {
+    await setCap(null); await setPrices([{ model: 'gpt-4.1-mini', input_per_mtok: 100, output_per_mtok: 100 }]); await call();
+    assert.ok((await lastCharged()) > 0.01);
+  } finally {
+    config.signup.planDefaultAiUsd = saved;
+    await setPrices([]);
+  }
+});
