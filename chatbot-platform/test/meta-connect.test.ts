@@ -172,6 +172,18 @@ t('la misma página no se conecta en dos negocios (ambos agentes contestarían)'
   assert.equal((await metaChannels(other.id)).length, 0);
 });
 
+t('IN-26: la verificación de un canal de Meta responde el reto con el token bueno y nada con uno malo, vacío o ausente', async () => {
+  const { adapterFor } = await import('../src/channels/index.js');
+  const adapter = adapterFor('messenger');
+  const channel: any = { config: { verify_token: 'token-del-canal' } };
+  const verify = (query: Record<string, string>) => adapter.handleVerification!({ channel, headers: {}, query, body: null });
+  assert.equal(verify({ 'hub.mode': 'subscribe', 'hub.verify_token': 'token-del-canal', 'hub.challenge': 'CH1' }), 'CH1');
+  assert.equal(verify({ 'hub.mode': 'subscribe', 'hub.verify_token': 'token-del-canal-x', 'hub.challenge': 'CH1' }), null);
+  assert.equal(verify({ 'hub.mode': 'subscribe', 'hub.challenge': 'CH1' }), null);
+  assert.equal(verify({ 'hub.mode': 'subscribe', 'hub.verify_token': '', 'hub.challenge': 'CH1' }), null);
+  assert.equal(adapter.handleVerification!({ channel: { config: {} } as any, headers: {}, query: { 'hub.mode': 'subscribe', 'hub.verify_token': '', 'hub.challenge': 'CH1' }, body: null }), null, 'sin token en el canal, nada');
+});
+
 t('webhook de la plataforma: Meta lo verifica con el token y solo acepta eventos firmados con la app', async () => {
   const okv = await h.app.inject({ method: 'GET', url: '/meta/webhook?hub.mode=subscribe&hub.verify_token=verificacion-meta-pruebas&hub.challenge=CH9' });
   assert.equal(okv.statusCode, 200);

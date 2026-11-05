@@ -11,7 +11,7 @@ import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
-import { parse } from './util.js';
+import { esc, parse } from './util.js';
 
 interface PoolRow {
   id: string;
@@ -92,10 +92,13 @@ export async function poolAdminRoutes(api: FastifyInstance) {
   });
 }
 
+/** Página mínima del enlace público. Título y texto se escapan: hoy son fijos, pero no deben abrir HTML si un día llevan datos. */
+export const poolPage = (title: string, body: string) =>
+  `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title><body style="font:16px system-ui;max-width:420px;margin:15vh auto;padding:0 20px;text-align:center"><h2>${esc(title)}</h2><p>${esc(body)}</p>`;
+
 /** Enlace público: elige un número conectado y abre el chat en WhatsApp. */
 export async function poolPublicRoutes(app: FastifyInstance) {
-  const page = (title: string, body: string) =>
-    `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><body style="font:16px system-ui;max-width:420px;margin:15vh auto;padding:0 20px;text-align:center"><h2>${title}</h2><p>${body}</p>`;
+  const page = poolPage;
 
   app.get('/wa/:token', async (req: any, reply) => {
     if (await limited(ipLimitKey('wa-pool', req.ip), 120, 60_000)) return reply.code(429).type('text/html').send(page('Demasiadas visitas', 'Intenta de nuevo en un minuto.'));

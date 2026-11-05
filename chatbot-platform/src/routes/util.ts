@@ -16,6 +16,9 @@ import { safeFileName } from '../channels/media.js';
 
 export { completeImage };
 
+/** Escapa texto para meterlo en HTML (también dentro de atributos entre comillas). */
+export const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
 export function parse<T>(schema: z.ZodType<T>, body: unknown): T {
   const r = schema.safeParse(deepClean(body ?? {}));
   if (!r.success) throw new HttpError(400, 'Datos inválidos', r.error.issues.map((i) => `${i.path.join('.') || 'valor'}: ${i.message}`));

@@ -23,9 +23,8 @@ import { STATE_LABEL, overallState } from '../observability/status.js';
 import { CAPTCHA_MESSAGE, captchaEnabled, verifyCaptcha } from '../signup-guard.js';
 import * as store from '../store/index.js';
 import { publicPalette } from '../public-colors.js';
-import { parse } from './util.js';
+import { esc, parse } from './util.js';
 
-const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const HEX = /^#[0-9a-f]{3,8}$/i;
 const fmt = (d: Date) => d.toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'America/Mexico_City' });
 
