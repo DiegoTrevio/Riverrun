@@ -133,6 +133,42 @@ Cuando haya un cambio nuevo en `main` (o al día siguiente):
 4. **Reinicia el servidor** (`sudo reboot`) y repite `ssh usuario@IP`, `curl -I https://prueba.tudominio.com` y el
    paso 3: todo debe seguir igual después de reiniciar.
 
+## 9. Contenedores endurecidos (INF-16)
+
+Todos los servicios corren con `no-new-privileges`, sin capacidades de Linux de más (`cap_drop: [ALL]` y solo las que
+cada uno usa) y, en el backend, Caddy y Redis, con el sistema de archivos de solo lectura. Docker no se pudo probar al
+escribir el cambio: aquí se comprueba que ninguno se rompió. El overlay de staging quita a Caddy, así que se prueba en
+dos partes.
+
+**9.1 En staging (con el overlay)**
+
+| Haz | Debe salir |
+|---|---|
+| `./riverrun update` | Termina sin error (respaldo, actualización y verificación de sesiones). |
+| `docker compose ps` | postgres, redis, evolution, backend, pdf y backup en `healthy` o `running`, ninguno reiniciándose. |
+| `docker compose logs --tail 50 backend redis` | Sin «Read-only file system», «Permission denied» ni «operation not permitted». |
+| Manda un WhatsApp de prueba al número vinculado | El asistente responde. |
+| Genera el PDF de una cotización desde el panel | Se descarga un PDF con el contenido de la plantilla. |
+| `./riverrun backup` y luego `./riverrun status` | El respaldo termina sin error y `status` sale todo en verde. |
+| `docker compose exec -u root backend touch /etc/x` | `touch: /etc/x: Read-only file system`. Como root no hay otro motivo para que falle: prueba que el sistema es de solo lectura. |
+| `docker inspect -f '{{.HostConfig.CapAdd}} {{.HostConfig.CapDrop}}' $(docker compose ps -q backend)` | `[] [ALL]` (el backend no necesita ninguna capacidad). |
+| `./riverrun restore latest` y luego `docker compose logs redis` | Sin «Permission denied»; Redis reinicia sano (`docker compose ps` en `healthy` o `running`) y la sesión de WhatsApp sigue recibiendo mensajes. Repite el restore una segunda vez: también debe funcionar (Redis corre como root y `restore` deja `/data` a nombre de `redis`). |
+| `docker compose down -v`, luego `docker compose up -d` y `docker compose ps` | Postgres arranca sano desde un volumen vacío. Esto importa: la inicialización de Postgres con `cap_drop` solo corre con el volumen vacío. Borra los datos de staging; vuelve a vincular WhatsApp después. |
+
+**9.2 Caddy (en el servidor sin overlay, con el dominio real de la sección 0)**
+
+Caddy (`NET_BIND_SERVICE`, solo lectura, `/config` en volumen) no corre en staging; pruébalo donde sí corre.
+
+| Haz | Debe salir |
+|---|---|
+| `docker compose --profile https up -d` | Caddy arranca y queda `running`. |
+| `docker compose logs caddy` | Sin «permission denied» ni «read-only file system»; obtiene el certificado del dominio. |
+| `curl -I https://prueba.tudominio.com` desde tu computadora | Responde por HTTPS con el encabezado `Strict-Transport-Security`. |
+| `docker compose restart caddy` y repite el `curl` | Sigue respondiendo sin pedir otro certificado (`/data` y `/config` persisten en volúmenes). |
+
+Si un servicio no arranca por una capacidad que falta, anota el mensaje completo: la capacidad se agrega en
+`docker-compose.yml` y en la tabla de `test/compose-hardening.test.ts`, con un comentario de por qué.
+
 ## Al terminar
 
 Anota cada sección como ✅ o ❌ con el mensaje que salió. Si todo es ✅, aplica lo mismo en producción en este orden:

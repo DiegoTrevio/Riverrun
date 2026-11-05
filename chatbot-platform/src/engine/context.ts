@@ -647,8 +647,9 @@ export function buildContext(input: ContextInput): BuiltContext {
   }
   if (input.correction) {
     messages.push({
-      role: 'system',
-      content: `Tu propuesta anterior fue rechazada por el validador: ${input.correction}\nGenera una nueva propuesta que cumpla todas las reglas.`,
+      // Como mensaje del usuario (no del sistema): el motivo puede traer texto del cliente y no debe tener autoridad de instrucción.
+      role: 'user',
+      content: `Tu propuesta anterior fue rechazada por el validador: «${input.correction.slice(0, 600)}»\nGenera una nueva propuesta que cumpla todas las reglas.`,
     });
   }
 

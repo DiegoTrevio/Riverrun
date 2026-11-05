@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { runtimeEnv, validateConfig } from './config-check.js';
+import { capValue, runtimeEnv, validateConfig } from './config-check.js';
 import { parseAlertMute } from './alert-mute.js';
 
 function env(name: string, fallback = ''): string {
@@ -126,6 +126,13 @@ export const config = {
     /** Lee las fotos y los PDF que mandan los clientes (necesita un modelo que vea imágenes y documentos). */
     mediaModel: env('OPENROUTER_MEDIA_MODEL', env('OPENAI_MEDIA_MODEL', useOpenRouter ? 'google/gemini-2.5-flash' : 'gpt-4.1-mini')),
     timeoutMs: Number(env('OPENROUTER_TIMEOUT_MS', env('OPENAI_TIMEOUT_MS', '45000'))),
+    /**
+     * Tope por contacto y hora (AI-15): turnos de IA (pasado el tope, el asistente se pausa una hora) y lecturas de
+     * medios (audio, foto, PDF; pasado el tope, el archivo se guarda sin leer). 0 = sin tope; un valor que no es entero
+     * ≥ 0 usa el de por omisión y la revisión de configuración avisa.
+     */
+    turnsPerContactHour: capValue('AI_TURNS_PER_CONTACT_HOUR', env('AI_TURNS_PER_CONTACT_HOUR')),
+    mediaPerContactHour: capValue('AI_MEDIA_PER_CONTACT_HOUR', env('AI_MEDIA_PER_CONTACT_HOUR')),
   },
   knowledgeSearch: {
     forceOff: env('KNOWLEDGE_SEARCH_FORCE_OFF','false')==='true',
@@ -171,6 +178,8 @@ export const config = {
     /** «Confirmar y seguir»: cuántas continuaciones seguidas puede encadenar un pedido (0 = nunca sigue solo). */
     maxContinuations: Math.max(0, Number(env('COPILOT_MAX_CONTINUATIONS', '4')) || 0),
     turnsPerHour: Number(env('COPILOT_TURNS_PER_HOUR', '30')),
+    /** Pedidos al Copiloto en curso a la vez por cuenta (AI-16). 0 = sin tope; un valor inválido usa 3 (y se avisa). */
+    concurrentPerAccount: capValue('COPILOT_CONCURRENT_PER_ACCOUNT', env('COPILOT_CONCURRENT_PER_ACCOUNT')),
     accountTurnsPerDay: Number(env('COPILOT_ACCOUNT_TURNS_PER_DAY', '300')),
     /** Tope de gasto del Copiloto por cuenta en 24 horas, en USD (0 = sin tope; aparte del presupuesto de IA). */
     accountUsdPerDay: Math.max(0, Number(env('COPILOT_ACCOUNT_USD_PER_DAY', '3')) || 0),

@@ -63,6 +63,30 @@ test('formato: se rechazan macros, ActiveX, objetos incrustados, contenido de in
   assert.match(inspectTemplate(bomb.generate({ type: 'nodebuffer', compression: 'DEFLATE' }) as Buffer).errors.join(), /demasiado grande/);
 });
 
+const REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+/** El formato de ejemplo con una relación más en `word/_rels/document.xml.rels`. */
+function withRels(rel: string): Buffer {
+  const zip = new PizZip(exampleTemplate());
+  const name = 'word/_rels/document.xml.rels';
+  const current = zip.file(name)?.asText() ?? '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
+  zip.file(name, current.replace('</Relationships>', `${rel}</Relationships>`));
+  return zip.generate({ type: 'nodebuffer' }) as Buffer;
+}
+const T = REL_NS;
+const EXTERNAL = /contenido de internet/;
+for (const [name, rel] of [
+  ['un > dentro de un atributo', `<Relationship Id="r9" Type="${T}/image" Foo=">" Target="http://169.254.169.254/x.png" TargetMode="External"/>`],
+  ['un atributo que termina en /hyperlink', `<Relationship Id="r9" Type="${T}/image" Z="/hyperlink" Target="http://169.254.169.254/x.png" TargetMode="External"/>`],
+  ['comillas simples', `<Relationship Id='r9' Type='${T}/image' Target='http://169.254.169.254/x.png' TargetMode='External'/>`],
+  ['un Type falso dentro de otro atributo', `<Relationship Id="r9" Z=' Type="${T}/hyperlink"' Type="${T}/image" Target="file:///etc/passwd" TargetMode="External"/>`],
+  ['un atributo repetido', `<Relationship Id="r9" Type="${T}/hyperlink" Type="${T}/image" Target="http://x/y.png" TargetMode="External"/>`],
+] as const) test(`relación externa: ${name} se rechaza`, () => assert.match(inspectTemplate(withRels(rel)).errors.join(), EXTERNAL));
+
+test('un hipervínculo externo sigue entrando, con comillas simples y en cualquier orden', () => {
+  assert.deepEqual(inspectTemplate(withRels(`<Relationship TargetMode='External' Target='https://hotel.mx' Type='${T}/hyperlink' Id='r9'/>`)).errors, []);
+  assert.deepEqual(inspectTemplate(exampleTemplate()).errors, []);
+});
+
 /** Escribe `size` como tamaño descomprimido declarado en cada parte (encabezado local y directorio central): mentir es gratis. */
 function lie(buf: Buffer, size: number): Buffer {
   const out = Buffer.from(buf);

@@ -13,7 +13,7 @@ const { createHarness, dbAvailable, pool } = await import('./harness.js');
 const ok = await dbAvailable();
 const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && 'PostgreSQL de pruebas no disponible' }, fn);
 const { outbox } = await import('../src/mailer.js');
-const { mpCardKey, recordTrialClaims } = await import('../src/billing/trial-claims.js');
+const { mpCardKey, mpCardKeyLegacy, recordTrialClaims } = await import('../src/billing/trial-claims.js');
 const { checkTrials } = await import('../src/lifecycle.js');
 let h: Awaited<ReturnType<typeof createHarness>>;
 
@@ -116,6 +116,42 @@ t('Mercado Pago: autorizada con el primer cobro a futuro empieza la prueba; con 
   const bb = await accountOf(b.accountId);
   assert.deepEqual([bb.status, bb.pause_reason], ['paused', 'card'], 'sigue esperando otra tarjeta');
   assert.equal(mails('mp2@prueba.mx', /Esta tarjeta ya tuvo una prueba gratis/), 1);
+});
+
+/** Confirma por Mercado Pago una suscripción en prueba de `email` con la tarjeta `card`; devuelve la suscripción y la cuenta. */
+async function startTrialMp(email: string, tag: string, card: Record<string, unknown>) {
+  fake.mp.cards[`card_${tag}`] = card;
+  const a = await waiting(email);
+  await a.api('POST', '/api/billing/checkout', { plan: 'pro', provider: 'mercadopago' });
+  await pool.query(`UPDATE subscriptions SET checkout_ref = $2 WHERE account_id = $1`, [a.accountId, `pre_${tag}`]);
+  const start = new Date(Date.now() + 14 * 86400_000);
+  fake.mp.preapprovals[`pre_${tag}`] = { id: `pre_${tag}`, status: 'authorized', external_reference: `${a.accountId}:pro`, payer_id: 40, card_id: `card_${tag}`, auto_recurring: { start_date: start.toISOString() }, next_payment_date: start.toISOString() };
+  const e = mpEvent('subscription_preapproval', `pre_${tag}`);
+  assert.equal((await h.app.inject({ method: 'POST', url: e.url, payload: e.payload, headers: e.headers })).statusCode, 200);
+  return { a, trial: (await accountOf(a.accountId)).status === 'trial', sub: fake.mp.preapprovals[`pre_${tag}`] };
+}
+
+t('Mercado Pago: la misma tarjeta con otro documento del titular no da otra prueba (PAY-25)', async () => {
+  const CARD = { first_six_digits: '450995', last_four_digits: '4444', expiration_month: 5, expiration_year: 2032 };
+  const one = await startTrialMp('doc1@prueba.mx', 'doc1', { ...CARD, cardholder: { identification: { number: 'AAA010101AAA' } } });
+  assert.equal(one.trial, true);
+  const two = await startTrialMp('doc2@prueba.mx', 'doc2', { ...CARD, cardholder: { identification: { number: 'BBB020202BBB' } } });
+  assert.equal(two.trial, false);
+  assert.equal(two.sub.status, 'cancelled');
+});
+
+t('Mercado Pago: una marca del formato anterior (con documento) sigue contando como tarjeta usada (PAY-25)', async () => {
+  const CARD_WITH_ID = { first_six_digits: '450995', last_four_digits: '5555', expiration_month: 6, expiration_year: 2032, cardholder: { identification: { number: 'CCC030303CCC' } } };
+  const old = await waiting('viejo-fmt@prueba.mx');
+  await recordTrialClaims({ accountId: old.accountId, email: 'viejo-fmt@prueba.mx', cardKey: mpCardKeyLegacy(CARD_WITH_ID), provider: 'mercadopago' });
+  const r = await startTrialMp('nuevo-fmt@prueba.mx', 'fmt', CARD_WITH_ID);
+  assert.equal(r.trial, false);
+  assert.equal(r.sub.status, 'cancelled');
+  // Una tarjeta sin documento guardada con el formato anterior (terminaba en «:») también se reconoce.
+  const NO_ID = { first_six_digits: '450995', last_four_digits: '6666', expiration_month: 7, expiration_year: 2032 };
+  const old2 = await waiting('viejo-sin@prueba.mx');
+  await recordTrialClaims({ accountId: old2.accountId, email: 'viejo-sin@prueba.mx', cardKey: mpCardKeyLegacy(NO_ID), provider: 'mercadopago' });
+  assert.equal((await startTrialMp('nuevo-sin@prueba.mx', 'fmt2', NO_ID)).trial, false);
 });
 
 t('una prueba con tarjeta vencida no se pausa mientras su suscripción siga viva; sin suscripción, sí (Review Focus 3)', async () => {

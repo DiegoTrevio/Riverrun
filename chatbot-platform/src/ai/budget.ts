@@ -3,6 +3,7 @@ import { query, queryOne, withTransaction } from '../db.js';
 import { config } from '../config.js';
 import { logEvent } from '../logs.js';
 import { notifyUsers } from '../automation/store.js';
+import { notifyPlatform } from '../platform/digest.js';
 import { HttpError } from '../access.js';
 import type { AiProvider, CompletionRequest, CompletionResult, EmbeddingResult } from './provider.js';
 import { assertAiAllowed } from './gate.js';
@@ -32,15 +33,32 @@ export async function budgetPolicy(accountId:string) {
  return {revision:row?.revision??0,settings:BudgetSettings.parse(row?.settings??{})};
 }
 type Quote={model:string;input_per_mtok:number;cached_per_mtok?:number;output_per_mtok:number;per_audio_minute:number};
-async function price(model:string,policy:BudgetPolicy,client?:import('pg').PoolClient):Promise<Quote|null> {
+/** Tarifa de la plataforma (`ai_prices`, y el respaldo de embeddings); null si no hay o no tiene precio. */
+export async function platformPrice(model:string,client?:import('pg').PoolClient):Promise<Quote|null> {
  const name=normalize(model);
- const local=policy.prices.filter(p=>name===normalize(p.model)||name.startsWith(normalize(p.model)+'-')).sort((a,b)=>b.model.length-a.model.length)[0];
- if(local)return local.is_free||local.input_per_mtok+local.output_per_mtok+local.per_audio_minute>0?{...local,model:name}:null;
  const sql=`SELECT * FROM ai_prices WHERE starts_with($1::text,regexp_replace(model,'^openai/','')) ORDER BY length(model) DESC LIMIT 1`;
  const found=client?(await client.query(sql,[name])).rows[0]:await queryOne(sql,[name]);
  if(found)return found.is_free||Number(found.input_per_mtok)+Number(found.output_per_mtok)+Number(found.per_audio_minute)>0?{model:name,input_per_mtok:Number(found.input_per_mtok),cached_per_mtok:Number(found.cached_per_mtok),output_per_mtok:Number(found.output_per_mtok),per_audio_minute:Number(found.per_audio_minute)}:null;
  if(name==='text-embedding-3-small')return {model:name,input_per_mtok:config.knowledgeSearch.pricePerMillion??0.02,output_per_mtok:0,per_audio_minute:0};
  return null;
+}
+/**
+ * Tarifa con la que se reserva y se liquida. Con `platformCap` (la cuenta tiene tope de la plataforma, PAY-24) manda la
+ * de la plataforma y la propia del cliente solo cuenta si es mayor, campo por campo (`is_free` propio no cuenta); sin
+ * tarifa de la plataforma el modelo es desconocido. Sin tope de la plataforma, la propia manda como siempre.
+ */
+async function price(model:string,policy:BudgetPolicy,client?:import('pg').PoolClient,o:{platformCap?:boolean}={}):Promise<Quote|null> {
+ const name=normalize(model);
+ const local=policy.prices.filter(p=>name===normalize(p.model)||name.startsWith(normalize(p.model)+'-')).sort((a,b)=>b.model.length-a.model.length)[0];
+ if(o.platformCap){
+  const base=await platformPrice(model,client);
+  if(!base)return null;
+  if(!local)return base;
+  // El modo de cobro es el de la plataforma: una tarifa propia por minuto no vuelve «de audio» un modelo que se cobra por tokens.
+  return {...base,input_per_mtok:Math.max(base.input_per_mtok,local.input_per_mtok),output_per_mtok:Math.max(base.output_per_mtok,local.output_per_mtok),per_audio_minute:base.per_audio_minute>0?Math.max(base.per_audio_minute,local.per_audio_minute):0};
+ }
+ if(local)return local.is_free||local.input_per_mtok+local.output_per_mtok+local.per_audio_minute>0?{...local,model:name}:null;
+ return platformPrice(model,client);
 }
 type Spec={kind:string;models:string[];input:number;output:number;seconds?:number};
 const constrained=(p:BudgetPolicy,models:string[])=>p.monthly_usd!==null||p.daily_usd!==null||p.models.some(m=>models.includes(normalize(m.model)));
@@ -63,8 +81,41 @@ export async function unpricedModels():Promise<string[]> {
  const empty=BudgetSettings.parse({});
  const models=[config.openai.defaultModel,...config.openai.fallbackModels,config.openai.summaryModel,config.openai.transcriptionModel,config.openai.mediaModel,config.knowledgeSearch.model,config.copilot.model,...config.copilot.fallbackModels];
  const out:string[]=[];
- for(const m of [...new Set(models.filter(Boolean))])if(!(await price(m,empty)))out.push(m);
+ for(const m of [...new Set(models.filter(Boolean))])if(!(await platformPrice(m)))out.push(m);
  return out;
+}
+/**
+ * Cuentas activas sin plan ni excepción (AI-20): llevan el tope por omisión (PLAN_DEFAULT_AI_USD; con 0, ninguno),
+ * contando lo que ya gastaron este mes, y con ese tope un modelo sin fila en ai_prices se rechaza (price_unknown,
+ * PAY-24). Al arrancar se avisa al superadmin, una vez al día (el día se aparta en system_state): cuántas son, cuáles ya
+ * pasaron el 80 % del tope y qué modelos de sus asistentes no tienen precio. Devuelve si avisó.
+ */
+export async function warnDefaultCapAccounts(now=new Date()):Promise<boolean> {
+ const cap=config.signup.planDefaultAiUsd>0?config.signup.planDefaultAiUsd:null;
+ const accounts=await query<{id:string;name:string;used:number}>(`SELECT a.id,a.name,coalesce((SELECT sum(coalesce(s.charged_usd,s.reserved_usd)) FROM ai_spend s WHERE s.account_id=a.id AND s.created_at>=date_trunc('month',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AND s.state<>'rejected'),0)::float8 AS used FROM accounts a LEFT JOIN plans p ON p.key=a.plan WHERE a.status='active' AND a.active AND a.ai_usd_override IS NULL AND p.key IS NULL ORDER BY a.name`);
+ if(!accounts.length)return false;
+ const first=await queryOne(`INSERT INTO system_state(key,value) VALUES($1,'{}') ON CONFLICT(key) DO NOTHING RETURNING key`,[`ai-default-cap:${now.toISOString().slice(0,10)}`]);
+ if(!first)return false;
+ const list=(names:string[])=>names.slice(0,20).join(', ')+(names.length>20?` y ${names.length-20} más`:'');
+ const n=accounts.length,which=`${n} cuenta${n===1?'':'s'} activa${n===1?'':'s'} sin plan ni excepción`;
+ const fix='Para cambiarlo, dales un plan o una excepción en Cuentas → Límites (ia=…), o cambia PLAN_DEFAULT_AI_USD.';
+ let title='Cuentas activas sin tope de IA',body=`${which} no tienen tope de IA de la plataforma (PLAN_DEFAULT_AI_USD = 0): ${list(accounts.map(a=>a.name))}. ${fix}`,urgent=false;
+ if(cap!==null){
+  const nearing=accounts.filter(a=>Number(a.used)>=cap*0.8);
+  const bots=await query<{model:string|null;fallbacks:string[]}>(`SELECT ai->>'model' AS model,COALESCE(ARRAY(SELECT jsonb_array_elements_text(ai->'fallback_models')),'{}') AS fallbacks FROM chatbots WHERE account_id=ANY($1::uuid[])`,[accounts.map(a=>a.id)]);
+  const models=new Set(bots.flatMap(b=>[b.model||config.openai.defaultModel,...(b.fallbacks.length?b.fallbacks:config.openai.fallbackModels)]).filter(Boolean));
+  const unpriced:string[]=[];
+  for(const m of models)if(!(await platformPrice(m)))unpriced.push(m);
+  title='Cuentas activas con el tope de IA por omisión';
+  body=[`${which} llevan el tope de IA por omisión: ${cap} USD al mes (PLAN_DEFAULT_AI_USD), contando lo que ya gastaron este mes.`,
+   nearing.length?`Ya pasaron el 80 % este mes: ${list(nearing.map(a=>`${a.name} (${Number(a.used).toFixed(2)} USD)`))}.`:'',
+   unpriced.length?`Con ese tope, estos modelos de sus asistentes no tienen precio en ai_prices y sus llamadas se rechazan: ${unpriced.join(', ')}. Agrega su precio en Consumo de IA → «Precios por modelo (USD)».`:'',
+   fix].filter(Boolean).join(' ');
+  urgent=nearing.length>0||unpriced.length>0;
+ }
+ await logEvent({level:'warn',source:'system',message:body});
+ await notifyPlatform(title,body,{urgent});
+ return true;
 }
 /** Tope de IA al mes que pone la plataforma: la excepción de la cuenta, el de su plan o el de la prueba (null = sin tope). */
 export async function platformAiCap(accountId:string,client?:import('pg').PoolClient):Promise<number|null> {
@@ -75,17 +126,20 @@ export async function platformAiCap(accountId:string,client?:import('pg').PoolCl
  if(r.ai_usd_per_month!==null&&r.ai_usd_per_month!==undefined)return Number(r.ai_usd_per_month);
  // Un plan sin su propio tope lleva el de por omisión (PLAN_DEFAULT_AI_USD).
  if(r.plan_key&&config.signup.planDefaultAiUsd>0)return config.signup.planDefaultAiUsd;
- return r.status==='trial'&&config.signup.trialAiUsd>0?config.signup.trialAiUsd:null;
+ if(r.status==='trial'&&config.signup.trialAiUsd>0)return config.signup.trialAiUsd;
+ // Una cuenta activa sin plan ni excepción tampoco queda sin tope (AI-20).
+ return r.status==='active'&&config.signup.planDefaultAiUsd>0?config.signup.planDefaultAiUsd:null;
 }
 async function reserve(accountId:string,chatbotId:string|null,spec:Spec) {
  try{return await withTransaction(async client=>{
   await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`ai-budget:${accountId}`]);
   const row=(await client.query('SELECT revision,settings FROM ai_budget_settings WHERE account_id=$1',[accountId])).rows[0];
   // Con tope de la plataforma (PAY-20) la llamada también va limitada: sin precio conocido no se puede cuidar el tope.
+  // Se calcula antes de las tarifas: con tope, cuenta la tarifa de la plataforma y no la que el cliente edita (PAY-24).
   const platform=await platformAiCap(accountId,client);
   const policy=BudgetSettings.parse(row?.settings??{}),limited=constrained(policy,spec.models)||platform!==null;
   const output=limited&&spec.kind!=='transcription'?Math.min(spec.output,policy.max_output_tokens):spec.output;
-  const prices=await Promise.all(spec.models.map(m=>price(m,policy,client)));
+  const prices=await Promise.all(spec.models.map(m=>price(m,policy,client,{platformCap:platform!==null})));
   if(limited&&prices.some(p=>!p))throw new AiBudgetBlocked('price_unknown');
   if(limited&&prices.some(p=>p!.per_audio_minute>0)&&spec.seconds===undefined)throw new AiBudgetBlocked('audio_duration_unknown');
   const estimates=prices.map(p=>p?cost({...p,input_per_mtok:Math.max(p.input_per_mtok,p.cached_per_mtok??0)},spec.input,output,spec.seconds):null);

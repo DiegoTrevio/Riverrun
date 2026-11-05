@@ -223,7 +223,7 @@ function metaAdapter(type: 'messenger' | 'instagram', label: string, objectName:
     initialConfig: () => ({ verify_token: crypto.randomBytes(16).toString('hex') }),
 
     handleVerification({ channel, query }) {
-      const ok = query['hub.mode'] === 'subscribe' && !!channel.config.verify_token && query['hub.verify_token'] === channel.config.verify_token;
+      const ok = query['hub.mode'] === 'subscribe' && !!channel.config.verify_token && safeEqual(String(query['hub.verify_token'] ?? ''), String(channel.config.verify_token));
       return ok ? String(query['hub.challenge'] ?? '') : null;
     },
 

@@ -11,8 +11,8 @@ const dbName = `${base.pathname.slice(1)}_startup`;
 const startupUrl = Object.assign(new URL(DB), { pathname: `/${dbName}` }).toString();
 const admin = new pg.Pool({ connectionString: DB, max: 1 });
 const ok = await admin.query('SELECT 1').then(() => true).catch(() => false);
-const SECRET = '9c2e7a1f4b8d3e6a0c5f9b2d7e1a4c8f';
-const EVO_KEY = '7f3b9e1d5a8c2f6b0e4d9a3c7f1b5e8d';
+const SECRET = 'prueba-sesion-9c2e7a1f4b8d3e6a0c5f9b2d7e1a4c8f';
+const EVO_KEY = 'prueba-evolution-7f3b9e1d5a8c2f6b0e4d9a3c7f1b5e8d';
 
 const freePort = () => new Promise<number>((resolve) => {
   const s = net.createServer().listen(0, '127.0.0.1', () => {

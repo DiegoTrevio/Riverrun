@@ -173,3 +173,18 @@ t('el evento se puede elegir al crear el webhook', async () => {
   const events = (await h.authed('GET', '/api/webhook-events')).json();
   assert.ok(events.some((e: any) => e.type === 'conversation.sent'));
 });
+
+t('una llave de solo lectura no actualiza el resumen; una de escritura sí (ID-20)', async () => {
+  const keyOf = async (scope: 'read' | 'write') => (await h.authed('POST', '/api/api-keys', { account_id: h.accountId, name: `Llave ${scope}`, scope })).json().key;
+  const get = (key: string) => h.app.inject({ method: 'GET', url: `/api/v1/conversations/${conv.id}/export?content=summary&refresh=true`, headers: { authorization: `Bearer ${key}` } });
+  // Un mensaje nuevo deja el resumen desactualizado.
+  await h.webhook('Mejor el martes', { phone: PHONE });
+  await h.idle();
+  const before = h.summaryCalls.length;
+  const read = await get(await keyOf('read'));
+  assert.equal(read.statusCode, 200, read.body);
+  assert.equal(h.summaryCalls.length, before, 'una llave de lectura no gasta IA');
+  const write = await get(await keyOf('write'));
+  assert.equal(write.statusCode, 200, write.body);
+  assert.equal(h.summaryCalls.length, before + 1, 'una de escritura sí actualiza');
+});

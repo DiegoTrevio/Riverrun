@@ -124,7 +124,7 @@ t('precio inventado: reintenta con corrección y envía la versión verificada',
   await waitFor(() => sent.length === 1);
   assert.equal(calls.length, 2);
   const correction = calls[1].messages[calls[1].messages.length - 1];
-  assert.equal(correction.role, 'system');
+  assert.equal(correction.role, 'user');
   assert.match(correction.content, /4500/);
   assert.match(sent[0].text, /1,650/);
   // Una respuesta por mensaje: después de la corrección no sale nada más ni la IA se consulta otra vez.

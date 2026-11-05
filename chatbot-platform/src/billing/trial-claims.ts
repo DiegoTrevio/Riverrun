@@ -21,16 +21,35 @@ export function canonicalEmail(email: string): string {
   return GMAIL.has(domain) ? `${local.replaceAll('.', '')}@gmail.com` : `${local}@${domain}`;
 }
 
-/** Mercado Pago no da una huella de la tarjeta: se arma con los 6 primeros, los 4 últimos, el vencimiento y el titular. */
-export function mpCardKey(card: {
+type MpCard = {
   first_six_digits?: string;
   last_four_digits?: string;
   expiration_month?: number;
   expiration_year?: number;
   cardholder?: { identification?: { number?: string } };
-}): string | null {
+};
+
+/**
+ * Mercado Pago no da una huella de la tarjeta: se arma con los 6 primeros, los 4 últimos y el vencimiento. El documento
+ * del titular ya no entra (PAY-25): lo escribe quien paga y cambiarlo daba otra prueba con la misma tarjeta.
+ */
+export function mpCardKey(card: MpCard): string | null {
   if (!card.first_six_digits || !card.last_four_digits) return null;
-  return `${card.first_six_digits}:${card.last_four_digits}:${card.expiration_month ?? ''}/${card.expiration_year ?? ''}:${card.cardholder?.identification?.number ?? ''}`;
+  return `${card.first_six_digits}:${card.last_four_digits}:${card.expiration_month ?? ''}/${card.expiration_year ?? ''}`;
+}
+
+/**
+ * El formato anterior (con el documento del titular al final). Solo sirve para encontrar marcas viejas: nunca se guarda.
+ * Las marcas duran 2 años, así que a partir de noviembre de 2028 se puede borrar (y `cardKeys` de Mercado Pago).
+ */
+export function mpCardKeyLegacy(card: MpCard): string | null {
+  const base = mpCardKey(card);
+  return base && `${base}:${card.cardholder?.identification?.number ?? ''}`;
+}
+
+/** Las huellas con que se busca una tarjeta: la actual y, en Mercado Pago, la del formato anterior. */
+export function stateCardKeys(state: { cardKey?: string | null; cardKeys?: string[] | null }): string[] {
+  return state.cardKeys?.length ? state.cardKeys : state.cardKey ? [state.cardKey] : [];
 }
 
 let key: Buffer | null = null;
@@ -58,18 +77,25 @@ export async function trialAvailable(o: { email: string; googleSub?: string | nu
 }
 
 /** ¿Esta tarjeta ya tuvo una prueba (o perdió una disputa)? */
-export async function cardClaim(cardKey: string): Promise<{ claimed: boolean; disputed: boolean }> {
-  const row = await queryOne<{ disputed: boolean }>(`SELECT disputed FROM trial_claims WHERE kind = 'card' AND digest = $1 AND expires_at > now()`, [await digest('card', cardKey)]);
-  return { claimed: !!row, disputed: !!row?.disputed };
+export async function cardClaim(cardKeys: string | string[]): Promise<{ claimed: boolean; disputed: boolean }> {
+  const digests = await Promise.all([cardKeys].flat().map((k) => digest('card', k)));
+  const rows = await query<{ disputed: boolean }>(`SELECT disputed FROM trial_claims WHERE kind = 'card' AND digest = ANY($1::bytea[]) AND expires_at > now()`, [digests]);
+  return { claimed: rows.length > 0, disputed: rows.some((r) => r.disputed) };
 }
 
-export type ClaimMark = { kind: ClaimKind; digest: Buffer };
+/** `legacy`: la marca de un formato anterior; sirve para buscar, pero no se guarda (`insertClaims` la salta). */
+export type ClaimMark = { kind: ClaimKind; digest: Buffer; legacy?: boolean };
 
-/** Las marcas de una persona: su correo normalizado, su cuenta de Google y su tarjeta (las que haya). */
-export async function claimMarks(o: { email?: string | null; googleSub?: string | null; cardKey?: string | null }): Promise<ClaimMark[]> {
-  const values: [ClaimKind, string | null | undefined][] = [['email', o.email ? canonicalEmail(o.email) : null], ['google', o.googleSub], ['card', o.cardKey]];
+/**
+ * Las marcas de una persona: su correo normalizado, su cuenta de Google y su tarjeta (las que haya). `cardKeys` trae la
+ * huella actual primero y, después, las de formatos anteriores: se buscan todas, pero solo se guarda la primera.
+ */
+export async function claimMarks(o: { email?: string | null; googleSub?: string | null; cardKey?: string | null; cardKeys?: string[] | null }): Promise<ClaimMark[]> {
+  const values: [ClaimKind, string | null | undefined][] = [['email', o.email ? canonicalEmail(o.email) : null], ['google', o.googleSub]];
   const marks: ClaimMark[] = [];
   for (const [kind, value] of values) if (value) marks.push({ kind, digest: await digest(kind, value) });
+  const cards = stateCardKeys(o.cardKeys?.length ? o : { cardKey: o.cardKey });
+  for (const [i, value] of cards.entries()) marks.push({ kind: 'card', digest: await digest('card', value), ...(i ? { legacy: true } : {}) });
   return marks;
 }
 
@@ -92,6 +118,7 @@ export async function lockClaims(client: pg.PoolClient, marks: ClaimMark[]): Pro
 /** Guarda las marcas de una prueba que empieza. Repetirlas no hace nada (la primera se queda). */
 export async function insertClaims(db: Pick<pg.PoolClient, 'query'> | null, accountId: string, provider: string, marks: ClaimMark[]): Promise<void> {
   for (const m of marks) {
+    if (m.legacy) continue;
     const sql = `INSERT INTO trial_claims (kind, digest, account_id, provider) VALUES ($1, $2, $3, $4) ON CONFLICT (kind, digest) DO NOTHING`;
     const params = [m.kind, m.digest, accountId, provider];
     if (db) await db.query(sql, params);

@@ -9,6 +9,14 @@ let h: Awaited<ReturnType<typeof createHarness>>;
 let B = '', C = '';
 const numbers: Record<string, string> = {};
 
+t('IN-27: la página pública escapa el título y el texto', async () => {
+  const { poolPage } = await import('../src/routes/pools.js');
+  const html = poolPage('<b>x</b>', 'a & <i>b</i>');
+  assert.ok(!html.includes('<b>x</b>') && !html.includes('<i>b</i>'), html);
+  assert.equal(html.match(/&#60;b&#62;x&#60;\/b&#62;/g)?.length, 2, 'en <title> y en <h2>');
+  assert.match(html, /a &#38; &#60;i&#62;b&#60;\/i&#62;/);
+});
+
 const hit = async (token: string) => h.app.inject({ method: 'GET', url: `/wa/${token}`, remoteAddress: `10.1.1.${Math.floor(Math.random() * 200) + 1}` });
 const dest = (r: any) => String(r.headers.location);
 const newPool = async (body: Record<string, unknown>) => { const r = await h.authed('POST', '/api/wa-pools', { account_id: h.accountId, ...body }); assert.equal(r.statusCode, 200, r.body); return r.json(); };

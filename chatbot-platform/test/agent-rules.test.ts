@@ -95,6 +95,129 @@ t('el mismo texto repetido por el cliente pausa al asistente y avisa al equipo, 
   assert.ok((await alertsOf('automation')).some((a) => /bucle/.test(a.title)), 'el equipo se entera');
 });
 
+/** Avisos del equipo por el tope de turnos de IA (uno por persona del equipo que debe enterarse). */
+const capAlerts = async () => (await pool.query(`SELECT 1 FROM notifications WHERE account_id = $1 AND title LIKE '%demasiados mensajes%'`, [h.accountId])).rowCount ?? 0;
+
+t('pasado el tope de turnos de IA por hora, el asistente se pausa una hora en esa conversación y avisa una vez (AI-15)', async () => {
+  const { config } = await import('../src/config.js');
+  const original = config.openai.turnsPerContactHour;
+  config.openai.turnsPerContactHour = 3;
+  try {
+    h.reset();
+    h.setScript(() => ({ messages: ['Claro, dime.'] }));
+    const phone = '5215530000021';
+    const before = await capAlerts();
+    for (let i = 0; i < 4; i++) await say(`pregunta distinta ${i}`, phone);
+    assert.equal(decisions(), 3, 'la cuarta ya no llega a la IA');
+    assert.equal(textsTo(phone).length, 3, 'y el cliente no recibe ningún mensaje por el tope');
+    const conv = (await pool.query(`SELECT agent_off_reason, agent_off_until FROM conversations WHERE id = $1`, [(await convOf(phone)).id])).rows[0];
+    assert.match(conv.agent_off_reason, /demasiados mensajes/);
+    assert.ok(new Date(conv.agent_off_until).getTime() - Date.now() > 50 * 60_000, 'la pausa dura una hora');
+    assert.ok(new Date(conv.agent_off_until).getTime() - Date.now() < 70 * 60_000);
+    const first = (await capAlerts()) - before;
+    assert.ok(first >= 1, 'el equipo se entera');
+    await say('otra más', phone);
+    assert.equal(decisions(), 3);
+    assert.equal((await capAlerts()) - before, first, 'un aviso por persona del equipo, no uno por mensaje');
+  } finally {
+    config.openai.turnsPerContactHour = original;
+  }
+});
+
+t('el tope de turnos es por contacto: otro cliente del mismo canal sigue con respuesta (AI-15)', async () => {
+  const { config } = await import('../src/config.js');
+  const original = config.openai.turnsPerContactHour;
+  config.openai.turnsPerContactHour = 3;
+  try {
+    h.reset();
+    h.setScript(() => ({ messages: ['Claro, dime.'] }));
+    for (let i = 0; i < 4; i++) await say(`hola ${i}`, '5215530000022');
+    await say('hola', '5215530000023');
+    assert.equal(decisions(), 4, 'tres del primero y una del segundo');
+    assert.equal(textsTo('5215530000023').length, 1);
+  } finally {
+    config.openai.turnsPerContactHour = original;
+  }
+});
+
+t('pasado el tope de turnos, una emergencia sí recibe el mensaje fijo y pasa a una persona; un mensaje normal sigue sin respuesta (AI-15)', async () => {
+  const { config } = await import('../src/config.js');
+  const original = config.openai.turnsPerContactHour;
+  config.openai.turnsPerContactHour = 2;
+  try {
+    h.reset();
+    h.setScript(() => ({ messages: ['Claro, dime.'] }));
+    const phone = '5215530000024';
+    for (let i = 0; i < 3; i++) await say(`consulta número ${i}`, phone);
+    const conv = await convOf(phone);
+    assert.match((await pool.query(`SELECT agent_off_reason FROM conversations WHERE id = $1`, [conv.id])).rows[0].agent_off_reason, /demasiados mensajes/);
+    await say('y otra pregunta más', phone);
+    assert.equal(decisions(), 2);
+    assert.equal(textsTo(phone).length, 2, 'un mensaje normal sigue sin respuesta');
+    const alerts = (await alertsOf('safety')).length;
+    await say('quiero morirme', phone);
+    assert.equal(decisions(), 2, 'la emergencia no pasa por la IA');
+    const sent = textsTo(phone);
+    assert.equal(sent.length, 3, 'la emergencia sí recibe respuesta');
+    assert.match(sent[2], /911/);
+    assert.match(sent[2], /Línea de la Vida/);
+    assert.equal((await convOf(phone)).status, 'human', 'queda escalada a una persona');
+    assert.equal((await alertsOf('safety')).length - alerts >= 1, true, 'el equipo recibe el 🚨');
+  } finally {
+    config.openai.turnsPerContactHour = original;
+  }
+});
+
+t('el simulador no cuenta para el tope de turnos por contacto, como la cuota mensual (AI-15)', async () => {
+  const { config } = await import('../src/config.js');
+  const original = config.openai.turnsPerContactHour;
+  config.openai.turnsPerContactHour = 2;
+  try {
+    h.reset();
+    h.setScript(() => ({ messages: ['Claro, dime.'] }));
+    for (let i = 0; i < 4; i++) {
+      const r = await h.authed('POST', `/api/chatbots/${h.botId}/playground`, { session: 'tope-simulador', text: `prueba del simulador ${i}` });
+      assert.equal(r.statusCode, 200, r.body);
+      assert.notEqual(r.json().result.status, 'paused', `el turno ${i + 1} del simulador no se pausa`);
+    }
+    assert.equal(decisions(), 4, 'los cuatro llegan a la IA');
+  } finally {
+    config.openai.turnsPerContactHour = original;
+  }
+});
+
+t('AI_TURNS_PER_CONTACT_HOUR=0 apaga el tope: el primer turno no pausa a nadie (AI-15)', async () => {
+  const { config } = await import('../src/config.js');
+  const original = config.openai.turnsPerContactHour;
+  config.openai.turnsPerContactHour = 0;
+  try {
+    h.reset();
+    h.setScript(() => ({ messages: ['Claro, dime.'] }));
+    const phone = '5215530000026';
+    for (let i = 0; i < 3; i++) await say(`duda número ${i}`, phone);
+    assert.equal(decisions(), 3, 'con 0 no hay tope');
+    assert.equal(textsTo(phone).length, 3);
+    assert.equal((await pool.query(`SELECT agent_off_at FROM conversations WHERE id = $1`, [(await convOf(phone)).id])).rows[0].agent_off_at, null);
+  } finally {
+    config.openai.turnsPerContactHour = original;
+  }
+});
+
+t('una pausa que puso el equipo sigue igual ante una emergencia: sin respuesta del asistente, con aviso (AI-15)', async () => {
+  h.reset();
+  h.setScript(() => ({ messages: ['Claro, dime.'] }));
+  const phone = '5215530000025';
+  await say('hola', phone);
+  const conv = await convOf(phone);
+  await pool.query(`UPDATE conversations SET agent_off_at = now(), agent_off_reason = 'pausa del equipo', agent_off_until = NULL WHERE id = $1`, [conv.id]);
+  const before = textsTo(phone).length;
+  const alerts = (await alertsOf('safety')).length;
+  await say('quiero morirme', phone);
+  assert.equal(textsTo(phone).length, before, 'el asistente no habla en una pausa del equipo');
+  assert.equal((await convOf(phone)).status, 'bot');
+  assert.equal((await alertsOf('safety')).length - alerts >= 1, true, 'el equipo se entera igual');
+});
+
 t('tarjeta: el número se guarda enmascarado y la IA no lo recibe completo', async () => {
   h.reset();
   h.setScript(() => ({ messages: ['Recibido, gracias.'] }));

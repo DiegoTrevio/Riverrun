@@ -115,3 +115,48 @@ t('con la cuenta activa la IA sigue funcionando', async () => {
   });
   await waitFor(() => transcribed === 1, 5000);
 });
+
+t('AI_MEDIA_PER_CONTACT_HOUR=0 apaga el tope de lecturas: las notas de voz se transcriben (AI-15)', async () => {
+  const { config } = await import('../src/config.js');
+  const original = config.openai.mediaPerContactHour;
+  config.openai.mediaPerContactHour = 0;
+  try {
+    const phone = '5215510000780';
+    const start = transcribed;
+    for (const n of [1, 2]) {
+      evo.media.set(`AUD-SIN-TOPE-${n}`, { buffer: Buffer.from('OggS-audio'), mimetype: 'audio/ogg' });
+      await h.app.inject({
+        method: 'POST', url: `/webhook/${h.token}`,
+        payload: { event: 'messages.upsert', instance: 'palmas', data: { key: { remoteJid: `${phone}@s.whatsapp.net`, id: `AUD-SIN-TOPE-${n}` }, message: { audioMessage: { seconds: 4 } }, messageTimestamp: Math.floor(Date.now() / 1000) } },
+      });
+      await waitFor(async () => (await pool.query(`SELECT count(*)::int AS n FROM messages WHERE external_message_id = $1`, [`AUD-SIN-TOPE-${n}`])).rows[0].n === 1, 5000);
+    }
+    await waitFor(() => transcribed - start === 2, 5000).catch(() => undefined);
+    assert.equal(transcribed - start, 2, 'con 0 no hay tope de lecturas');
+  } finally {
+    config.openai.mediaPerContactHour = original;
+  }
+});
+
+t('pasado el tope de lecturas por hora, la nota de voz del mismo contacto se guarda sin transcribir (AI-15)', async () => {
+  const { config } = await import('../src/config.js');
+  const original = config.openai.mediaPerContactHour;
+  config.openai.mediaPerContactHour = 2;
+  try {
+    const phone = '5215510000779';
+    const start = transcribed;
+    for (const n of [1, 2, 3]) {
+      evo.media.set(`AUD-TOPE-${n}`, { buffer: Buffer.from('OggS-audio'), mimetype: 'audio/ogg' });
+      await h.app.inject({
+        method: 'POST', url: `/webhook/${h.token}`,
+        payload: { event: 'messages.upsert', instance: 'palmas', data: { key: { remoteJid: `${phone}@s.whatsapp.net`, id: `AUD-TOPE-${n}` }, message: { audioMessage: { seconds: 4 } }, messageTimestamp: Math.floor(Date.now() / 1000) } },
+      });
+      await waitFor(async () => (await pool.query(`SELECT count(*)::int AS n FROM messages WHERE external_message_id = $1`, [`AUD-TOPE-${n}`])).rows[0].n === 1, 5000);
+    }
+    assert.equal(transcribed - start, 2, 'la tercera nota de voz no se transcribe');
+    const runs = (await pool.query(`SELECT count(*)::int n FROM ai_runs ar JOIN conversations c ON c.id = ar.conversation_id JOIN contacts ct ON ct.id = c.contact_id WHERE ar.kind = 'transcription' AND ct.phone = $1`, [phone])).rows[0].n;
+    assert.equal(runs, 2);
+  } finally {
+    config.openai.mediaPerContactHour = original;
+  }
+});

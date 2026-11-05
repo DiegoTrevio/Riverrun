@@ -1,2 +1,16 @@
 # SESSION_SECRET de las pruebas del CI (0123456789…): no es de ningún servidor.
 c31c4578f8758b66abafa3e9993ffdb8c344b086:.github/workflows/ci.yml:generic-api-key:102
+# Los mismos SESSION_SECRET de prueba (0123456789…) en versiones anteriores de ci.yml (INF-20).
+22027671c32976ca7e38b36ecdca7f39de07098b:.github/workflows/ci.yml:generic-api-key:240
+91ff79f004df2b11e0110d8a14824bb8b3e2802f:.github/workflows/ci.yml:generic-api-key:164
+c54b94862b6fbc15bcb35a2440bafcb95f3f0f1c:.github/workflows/ci.yml:generic-api-key:129
+5482deba13651c5f65bd361b7f1abb32022dacb0:.github/workflows/ci.yml:generic-api-key:129
+# Llaves de prueba en hexadecimal de startup.test.ts en commits anteriores (ahora llevan el prefijo «prueba-»).
+22027671c32976ca7e38b36ecdca7f39de07098b:chatbot-platform/test/startup.test.ts:generic-api-key:14
+22027671c32976ca7e38b36ecdca7f39de07098b:chatbot-platform/test/startup.test.ts:generic-api-key:15
+91ff79f004df2b11e0110d8a14824bb8b3e2802f:chatbot-platform/test/startup.test.ts:generic-api-key:14
+91ff79f004df2b11e0110d8a14824bb8b3e2802f:chatbot-platform/test/startup.test.ts:generic-api-key:15
+c54b94862b6fbc15bcb35a2440bafcb95f3f0f1c:chatbot-platform/test/startup.test.ts:generic-api-key:14
+c54b94862b6fbc15bcb35a2440bafcb95f3f0f1c:chatbot-platform/test/startup.test.ts:generic-api-key:15
+5482deba13651c5f65bd361b7f1abb32022dacb0:chatbot-platform/test/startup.test.ts:generic-api-key:14
+5482deba13651c5f65bd361b7f1abb32022dacb0:chatbot-platform/test/startup.test.ts:generic-api-key:15

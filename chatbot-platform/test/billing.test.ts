@@ -147,6 +147,21 @@ t('Stripe: cobro fallido → gracia → pausa; el pago recupera la cuenta', asyn
   assert.equal(mails('Recibimos tu pago'), 1);
 });
 
+t('IN-25: «Confirmar pago» solo guarda enlaces https://', async () => {
+  fake.stripe.subs.sub_1.status = 'past_due';
+  try {
+    await stripeHook('invoice.payment_action_required', { id: 'in_js', subscription: 'sub_1', hosted_invoice_url: 'javascript:alert(1)' });
+    assert.equal((await sub()).payment_action_url, '');
+    await stripeHook('invoice.payment_action_required', { id: 'in_http', subscription: 'sub_1', hosted_invoice_url: 'http://invoice.stripe.test/i/1' });
+    assert.equal((await sub()).payment_action_url, '');
+    await stripeHook('invoice.payment_action_required', { id: 'in_ok', subscription: 'sub_1', hosted_invoice_url: 'https://invoice.stripe.test/i/1' });
+    assert.equal((await sub()).payment_action_url, 'https://invoice.stripe.test/i/1');
+  } finally {
+    fake.stripe.subs.sub_1.status = 'active';
+    await stripeHook('invoice.paid', { subscription: 'sub_1' });
+  }
+});
+
 t('si el superadmin reactiva a mano una cuenta pausada por pago, no se vuelve a pausar', async () => {
   fake.stripe.subs.sub_1.status = 'past_due';
   await stripeHook('invoice.payment_failed', { subscription: 'sub_1' }, 'evt_pf2');
@@ -395,6 +410,51 @@ t('Mercado Pago: la referencia externa solo da el plan si el cobro corresponde (
   fake.mp.preapprovals.pre_ref.auto_recurring = ar(5000);
   assert.equal((await send('pre_ref')).statusCode, 200);
   assert.equal(await planOf(), 'vip');
+});
+
+t('Stripe: subir el precio de un plan no marca a quien ya lo pagaba; una suscripción nueva con el precio viejo sí (PAY-28)', async () => {
+  const acc = (await h.authed('POST', '/api/accounts', { name: 'Precio aceptado' })).json().id;
+  const nueva = (await h.authed('POST', '/api/accounts', { name: 'Precio viejo, cuenta nueva' })).json().id;
+  assert.equal((await h.authed('POST', '/api/plans', { key: 'sube', name: 'Sube', price: 499, currency: 'MXN' })).statusCode, 200);
+  const planOf = async (id: string) => (await pool.query(`SELECT plan FROM accounts WHERE id = $1`, [id])).rows[0].plan;
+  const flags = async (id: string) => (await pool.query(`SELECT 1 FROM event_logs WHERE account_id = $1 AND message LIKE '%no corresponde a un plan%'`, [id])).rows.length;
+  const price499 = { id: 'price_sube_499', product: 'riverrun_sube', unit_amount: 57_884, recurring: { interval: 'month' } };
+  fake.stripe.subs.sub_acepta = stripeSub({ id: 'sub_acepta', customer: 'cus_acepta', metadata: { account_id: acc, plan_key: 'sube' }, items: { data: [{ id: 'si_acepta', price: price499 }] } });
+  assert.equal((await stripeHook('customer.subscription.updated', fake.stripe.subs.sub_acepta, 'evt_acepta_1')).statusCode, 200);
+  assert.equal(await planOf(acc), 'sube');
+  assert.equal((await pool.query(`SELECT accepted_price_ref FROM subscriptions WHERE account_id = $1`, [acc])).rows[0].accepted_price_ref, 'price_sube_499');
+  assert.equal(await flags(acc), 0);
+  // El superadmin sube el plan a 599: el siguiente aviso de esa suscripción (aún a 499) no la marca ni cambia el plan.
+  assert.equal((await h.authed('PUT', '/api/plans/sube', { name: 'Sube', price: 599, currency: 'MXN' })).statusCode, 200);
+  assert.equal((await stripeHook('customer.subscription.updated', fake.stripe.subs.sub_acepta, 'evt_acepta_2')).statusCode, 200);
+  assert.equal(await planOf(acc), 'sube');
+  assert.equal(await flags(acc), 0, 'no genera «Precio de suscripción sin plan»');
+  // Una suscripción nueva con el precio de 499 (otro id de precio) ya no corresponde al plan de 599.
+  fake.stripe.subs.sub_nueva = stripeSub({ id: 'sub_nueva', customer: 'cus_nueva', metadata: { account_id: nueva, plan_key: 'sube' }, items: { data: [{ id: 'si_nueva', price: { ...price499, id: 'price_sube_499_otra' } }] } });
+  assert.equal((await stripeHook('customer.subscription.updated', fake.stripe.subs.sub_nueva, 'evt_nueva_1')).statusCode, 200);
+  assert.equal(await flags(nueva), 1, 'una suscripción nueva sí se marca');
+  assert.notEqual(await planOf(nueva), 'sube');
+});
+
+t('Mercado Pago: subir el precio de un plan no marca a quien ya lo pagaba (PAY-28)', async () => {
+  const acc = (await h.authed('POST', '/api/accounts', { name: 'MP precio aceptado' })).json().id;
+  const nueva = (await h.authed('POST', '/api/accounts', { name: 'MP precio viejo, cuenta nueva' })).json().id;
+  assert.equal((await h.authed('POST', '/api/plans', { key: 'sube-mp', name: 'Sube MP', price: 100, currency: 'MXN' })).statusCode, 200);
+  const planOf = async (id: string) => (await pool.query(`SELECT plan FROM accounts WHERE id = $1`, [id])).rows[0].plan;
+  const flags = async (id: string) => (await pool.query(`SELECT 1 FROM event_logs WHERE account_id = $1 AND message LIKE '%no corresponde a un plan%'`, [id])).rows.length;
+  const send = (id: string) => { const e = mpEvent('subscription_preapproval', id); return h.app.inject({ method: 'POST', url: e.url, payload: e.payload, headers: e.headers }); };
+  const ar = { frequency: 1, frequency_type: 'months', transaction_amount: 116, currency_id: 'MXN' };
+  fake.mp.preapprovals.pre_acepta = { id: 'pre_acepta', status: 'authorized', external_reference: `${acc}:sube-mp`, payer_id: 902, next_payment_date: days(30).toISOString(), auto_recurring: ar };
+  assert.equal((await send('pre_acepta')).statusCode, 200);
+  assert.equal(await planOf(acc), 'sube-mp');
+  assert.equal((await pool.query(`SELECT accepted_price_ref FROM subscriptions WHERE account_id = $1`, [acc])).rows[0].accepted_price_ref, '11600:MXN:1');
+  assert.equal((await h.authed('PUT', '/api/plans/sube-mp', { name: 'Sube MP', price: 200, currency: 'MXN' })).statusCode, 200);
+  assert.equal((await send('pre_acepta')).statusCode, 200);
+  assert.equal(await planOf(acc), 'sube-mp');
+  assert.equal(await flags(acc), 0);
+  fake.mp.preapprovals.pre_nueva = { id: 'pre_nueva', status: 'authorized', external_reference: `${nueva}:sube-mp`, payer_id: 903, next_payment_date: days(30).toISOString(), auto_recurring: ar };
+  assert.equal((await send('pre_nueva')).statusCode, 200);
+  assert.equal(await flags(nueva), 1, 'una suscripción nueva con el monto viejo sí se marca');
 });
 
 t('Mercado Pago: el id que se procesa es el firmado; sin x-request-id o con un ts de más de 5 minutos, no (PAY-15)', async () => {

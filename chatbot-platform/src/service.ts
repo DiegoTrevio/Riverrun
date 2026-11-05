@@ -21,7 +21,8 @@ import { clampInbound, cleanText, deepClean, toPlainText } from './engine/text.j
 import { adapterFor } from './channels/index.js';
 import { INBOUND_MEDIA_MAX_BYTES, removeInboundFiles, saveInboundMedia, type StoredMedia } from './channels/media.js';
 import { config } from './config.js';
-import { gate } from './engine/activation.js';
+import { limited } from './identity/rate-limit.js';
+import { gate, pausedByEngine } from './engine/activation.js';
 import { describeInbound, type InboundMessage } from './channels/types.js';
 import { describeWithMedia, understandMedia } from './engine/media-understanding.js';
 import { query, queryOne } from './db.js';
@@ -547,7 +548,14 @@ export class ChatService {
     let content = describeInbound(msg);
     const adapter = adapterFor(channel.type);
     // Con la cuenta en pausa no se gasta IA: el audio se guarda como nota de voz, sin transcribir.
-    if (msg.type === 'audio' && bot?.ai.transcribe_audio && adapter.downloadAudio && channel.account_active !== false) {
+    // Tope de lecturas por contacto y hora (AI-15): se evalúa al final para contar solo lo que de verdad iba a gastar IA.
+    const mediaCapped = async () => {
+      // AI_MEDIA_PER_CONTACT_HOUR=0: sin tope de lecturas.
+      if (config.openai.mediaPerContactHour <= 0 || !(await limited(`ai-media:${conv.contact_id}`, config.openai.mediaPerContactHour, 3_600_000))) return false;
+      await logEvent({ level: 'info', source: 'engine', message: 'Sin leer el archivo: el cliente mandó demasiados en una hora', ...logBase });
+      return true;
+    };
+    if (msg.type === 'audio' && bot?.ai.transcribe_audio && adapter.downloadAudio && channel.account_active !== false && !(await mediaCapped())) {
       try {
         const audio = await adapter.downloadAudio(channel, msg);
         if (audio) {
@@ -596,7 +604,7 @@ export class ChatService {
     }
     // Foto o documento: el agente lee lo que contiene (una sola vez), en lugar de saber solo que llegó un archivo. Solo si
     // el asistente va a contestar: con una persona atendiendo o el agente apagado no se gasta IA.
-    if (media && bot?.ai.understand_media && bot.active && channel.account_active !== false && conv.status !== 'human' && (media.kind === 'image' || media.kind === 'document') && triggers) {
+    if (media && bot?.ai.understand_media && bot.active && channel.account_active !== false && conv.status !== 'human' && (media.kind === 'image' || media.kind === 'document') && triggers && !(await mediaCapped())) {
       const started = Date.now();
       try {
         const understood = await understandMedia(accountAi(this.ai, channel.account_id, bot.id, 'media'), media);
@@ -678,9 +686,13 @@ export class ChatService {
       if (stopAi) await store.markMessageProcessed(inserted.id);
       current = (await store.getConversation(conv.id)) ?? current;
     }
-    let canReply = current.status === 'bot' && !!bot && bot.active && channel.active && channel.account_active !== false;
+    const botOn = current.status === 'bot' && !!bot && bot.active && channel.active && channel.account_active !== false;
+    let canReply = botOn;
     // Activadores y desactivadores del asistente (palabras que lo encienden o lo apagan en esta conversación).
     if (canReply) canReply = await this.applyGate(bot!, channel, current, contact, content);
+    // AI-15: en una pausa que puso el propio motor (tope de turnos por hora o bucle), una emergencia sí llega al motor,
+    // que responde con el mensaje fijo, sin IA, pasa la conversación a una persona y avisa al equipo.
+    if (!canReply && botOn && pausedByEngine(current) && detectRisk(content)) canReply = true;
     if (!canReply) {
       // El asistente no va a responder (pausa, palabra de activación o una persona atiende): si hay una emergencia,
       // el equipo se entera igual. Con el asistente activo, el motor se encarga de responder y avisar.

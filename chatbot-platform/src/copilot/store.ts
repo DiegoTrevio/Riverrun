@@ -109,22 +109,23 @@ export async function deleteThread(id: string) {
 
 // --- Turnos ----------------------------------------------------------------------------------------------------------
 
-/** Abre un turno; `null` si ya hay uno en curso en ese hilo o de esa persona (índices únicos parciales). */
+/**
+ * Abre un turno; `null` si ya hay uno en curso en ese hilo o de esa persona (índices únicos parciales). `follow`: es la
+ * continuación de otro turno («Confirmar y seguir»). Con `client` corre dentro de la transacción de quien llama (el
+ * candado de la cuenta).
+ */
 export async function startTurn(
   thread: Thread, page: Page, model: string,
   follow?: { parent: Pick<Turn, 'id' | 'chain_depth' | 'contact_ids'> },
+  client?: pg.PoolClient,
 ): Promise<Turn | null> {
-  try {
-    return await queryOne<Turn>(
-      `INSERT INTO copilot_turns (thread_id, account_id, user_id, page, model, origin, parent_turn_id, chain_depth, contact_ids)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-      [thread.id, thread.account_id, thread.user_id, JSON.stringify(page), model,
-        follow ? 'continuation' : 'user', follow?.parent.id ?? null, follow ? follow.parent.chain_depth + 1 : 0, follow?.parent.contact_ids ?? []],
-    );
-  } catch (e: any) {
-    if (e?.code === '23505') return null;
-    throw e;
-  }
+  // ON CONFLICT DO NOTHING: una violación única no aborta la transacción de quien llama.
+  const sql = `INSERT INTO copilot_turns (thread_id, account_id, user_id, page, model, origin, parent_turn_id, chain_depth, contact_ids)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT DO NOTHING RETURNING *`;
+  const params = [thread.id, thread.account_id, thread.user_id, JSON.stringify(page), model,
+    follow ? 'continuation' : 'user', follow?.parent.id ?? null, follow ? follow.parent.chain_depth + 1 : 0, follow?.parent.contact_ids ?? []];
+  if (client) return (await client.query<Turn>(sql, params)).rows[0] ?? null;
+  return queryOne<Turn>(sql, params);
 }
 
 export async function getTurn(id: string): Promise<Turn | null> {
@@ -212,14 +213,27 @@ export async function recentlyTainted(threadId: string, exceptTurnId: string, tu
   ));
 }
 
-export async function recentTurns(userId: string, accountId: string) {
-  return (await queryOne<{ user_hour: number; account_day: number; account_day_usd: number }>(
-    `SELECT (SELECT count(*)::int FROM copilot_turns WHERE user_id = $1 AND started_at > now() - interval '1 hour') AS user_hour,
-            day.turns AS account_day, day.usd AS account_day_usd
-       FROM (SELECT count(*)::int AS turns, coalesce(sum(cost_usd), 0)::float8 AS usd
-               FROM copilot_turns WHERE account_id = $2 AND started_at > now() - interval '24 hours') day`,
-    [userId, accountId],
-  ))!;
+/** Ids de los turnos del hilo que leyeron texto de clientes (su respuesta puede repetirlo). */
+export async function taintedTurnIds(threadId: string): Promise<Set<string>> {
+  const rows = await query<{ id: string }>(`SELECT id FROM copilot_turns WHERE thread_id = $1 AND tainted`, [threadId]);
+  return new Set(rows.map((r) => r.id));
+}
+
+/**
+ * Uso reciente. Un pedido en curso cuenta como `turnMaxUsd` (lo máximo que puede gastar) hasta que termina, no como
+ * su costo parcial: así los pedidos en paralelo no se cuelan bajo el tope del día.
+ */
+export async function recentTurns(userId: string, accountId: string, client?: pg.PoolClient) {
+  const sql = `SELECT (SELECT count(*)::int FROM copilot_turns WHERE user_id = $1 AND started_at > now() - interval '1 hour') AS user_hour,
+            day.turns AS account_day, day.running AS account_running,
+            (day.usd + day.running * $3::float8)::float8 AS account_day_usd
+       FROM (SELECT count(*)::int AS turns,
+                    count(*) FILTER (WHERE status = 'running')::int AS running,
+                    coalesce(sum(cost_usd) FILTER (WHERE status <> 'running'), 0)::float8 AS usd
+               FROM copilot_turns WHERE account_id = $2 AND started_at > now() - interval '24 hours') day`;
+  const params = [userId, accountId, config.copilot.turnMaxUsd];
+  const row = client ? (await client.query(sql, params)).rows[0] : await queryOne(sql, params);
+  return row as { user_hour: number; account_day: number; account_running: number; account_day_usd: number };
 }
 
 // --- Mensajes --------------------------------------------------------------------------------------------------------
@@ -362,15 +376,24 @@ export async function updatesSince(threadId: string, afterRev: number) {
 export async function sweepStale(threadId?: string) {
   const scope = threadId ? ' AND thread_id = $1' : '';
   const params = threadId ? [threadId] : [];
-  await query(`UPDATE copilot_turns SET status = 'interrupted', step_label = '', finished_at = now(), error = 'Se interrumpió antes de terminar.' WHERE status = 'running' AND heartbeat_at < now() - interval '45 seconds'${scope}`, params);
+  await query(`UPDATE copilot_turns SET status = 'interrupted', step_label = '', finished_at = now(), error = 'Se interrumpió antes de terminar.' WHERE status = 'running' AND heartbeat_at < now() - make_interval(secs => ${STALE_TURN_SECONDS})${scope}`, params);
   // Solo cuando venció su plazo (nadie la está renovando): una acción larga que sigue corriendo no se toca.
   await query(`UPDATE copilot_actions SET status = 'unknown', updated_at = now(), error = 'Se interrumpió a la mitad: revisa si se aplicó.' WHERE status IN ('executing', 'undoing') AND coalesce(lease_until, updated_at + interval '2 minutes') < now()${scope}`, params);
   await query(`UPDATE copilot_actions SET status = 'expired', updated_at = now() WHERE status = 'proposed' AND expires_at < now()${scope}`, params);
 }
 
+/** Un turno «en curso» sin latido en estos segundos se da por colgado. */
+const STALE_TURN_SECONDS = 45;
+const STALE_TURN_SET = `status = 'interrupted', step_label = '', finished_at = now(), error = 'Se interrumpió antes de terminar.'`;
+
 /** Turnos colgados de una persona (en cualquier conversación): así un reinicio a la mitad no la deja sin poder pedir nada. */
 export async function sweepStaleUser(userId: string) {
-  await query(`UPDATE copilot_turns SET status = 'interrupted', step_label = '', finished_at = now(), error = 'Se interrumpió antes de terminar.' WHERE status = 'running' AND user_id = $1 AND heartbeat_at < now() - interval '45 seconds'`, [userId]);
+  await query(`UPDATE copilot_turns SET ${STALE_TURN_SET} WHERE status = 'running' AND user_id = $1 AND heartbeat_at < now() - make_interval(secs => ${STALE_TURN_SECONDS})`, [userId]);
+}
+
+/** Turnos colgados de cualquier persona de la cuenta: cuentan para el tope de simultáneos y del día, así que no pueden esperar al barrido de mantenimiento. */
+export async function sweepStaleAccount(accountId: string) {
+  await query(`UPDATE copilot_turns SET ${STALE_TURN_SET} WHERE status = 'running' AND account_id = $1 AND heartbeat_at < now() - make_interval(secs => ${STALE_TURN_SECONDS})`, [accountId]);
 }
 
 /** Retención: hilos sin actividad en `COPILOT_RETENTION_DAYS` (o antes, si la cuenta guarda los mensajes menos tiempo). */

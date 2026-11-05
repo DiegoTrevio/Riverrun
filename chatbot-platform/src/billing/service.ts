@@ -17,7 +17,7 @@ import { stripe } from './stripe.js';
 import type pg from 'pg';
 import { openCardCheck, startTrialFromState } from './card-check.js';
 import { chargeCents } from './tax.js';
-import { cardClaim } from './trial-claims.js';
+import { cardClaim, stateCardKeys } from './trial-claims.js';
 import type { BillingProvider, PaymentInfo, Plan, ProviderName, Subscription, SubscriptionState } from './types.js';
 
 export const providers: Record<ProviderName, BillingProvider> = { stripe, mercadopago };
@@ -292,17 +292,24 @@ export async function changePlan(o: { accountId: string; email: string; planKey:
   return {};
 }
 
+/**
+ * Lo que la cuenta tiene de más para el plan, en frases listas para un aviso (vacío si cabe). Se ignoran los límites que
+ * el superadmin le dio aparte.
+ */
+export async function overPlanLimits(accountId: string, plan: Plan): Promise<string[]> {
+  const [acc, used] = await Promise.all([queryOne<{ limits_override: Record<string, unknown> | null }>(`SELECT limits_override FROM accounts WHERE id = $1`, [accountId]), usageOf(accountId)]);
+  return (['channels', 'users', 'chatbots', 'social_accounts', 'storage_mb'] as const)
+    .filter((k) => {
+      const max = plan.limits?.[k];
+      return typeof max === 'number' && max > 0 && acc?.limits_override?.[k] == null && used[k] > max;
+    })
+    .map((k) => `${used[k]} ${LIMIT_LABELS[k].plural} (el plan ${plan.name} permite ${plan.limits[k]})`);
+}
+
 /** Bajar de plan: la cuenta tiene que caber en los límites del nuevo (salvo los que el superadmin le dio aparte). */
 async function assertFitsPlan(accountId: string, plan: Plan) {
-  const [acc, used] = await Promise.all([queryOne<{ limits_override: Record<string, unknown> | null }>(`SELECT limits_override FROM accounts WHERE id = $1`, [accountId]), usageOf(accountId)]);
-  const over = (['channels', 'users', 'chatbots', 'social_accounts'] as const).filter((k) => {
-    const max = plan.limits?.[k];
-    return typeof max === 'number' && max > 0 && acc?.limits_override?.[k] == null && used[k] > max;
-  });
-  if (over.length) {
-    const list = over.map((k) => `${used[k]} ${LIMIT_LABELS[k].plural} (el plan ${plan.name} permite ${plan.limits[k]})`).join(', ');
-    throw new HttpError(409, `Para cambiar al plan ${plan.name} primero ajusta tu cuenta: tienes ${list}.`);
-  }
+  const over = await overPlanLimits(accountId, plan);
+  if (over.length) throw new HttpError(409, `Para cambiar al plan ${plan.name} primero ajusta tu cuenta: tienes ${over.join(', ')}.`);
 }
 
 /**
@@ -364,7 +371,7 @@ export async function applyState(state: SubscriptionState, now = new Date(), o: 
     let current = state;
     if (o.refresh) {
       const fresh = await providers[state.provider].subscriptionState(state.subscriptionId, await listPlans(true), now).catch(() => null);
-      if (fresh) current = { ...fresh, accountId: fresh.accountId ?? state.accountId, cardKey: fresh.cardKey ?? state.cardKey };
+      if (fresh) current = { ...fresh, accountId: fresh.accountId ?? state.accountId, cardKey: fresh.cardKey ?? state.cardKey, cardKeys: fresh.cardKeys?.length ? fresh.cardKeys : state.cardKeys };
     }
     return applyStateLocked({ ...current, accountId }, now, later, client);
   });
@@ -429,8 +436,8 @@ async function applyStateLocked(state: SubscriptionState & { accountId: string }
   // El periodo ya pagado no se pierde si el proveedor no lo informa.
   const periodEnd = state.periodEnd ?? (prev?.provider_subscription_id === state.subscriptionId ? prev.current_period_end : null);
   await query(
-    `INSERT INTO subscriptions (account_id, provider, provider_customer_id, provider_subscription_id, plan_key, status, current_period_end, cancel_at_period_end, past_due_since)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+    `INSERT INTO subscriptions (account_id, provider, provider_customer_id, provider_subscription_id, plan_key, status, current_period_end, cancel_at_period_end, past_due_since, accepted_price_ref)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$13)
      ON CONFLICT (account_id) DO UPDATE SET provider = $2, provider_customer_id = $3, provider_subscription_id = $4, plan_key = $5, status = $6,
        current_period_end = $7, cancel_at_period_end = $8, past_due_since = $9,
        dunning_step = CASE WHEN $6 = 'past_due' THEN subscriptions.dunning_step ELSE 0 END,
@@ -441,9 +448,12 @@ async function applyStateLocked(state: SubscriptionState & { accountId: string }
        pending_plan_since = CASE WHEN $10 <> '' THEN $11::timestamptz WHEN subscriptions.provider_subscription_id = $4 THEN subscriptions.pending_plan_since END,
        pending_amount_cents = CASE WHEN $10 <> '' THEN $12::int WHEN subscriptions.provider_subscription_id = $4 THEN subscriptions.pending_amount_cents ELSE 0 END,
        collection_paused = CASE WHEN subscriptions.provider_subscription_id = $4 THEN subscriptions.collection_paused ELSE false END,
+       -- El precio aceptado se renueva solo cuando el plan guardado es el que el precio cobrado dio (PAY-28).
+       accepted_price_ref = CASE WHEN $13 <> '' THEN $13 WHEN subscriptions.provider_subscription_id = $4 THEN subscriptions.accepted_price_ref ELSE '' END,
        updated_at = now()`,
     [accountId, state.provider, state.customerId, state.subscriptionId, planKey, state.status, periodEnd, state.cancelAtPeriodEnd, pastDueSince,
-      scheduled?.key ?? '', scheduled ? now : null, scheduled ? chargeCents(scheduled) : 0],
+      scheduled?.key ?? '', scheduled ? now : null, scheduled ? chargeCents(scheduled) : 0,
+      !state.planMismatch && state.priceRef && state.planKey && state.planKey === planKey ? state.priceRef : ''],
   );
 
   // Stripe: el plan programado (anual → mensual) llegó con la renovación, o la suscripción se va a cancelar: ya no está pendiente.
@@ -453,6 +463,19 @@ async function applyStateLocked(state: SubscriptionState & { accountId: string }
   // Una sustitución no es una contratación nueva: sigue del estado en que estaba (al corriente o con pago pendiente).
   const was = prev?.provider_subscription_id === state.subscriptionId || (replacing && ['active', 'past_due'].includes(prev!.status)) ? prev!.status : 'incomplete';
   const plan = planKey ? await getPlan(planKey) : null;
+
+  // El plan cambió (p. ej. llegó el programado): la cuenta pudo crecer desde que se pidió el cambio. Se aplica igual, pero se
+  // avisa de lo que ya no cabe (PAY-27). Un plan puesto a mano por el superadmin no cambia con la suscripción.
+  if (plan && prev?.plan_key && planKey !== prev.plan_key && state.status === 'active' && acc.plan_source !== 'manual') {
+    const over = await overPlanLimits(accountId, plan);
+    if (over.length) {
+      const title = `Tu cuenta no cabe en el plan ${plan.name}`;
+      const list = over.join(', ');
+      await logEvent({ level: 'warn', source: 'admin', message: `La cuenta no cabe en el plan ${plan.name} al aplicarse el cambio: ${list}`, accountId });
+      later.push(() => tell(accountId, title, `Tienes ${list}. Lo que ya existe sigue funcionando, pero no puedes agregar más hasta ajustarlo o cambiar de plan.`));
+      later.push(() => notifySuperadmins(accountId, title, `"${acc.name}" tiene ${list}.`));
+    }
+  }
 
   if (replacing && prev) {
     // La anterior deja de cobrar. Si ya estaba cancelada (reanudar tras cancelar), no hay nada que hacer.
@@ -490,7 +513,7 @@ async function applyStateLocked(state: SubscriptionState & { accountId: string }
     // Tras perder una disputa, solo otra tarjeta reactiva la cuenta (PAY-5). Con la misma, la suscripción nueva se cancela
     // y se reembolsa; si no se sabe qué tarjeta es, sigue en pausa y lo revisa el superadministrador.
     const lost = acc.status === 'paused' && acc.pause_reason === 'dispute_lost';
-    const sameCard = lost && !!state.cardKey && (await cardClaim(state.cardKey)).disputed;
+    const sameCard = lost && !!state.cardKey && (await cardClaim(stateCardKeys(state))).disputed;
     const cardOk = !lost || (!!state.cardKey && !sameCard);
     if (lost && activate && !cardOk) {
       if (sameCard) {
@@ -672,7 +695,7 @@ export async function notePaymentAction(provider: ProviderName, subscriptionId: 
     `SELECT s.account_id, s.status, s.payment_action_url, a.name FROM subscriptions s JOIN accounts a ON a.id = s.account_id WHERE s.provider = $1 AND s.provider_subscription_id = $2`,
     [provider, subscriptionId],
   );
-  if (!prev || !url) return;
+  if (!prev || !/^https:\/\//i.test(url)) return; // solo enlaces https:// (IN-25)
   await query(`UPDATE subscriptions SET payment_action_url = $2, updated_at = now() WHERE account_id = $1`, [prev.account_id, url]);
   await logEvent({ level: 'warn', source: 'admin', message: `El banco pide confirmar el cobro (${provider})`, accountId: prev.account_id });
   if (prev.status === 'past_due' && prev.payment_action_url !== url) await tell(prev.account_id, 'Confirma tu pago con tu banco', confirmText(prev.name, url));

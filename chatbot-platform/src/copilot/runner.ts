@@ -150,7 +150,7 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
       model: limits.model, user, accountName: account.name, timezone: ctx.timezone, snapshot, page, actions,
       index: limits.toolPacks ? packIndex(all) : '', continuing: req.continuation?.plan,
     });
-    const history: AnyMessage[] = buildHistory(stored, actions, await threadFiles(thread.id));
+    const history: AnyMessage[] = buildHistory(stored, actions, await threadFiles(thread.id), await cs.taintedTurnIds(thread.id));
     const ai = accountAi(deps.ai, thread.account_id, null, 'copilot');
     const fallback = limits.fallbackModels.length ? limits.fallbackModels : 'none' as const;
 
@@ -241,7 +241,7 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
             r.contactIds?.forEach((id) => ctx.scope.add(id));
           }
           if (r.untrusted) ctx.tainted = true;
-          if (r.untrusted || r.contactIds?.length) await cs.markTurn(turn.id, { tainted: r.untrusted, contactIds: r.contactIds });
+          if (r.untrusted || r.contactIds?.length) await cs.markTurn(turn.id, { tainted: !!r.untrusted || (r.contactIds?.length ?? 0) > 1, contactIds: r.contactIds });
           // Las del propio Copiloto (cargar herramientas) no son acciones sobre la cuenta: no dejan tarjeta.
           if (!def.meta) await cs.insertAction({ thread_id: thread.id, turn_id: turn.id, account_id: thread.account_id, user_id: user.id, tool_call_id: call.id, tool: def.name, args: args as Record<string, unknown>, risk: 'read', status: 'done', title: r.title ?? def.label(args), links: r.links ?? [], contact_ids: r.contactIds ?? [], executed_at: new Date() });
           const text = forModel(r.data);
@@ -262,7 +262,7 @@ export async function runTurn(deps: RunnerDeps, req: TurnRequest): Promise<void>
           const title = r.title ?? def.label(args);
           if (!ctx.tainted) r.contactIds?.forEach((id) => ctx.scope.add(id));
           if (r.untrusted) ctx.tainted = true;
-          if (r.untrusted || r.contactIds?.length) await cs.markTurn(turn.id, { tainted: r.untrusted, contactIds: r.contactIds });
+          if (r.untrusted || r.contactIds?.length) await cs.markTurn(turn.id, { tainted: !!r.untrusted || (r.contactIds?.length ?? 0) > 1, contactIds: r.contactIds });
           await cs.updateAction(action.id, {
             status: 'done', title, result: r.data ?? null, links: r.links ?? [], before: r.before ?? null, after: r.after ?? null, undo: r.undo ?? null,
             undo_until: r.undo ? new Date(Date.now() + limits.undoDays * 86400_000) : null, contact_ids: r.contactIds ?? [], executed_at: new Date(),

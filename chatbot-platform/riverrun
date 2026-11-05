@@ -66,6 +66,12 @@ app_url() {
 }
 
 pg_image() { dc config --images 2>/dev/null | grep -iE 'postgres|pgvector' | head -n 1 || true; }
+# Digests (repo@sha256:…) de la imagen con la que corre hoy el contenedor de PostgreSQL, uno por línea; vacío si no corre.
+pg_running_digests() {
+  local c id; c="$(dc ps -q postgres 2>/dev/null | head -n 1)"; [[ -n "$c" ]] || return 0
+  id="$(docker inspect --format '{{.Image}}' "$c" 2>/dev/null || true)"; [[ -n "$id" ]] || return 0
+  docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$id" 2>/dev/null || true
+}
 
 version() { git rev-parse --short HEAD 2>/dev/null || echo dev; }
 
@@ -957,8 +963,18 @@ update_pull() {
   fi
   # Cambiar la imagen de PostgreSQL sobre un volumen existente puede dañar los índices de texto (otra versión de collation):
   # se detiene aquí y se pide hacerlo con el procedimiento de docs/semantic-activation.md.
-  local pg_after; pg_after="$(pg_image)"
+  local pg_after pg_digest; pg_after="$(pg_image)"
   if [[ -n "$UPD_PG_BEFORE" && "$UPD_PG_BEFORE" != "$pg_after" && "$ACCEPT_DB_IMAGE" != "1" ]]; then
+    # INF-17: la misma etiqueta, ahora fijada por digest («ref» → «ref@sha256:…»). No es un cambio si el contenedor ya
+    # corre exactamente esa imagen; si corre otra compilación de la etiqueta (otra glibc, otra collation), sí lo es.
+    if [[ "$UPD_PG_BEFORE" != *@* && "$pg_after" == "$UPD_PG_BEFORE@sha256:"* ]]; then
+      pg_digest="${pg_after#"$UPD_PG_BEFORE"@}"
+      if pg_running_digests | grep -qF "@$pg_digest"; then
+        ok "PostgreSQL queda fijado por digest a la imagen que ya corre ($pg_digest)"
+        return 0
+      fi
+      abort_update "La imagen de PostgreSQL ahora se fija por digest ($pg_after), pero la que corre en este servidor es otra compilación de la misma etiqueta ($UPD_PG_BEFORE): puede traer otra glibc y otra versión de collation, que afecta los índices de texto. No se aplicó nada. Revisa docs/semantic-activation.md (respaldo, ensayo y restauración en un volumen nuevo) o, si lo aceptas, con respaldo y bajo tu riesgo, repite con --accept-db-image-change."
+    fi
     abort_update "Esta versión cambia la imagen de PostgreSQL ($UPD_PG_BEFORE → $pg_after). No se aplicó porque un volumen existente puede ser incompatible. Sigue docs/semantic-activation.md (respaldo, ensayo y restauración en un volumen nuevo) o, bajo tu riesgo y con respaldo, repite con --accept-db-image-change."
   fi
 }
@@ -967,10 +983,12 @@ update_pull() {
 update_preflight() {
   export APP_VERSION; APP_VERSION="$(version)"
   say "Construyendo la nueva versión ($APP_VERSION)…"
-  # --pull: la imagen base de Node (y la del respaldo) con sus parches de seguridad, no la que quedó en caché (INF-3).
+  # --pull: descarga exactamente el digest de las imágenes base que fijan los Dockerfile (Node y la del respaldo), si aún
+  # no está. Los parches de seguridad ya no llegan por aquí: llegan como PRs de Dependabot con el digest nuevo, pasados
+  # por el CI (INF-3, INF-17).
   dc build --pull backend backup || abort_update "No se pudo construir la versión nueva. No se aplicó nada."
-  # Redis y Caddy: la versión más reciente de su misma etiqueta (redis:7, caddy:2; parches). Se descargan aquí y se
-  # aplican con el resto; PostgreSQL no: cambiar su imagen sobre un volumen existente tiene su propio procedimiento.
+  # Redis, Caddy y el convertidor de PDF: se descarga exactamente el digest que fija el compose (los parches llegan como
+  # PRs de Dependabot, ya pasados por el CI). Se descargan aquí y se aplican con el resto; PostgreSQL no: cambiar su imagen sobre un volumen existente tiene su propio procedimiento.
   dc pull --quiet redis caddy pdf >/dev/null 2>&1 || warn "No se pudieron descargar las imágenes nuevas de Redis, Caddy o del convertidor de PDF; se sigue con las que hay."
   say "Revisando la configuración con la versión nueva…"
   preflight_config || abort_update "La versión nueva no arrancaría con esta configuración (problemas críticos arriba). Corrígelos en .env y repite ./riverrun update. No se aplicó nada."
@@ -1281,6 +1299,15 @@ cmd_preflight() {
   if [[ -n "$pb" ]]; then pf_warn "$pb"; else pf_ok "El panel solo escucha en el propio servidor (PANEL_BIND)"; fi
   if [[ -f "${RIVERRUN_PREFLIGHT_ETC:-/etc}/riverrun-harden" ]]; then pf_ok "Servidor endurecido (./riverrun harden)"
   else pf_warn "El servidor no se ha endurecido: sudo ./riverrun harden (firewall, SSH solo con llave, fail2ban, actualizaciones)."; fi
+  # INF-19: sin contraseña, cualquier contenedor de la red interna lee y escribe en Redis.
+  if [[ -n "$(env_get REDIS_PASSWORD)" ]]; then pf_ok "Redis con contraseña (REDIS_PASSWORD)"
+  else pf_warn "Redis sin contraseña (REDIS_PASSWORD vacío). Corrígelo con: ./riverrun update genera REDIS_PASSWORD"; fi
+  # INF-21: sin firma, quien pueda escribir en main despliega lo que quiera. Solo se avisa; la protección de rama y el 2FA
+  # se activan en GitHub.
+  local signers; signers="$(env_get UPDATE_ALLOWED_SIGNERS)"
+  if [[ -n "$signers" && -f "$signers" ]]; then pf_ok "update exige la firma del commit (UPDATE_ALLOWED_SIGNERS)"
+  elif [[ -n "$signers" ]]; then pf_warn "UPDATE_ALLOWED_SIGNERS apunta a $signers, que no existe: update se negará a aplicar nada. Ver docs/produccion.md, «Firma de las actualizaciones»."
+  else pf_warn "update no exige firma (UPDATE_ALLOWED_SIGNERS). Ver docs/produccion.md, «Firma de las actualizaciones»."; fi
   if [[ -n "$(env_get HEALTH_TOKEN)" ]]; then pf_ok "HEALTH_TOKEN definido (/health/functional y /metrics activos)"
   else pf_warn "HEALTH_TOKEN vacío: /health/functional y /metrics no existen. Lo genera ./riverrun update."; fi
 

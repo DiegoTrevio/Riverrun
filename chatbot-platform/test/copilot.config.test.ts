@@ -485,3 +485,96 @@ t('AI-12: el tope de costo del pedido también corta herramientas de una misma r
     config.copilot.turnMaxUsd = saved;
   }
 });
+
+/** Varias personas de la misma cuenta, cada una con su propio hilo (una persona solo puede tener un pedido en curso). */
+async function parallelAsk(n: number, tag: string) {
+  const reqs: Req[] = [];
+  for (let i = 0; i < n; i++) {
+    const email = `par-${tag}-${i}@config.mx`;
+    await h.addUser({ account_id: h.accountId, email, name: `Par ${i}`, password: 'Pz-117-Qx-317-Kv', role: 'admin' });
+    reqs.push(await h.loginAs(email, 'Pz-117-Qx-317-Kv'));
+  }
+  const threads = await Promise.all(reqs.map(async (r) => (await r('POST', '/api/copilot/threads', {})).json().id as string));
+  // El guion espera a que lleguen todos los pedidos: mientras tanto los turnos siguen «en curso».
+  let release!: () => void;
+  const gate = new Promise<void>((res) => { release = res; });
+  h.setCopilotScript(async () => { await gate; return 'Listo.'; });
+  try {
+    const res = await Promise.all(reqs.map((r, i) => r('POST', `/api/copilot/threads/${threads[i]}/messages`, { text: 'hola' })));
+    return res.map((r) => r.statusCode);
+  } finally {
+    release();
+    await waitFor(async () => Number((await pool.query(`SELECT count(*) FROM copilot_turns WHERE account_id = $1 AND status = 'running'`, [h.accountId])).rows[0].count) === 0, 8000);
+    h.setCopilotScript(() => 'Listo.');
+  }
+}
+
+t('AI-16: pedidos en paralelo desde varios hilos no pasan el tope del día', async () => {
+  const { config } = await import('../src/config.js');
+  const saved = { usd: config.copilot.accountUsdPerDay, max: config.copilot.turnMaxUsd };
+  const spent = Number((await pool.query(`SELECT coalesce(sum(cost_usd), 0) AS s FROM copilot_turns WHERE account_id = $1 AND started_at > now() - interval '24 hours'`, [h.accountId])).rows[0].s);
+  try {
+    config.copilot.turnMaxUsd = 0.5;
+    config.copilot.accountUsdPerDay = spent + 1;
+    const codes = await parallelAsk(6, 'usd');
+    assert.equal(codes.filter((c) => c === 202).length, 2, codes.join(','));
+    assert.ok(codes.filter((c) => c !== 202).every((c) => c === 429), codes.join(','));
+  } finally {
+    config.copilot.accountUsdPerDay = saved.usd;
+    config.copilot.turnMaxUsd = saved.max;
+  }
+});
+
+t('AI-16: más de 3 pedidos a la vez en la cuenta responde 429', async () => {
+  const { config } = await import('../src/config.js');
+  const saved = { usd: config.copilot.accountUsdPerDay, max: config.copilot.turnMaxUsd };
+  try {
+    config.copilot.accountUsdPerDay = 100;
+    const codes = await parallelAsk(5, 'conc');
+    assert.equal(codes.filter((c) => c === 202).length, 3, codes.join(','));
+    assert.ok(codes.filter((c) => c !== 202).every((c) => c === 429), codes.join(','));
+  } finally {
+    config.copilot.accountUsdPerDay = saved.usd;
+    config.copilot.turnMaxUsd = saved.max;
+  }
+});
+
+t('AI-16: un pedido colgado de otra persona de la cuenta no bloquea ni cuenta para el tope', async () => {
+  const { config } = await import('../src/config.js');
+  const saved = { usd: config.copilot.accountUsdPerDay, conc: config.copilot.concurrentPerAccount };
+  const email = 'colgado@config.mx';
+  await h.addUser({ account_id: h.accountId, email, name: 'Colgado', password: 'Pz-117-Qx-317-Kv', role: 'admin' });
+  const other = await h.loginAs(email, 'Pz-117-Qx-317-Kv');
+  const otherId = (await pool.query(`SELECT id FROM users WHERE email = $1`, [email])).rows[0].id;
+  const th = (await other('POST', '/api/copilot/threads', {})).json().id as string;
+  const stale = (await pool.query(
+    `INSERT INTO copilot_turns (thread_id, account_id, user_id, page, model, heartbeat_at) VALUES ($1, $2, $3, '{}', 'x', now() - interval '10 minutes') RETURNING id`,
+    [th, h.accountId, otherId],
+  )).rows[0].id;
+  try {
+    // Con tope de 1 simultáneo, el turno colgado bloquearía a todos si no se barriera.
+    config.copilot.concurrentPerAccount = 1;
+    config.copilot.accountUsdPerDay = 100;
+    const out = await ask(owner, 'hola');
+    assert.ok(out.turn);
+    const row = (await pool.query(`SELECT status FROM copilot_turns WHERE id = $1`, [stale])).rows[0];
+    assert.equal(row.status, 'interrupted');
+  } finally {
+    config.copilot.accountUsdPerDay = saved.usd;
+    config.copilot.concurrentPerAccount = saved.conc;
+  }
+});
+
+t('AI-16: COPILOT_CONCURRENT_PER_ACCOUNT=0 es «sin tope de simultáneos» (antes se volvía 3)', async () => {
+  const { config } = await import('../src/config.js');
+  const saved = { usd: config.copilot.accountUsdPerDay, conc: config.copilot.concurrentPerAccount };
+  try {
+    config.copilot.concurrentPerAccount = 0;
+    config.copilot.accountUsdPerDay = 100;
+    const out = await ask(owner, 'hola');
+    assert.ok(out.turn, 'con 0 el pedido pasa');
+  } finally {
+    config.copilot.accountUsdPerDay = saved.usd;
+    config.copilot.concurrentPerAccount = saved.conc;
+  }
+});

@@ -31,3 +31,11 @@ updates:
     ignore:
       - dependency-name: postgres
         update-types: [version-update:semver-major]
+  # Redis y Caddy del compose. pgvector (PostgreSQL) se queda fuera a propósito: su imagen cambia solo con su propio
+  # procedimiento (docs/semantic-activation.md), porque otro digest puede traer otra glibc o collation. Evolution y
+  # Gotenberg se actualizan a mano (EVOLUTION_IMAGE, PDF_IMAGE).
+  - package-ecosystem: docker-compose
+    directory: /chatbot-platform
+    schedule: { interval: weekly }
+    ignore:
+      - dependency-name: pgvector/pgvector

@@ -94,6 +94,30 @@ t('al mismo correo, a lo más 3 veces por día', async () => {
   assert.deepEqual(r.json(), { error: 'Ya invitaste a ese correo 3 veces hoy' });
 });
 
+t('el tope de 3 al mismo correo es por cuenta: otra cuenta sí puede invitarlo (ID-21)', async () => {
+  const a = await roomy('Cuenta A', 'a@inv-cuentas.mx');
+  const b = await roomy('Cuenta B', 'b@inv-cuentas.mx');
+  for (let i = 0; i < 3; i++) assert.equal((await invite(a.api, 'victima@inv.mx')).statusCode, 200, `A, vez ${i + 1}`);
+  assert.equal((await invite(b.api, 'victima@inv.mx')).statusCode, 200, 'otra cuenta no queda bloqueada por la A');
+  const r = await invite(a.api, 'victima@inv.mx');
+  assert.equal(r.statusCode, 429);
+  assert.deepEqual(r.json(), { error: 'Ya invitaste a ese correo 3 veces hoy' });
+});
+
+t('a lo más 10 invitaciones al mismo correo por día en toda la plataforma (ID-21)', async () => {
+  const cuentas = [];
+  for (let i = 0; i < 5; i++) cuentas.push(await roomy(`Masivo ${i}`, `m${i}@inv-masivo.mx`));
+  const sent = [3, 3, 3, 1];
+  for (const [i, n] of sent.entries()) {
+    for (let k = 0; k < n; k++) assert.equal((await invite(cuentas[i].api, 'acosado@inv.mx')).statusCode, 200, `cuenta ${i}, vez ${k + 1}`);
+  }
+  const r = await invite(cuentas[4].api, 'acosado@inv.mx');
+  assert.equal(r.statusCode, 429, r.body);
+  assert.deepEqual(r.json(), { error: 'Ese correo ya recibió muchas invitaciones hoy; intenta mañana' });
+  // La rechazada no gastó el cupo de su cuenta ni el del correo en esa cuenta.
+  assert.equal((await invite(cuentas[4].api, 'otro-destino@inv.mx')).statusCode, 200);
+});
+
 t('con 50 pendientes no se invita a más', async () => {
   const a = await roomy('Muchas Pendientes', 'pendientes@inv.mx');
   for (let i = 0; i < 50; i++) {

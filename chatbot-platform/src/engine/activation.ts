@@ -26,6 +26,15 @@ export function agentPaused(conv: ConvState, now = new Date()): boolean {
   return until === null || until > now.getTime();
 }
 
+/** Motivos de las pausas que pone el propio motor, no una persona: el tope de turnos por hora (AI-15) y el bucle. */
+export const PAUSE_TURN_CAP = 'demasiados mensajes en una hora';
+export const PAUSE_LOOP = 'posible bucle: el cliente repite el mismo mensaje';
+
+/** ¿La pausa vigente la puso el propio motor? En ella una emergencia sigue con su mensaje fijo y su aviso al equipo. */
+export function pausedByEngine(conv: ConvState, now = new Date()): boolean {
+  return agentPaused(conv, now) && (conv.agent_off_reason === PAUSE_TURN_CAP || conv.agent_off_reason === PAUSE_LOOP);
+}
+
 /** ¿El asistente atiende esta conversación? (no está en pausa y, en modo "solo con palabras", ya se activó) */
 export function agentActive(bot: Pick<Chatbot, 'rules'>, conv: ConvState, now = new Date()): boolean {
   if (agentPaused(conv, now)) return false;

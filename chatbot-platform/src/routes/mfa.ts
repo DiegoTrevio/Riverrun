@@ -58,8 +58,10 @@ export async function mfaPublicRoutes(app: FastifyInstance) {
     if (!found || found.challenge.purpose !== 'enroll' || found.user.totp_enabled_at) return expired(reply);
     const key = challengeKey(found.challenge);
     if ((await countHit(key, CHALLENGE_WINDOW_MS)) > LIMITS.codePerChallenge) return expired(reply);
-    // Solo con la contraseña la app no queda confirmada por correo: restablecer la contraseña por correo la quita (ID-16).
-    if (!(await confirmEnrollment(found.user.id, b.code, { emailConfirmed: !!found.challenge.ev }))) return wrongCode(reply);
+    // Solo con la contraseña, o con un registro de correo sin verificar (ID-18), la app no queda confirmada por correo:
+    // restablecer la contraseña por correo la quita. `ec` falta en los retos de antes de ID-18 (duran 15 min).
+    const emailConfirmed = found.challenge.ec ?? (found.challenge.ev === true && found.challenge.via !== 'signup');
+    if (!(await confirmEnrollment(found.user.id, b.code, { emailConfirmed }))) return wrongCode(reply);
     const codes = await replaceRecoveryCodes(found.user.id);
     void notifyUser(found.user, 'mfa_enabled');
     await finishChallenge(reply, found.user, found.challenge);

@@ -4,6 +4,7 @@ import { query, queryOne } from '../db.js';
 import { platformSecret } from '../platform-secrets.js';
 import { credentialAllowed } from '../outbound-guard.js';
 import { chargeCents } from './tax.js';
+import { acceptedPriceOf, type AcceptedPrice } from './accepted-price.js';
 import { ProviderError, WebhookError, type BillingProvider, type DisputeInfo, type PaymentInfo, type Plan, type RefundInfo, type SubStatus, type SubscriptionState, type WebhookResult } from './types.js';
 
 const cfg = () => config.billing.stripe;
@@ -143,9 +144,16 @@ const STATUS: Record<string, SubStatus> = {
  * El plan sale del precio que de verdad se cobra (PAY-7), no de la metadata: su id de precio configurado o el producto
  * `riverrun_<plan>` que crea Riverrun, con el mismo periodo. Un monto menor al del plan no da ese plan (p. ej. un precio
  * más barato elegido por fuera): queda '' (no cambia el plan) y se anota en `planMismatch`.
+ * Un suscriptor que ya había aceptado ese mismo precio (`accepted`) conserva su plan aunque el plan haya subido de precio
+ * después (PAY-28): el id de un precio de Stripe no cambia, así que es el mismo monto que aceptó.
  */
-export function planFromPrice(price: any, plans: Plan[]): { key: string; mismatch: string } {
+export function planFromPrice(price: any, plans: Plan[], accepted?: Pick<AcceptedPrice, 'ref' | 'planKey'>): { key: string; mismatch: string } {
   if (!price) return { key: '', mismatch: '' };
+  if (accepted?.ref && price.id === accepted.ref) {
+    const kept = plans.find((p) => p.key === accepted.planKey);
+    const product = typeof price.product === 'string' ? price.product : price.product?.id ?? '';
+    if (kept && productId(kept.key) === product) return { key: kept.key, mismatch: '' };
+  }
   const byId = plans.find((p) => p.stripe_price_id && p.stripe_price_id === price.id);
   if (byId) return { key: byId.key, mismatch: '' };
   const product = typeof price.product === 'string' ? price.product : price.product?.id ?? '';
@@ -159,16 +167,17 @@ export function planFromPrice(price: any, plans: Plan[]): { key: string; mismatc
 }
 
 /** Normaliza una suscripción de Stripe (compatible con versiones de la API que mueven current_period_end al renglón). */
-export function stateFromSubscription(sub: any, plans: Plan[]): SubscriptionState {
+export function stateFromSubscription(sub: any, plans: Plan[], accepted?: AcceptedPrice): SubscriptionState {
   const item = sub.items?.data?.[0];
   const periodEnd = sub.current_period_end ?? item?.current_period_end;
-  const fromPrice = planFromPrice(item?.price, plans);
+  const fromPrice = planFromPrice(item?.price, plans, accepted);
   return {
     provider: 'stripe',
     accountId: sub.metadata?.account_id || null,
     customerId: typeof sub.customer === 'string' ? sub.customer : sub.customer?.id ?? '',
     subscriptionId: sub.id,
     planKey: fromPrice.key,
+    ...(item?.price?.id ? { priceRef: String(item.price.id) } : {}),
     ...(fromPrice.mismatch ? { planMismatch: fromPrice.mismatch } : {}),
     status: STATUS[sub.status] ?? 'incomplete',
     periodEnd: typeof periodEnd === 'number' ? new Date(periodEnd * 1000) : null,
@@ -319,7 +328,7 @@ export const stripe: BillingProvider = {
     const s = await call('GET', `/v1/checkout/sessions/${encodeURIComponent(ref)}`);
     const subId = typeof s.subscription === 'string' ? s.subscription : s.subscription?.id;
     if (s.status !== 'complete' || !subId) return null;
-    const state = await withCardKey(stateFromSubscription(await call('GET', `/v1/subscriptions/${encodeURIComponent(subId)}?expand[]=default_payment_method`), plans));
+    const state = await withCardKey(stateFromSubscription(await call('GET', `/v1/subscriptions/${encodeURIComponent(subId)}?expand[]=default_payment_method`), plans, await acceptedPriceOf('stripe', subId)));
     if (!state.accountId) state.accountId = s.client_reference_id || null;
     return state;
   },
@@ -397,7 +406,7 @@ export const stripe: BillingProvider = {
   },
 
   async subscriptionState(subscriptionId, plans) {
-    return withCardKey(stateFromSubscription(await call('GET', `/v1/subscriptions/${encodeURIComponent(subscriptionId)}?expand[]=default_payment_method`), plans));
+    return withCardKey(stateFromSubscription(await call('GET', `/v1/subscriptions/${encodeURIComponent(subscriptionId)}?expand[]=default_payment_method`), plans, await acceptedPriceOf('stripe', subscriptionId)));
   },
 
   async recentPayments(subscriptionId, since) {
@@ -457,13 +466,13 @@ export const stripe: BillingProvider = {
     }
     if (!SUB_EVENTS.has(event.type)) return result;
     if (event.type === 'invoice.paid' || event.type === 'invoice.payment_succeeded') result.payment = paymentFromInvoice(obj) ?? undefined;
-    if (event.type === 'invoice.payment_action_required' && obj.hosted_invoice_url) result.actionUrl = String(obj.hosted_invoice_url);
+    if (event.type === 'invoice.payment_action_required' && /^https:\/\//i.test(String(obj.hosted_invoice_url ?? ''))) result.actionUrl = String(obj.hosted_invoice_url);
     const subId: string | undefined =
       event.type.startsWith('customer.subscription.') ? obj.id : obj.subscription ?? obj.parent?.subscription_details?.subscription ?? undefined;
     if (!subId) return result;
     // Siempre se lee la suscripción: refleja el estado real aunque los avisos lleguen repetidos o desordenados.
     const sub = await call('GET', `/v1/subscriptions/${encodeURIComponent(subId)}?expand[]=default_payment_method`);
-    const state = await withCardKey(stateFromSubscription(sub, plans));
+    const state = await withCardKey(stateFromSubscription(sub, plans, await acceptedPriceOf('stripe', subId)));
     if (!state.accountId && event.type === 'checkout.session.completed') state.accountId = obj.client_reference_id || null;
     result.state = state;
     return result;

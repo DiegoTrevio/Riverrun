@@ -32,7 +32,7 @@ Cada etapa es un PR con pruebas que fallan con el código anterior y pasan con e
 | 7. Detección | Bitácora de seguridad, alertas, avisos al usuario | ✅ Corregido (bitácora de seguridad, reglas con aviso al superadmin; los avisos al usuario ya estaban desde la 2a) |
 | 8. Contenedores | Roles de base de datos, Redis con clave, redes aisladas, límites, imágenes al día (INF-2, INF-3, INF-9, INF-10) | 8 ✅ (los altos: INF-2 e INF-3); INF-9 e INF-10 ✅ en la 6″ |
 | 9. Servidor | `./riverrun harden`: firewall (también `DOCKER-USER`), SSH con llave, fail2ban, actualizaciones automáticas, respaldos con cifrado autenticado (INF-11, INF-12) | 9′ ✅ (revisión del 31 de octubre: claves de ejemplo en producción); INF-11 ✅ en la 6″; 9 ✅ (`harden` e INF-12) |
-| 10. Cadena de suministro | Dependabot, versiones fijadas por SHA y digest, búsqueda de secretos, escaneos programados (INF-4, INF-15) | 10′ ✅ (revisión del 31 de octubre: Docker sin `curl \| sh`); INF-4 ✅ en la 6″; INF-15 ✅ en los bajos |
+| 10. Cadena de suministro | Dependabot, versiones fijadas por SHA y digest, búsqueda de secretos, escaneos programados (INF-4, INF-15) | 10′ ✅ (revisión del 31 de octubre: Docker sin `curl \| sh`); INF-4 ✅ en la 6″; INF-15 ✅ en los bajos; INF-17 ✅ (imágenes por digest) |
 
 ## Etapa 1: lo que se corrigió
 
@@ -181,7 +181,7 @@ Registro con tarjeta y una prueba gratis por persona. El diseño completo (tambi
 | # | Hallazgo | Arreglo | Prueba |
 |---|---|---|---|
 | PAY-2 | Prueba de tarjetas robadas: el registro abría una sesión de pago sin correo verificado, con captcha opcional y límites en memoria; la sesión no vencía pronto y aceptaba cualquier cupón. | El orden es captcha → correo → 2FA → tarjeta → prueba. El registro ya no abre el pago: la cuenta nueva espera su tarjeta (en pausa, motivo `card`) y la verificación se abre desde Mi plan, solo con el correo del dueño verificado y verificación reciente. La sesión de Stripe vence a los 31 minutos, siempre pide tarjeta, pide 3D Secure cuando el banco lo tiene y no acepta cupones sueltos; la sesión vigente se reutiliza. Topes en la base: 5 verificaciones por día por cuenta, 10 por conexión (IPv6 por /64) y 300 en toda la plataforma. Si en una hora se abren 20 o más y se completan menos del 20 %, un freno cierra las nuevas una hora y avisa con urgencia; lo quita el superadministrador. El captcha (Turnstile) es obligatorio en producción, en el formulario y en el registro con Google, y cerrado ante fallas: si Cloudflare no responde, «No pudimos comprobar el captcha» (503) y un aviso por hora. Registros: 5 intentos por hora por conexión, 3 cuentas por hora o 10 por día, y `SIGNUP_DAILY_MAX` (200) por día en la plataforma, con aviso al 80 %. | `card-check.test.ts`, `signup.test.ts`, `signup-limits.test.ts`, `google-login.test.ts`, `test:signup:ux` |
-| PAY-3 | Pruebas gratis sin límite (correo sin normalizar, sin huella de la tarjeta). | Una prueba por persona: marcas del correo normalizado (sin `+etiqueta`; en Gmail también sin puntos), de la cuenta de Google y de la tarjeta (la huella de Stripe; en Mercado Pago, primeros 6, últimos 4, vencimiento y titular), guardadas 2 años como HMAC con una llave que vive en la base. Sin prueba disponible, agregar la tarjeta es el primer cobro. Una tarjeta que ya tuvo prueba: en Stripe la prueba termina al momento y se cobra; en Mercado Pago se cancela esa suscripción. La prueba empieza al confirmarse la tarjeta, con el fin que dice el proveedor, una sola vez aunque el aviso se repita; no se pausa al vencer mientras su suscripción siga viva. Las cuentas que ya existían dejan marcado el correo de su dueño. | `trial-claims.test.ts`, `trial-start.test.ts`, `migration.test.ts` |
+| PAY-3 | Pruebas gratis sin límite (correo sin normalizar, sin huella de la tarjeta). | Una prueba por persona: marcas del correo normalizado (sin `+etiqueta`; en Gmail también sin puntos), de la cuenta de Google y de la tarjeta (la huella de Stripe; en Mercado Pago, primeros 6, últimos 4 y vencimiento; el documento del titular ya no entra, PAY-25: las marcas viejas, con documento, se siguen reconociendo con `mpCardKeyLegacy` y se borra esa función cuando las últimas cumplan sus 2 años, en noviembre de 2028), guardadas 2 años como HMAC con una llave que vive en la base. Sin prueba disponible, agregar la tarjeta es el primer cobro. Una tarjeta que ya tuvo prueba: en Stripe la prueba termina al momento y se cobra; en Mercado Pago se cancela esa suscripción. La prueba empieza al confirmarse la tarjeta, con el fin que dice el proveedor, una sola vez aunque el aviso se repita; no se pausa al vencer mientras su suscripción siga viva. Las cuentas que ya existían dejan marcado el correo de su dueño. | `trial-claims.test.ts`, `trial-start.test.ts`, `migration.test.ts` |
 | PAY-6 (parte) | Cuentas en pausa seguían gastando IA. | Una sola puerta (`assertAiAllowed`) en el envoltorio de las llamadas de IA y al empezar cada ruta con IA (Copiloto, asistente de instrucciones, pruebas del agente, simulador, «Probar mensaje», flujos con IA, importar): una cuenta en pausa o desactivada responde 402 `ai_paused`, y los audios e imágenes que llegan se guardan sin transcribir. En el panel esos botones se ven deshabilitados con el motivo. Lo de las cuentas sin cupo va en la etapa 4. | `ai-gate.test.ts`, `knowledge-preparation.test.ts`, `test:signup:ux` |
 
 **Cambios que nota la gente:**
@@ -372,7 +372,7 @@ conversaciones (migración 010). Las 48 pruebas de aislamiento (559 casos) pasan
 | AI-13 | Correr las pruebas de un agente (hasta 40 llamadas y USD 1 cada vez) no tenía límite: solo una a la vez por agente, en paralelo entre agentes. | 6 corridas por hora por cuenta (429 después). | `agent-versions.test.ts` |
 | INF-13 | Sin SMTP, la bitácora guardaba el cuerpo de cada correo (datos de clientes; los tokens ya iban ocultos desde la 2b). | Solo destinatario, asunto y largo. El buzón de pruebas en memoria sigue igual. | `mailer.test.ts` |
 | INF-14 | `.gitignore` solo cubría `.env`. | También `.env.*` (salvo `.env.example`), llaves (`*.pem`, `*.key`, `id_*`), respaldos (`*.gpg.tar`, `*.tar.enc`, volcados), `uploads/` y registros, en la plataforma y en la raíz. | `git ls-files -ci` vacío |
-| INF-15 | Las acciones de GitHub iban por etiqueta (`@v4`), que su dueño puede mover; nada avisaba de dependencias con fallas nuevas ni buscaba secretos. | Cada acción fijada al commit que hoy tiene su etiqueta, con la versión en un comentario. Dependabot (npm, acciones, imágenes de Docker) cada semana. Flujo «Seguridad»: gitleaks (descarga verificada por su suma) sobre lo que cambia en cada PR y cada push, y cada semana sobre todo el historial, más `npm audit`. | CI |
+| INF-15 | Las acciones de GitHub iban por etiqueta (`@v4`), que su dueño puede mover; nada avisaba de dependencias con fallas nuevas ni buscaba secretos. | Cada acción fijada al commit que hoy tiene su etiqueta, con la versión en un comentario. Dependabot (npm, acciones, imágenes de Docker) cada semana. INF-17: toda imagen va por digest (`etiqueta@sha256:…`) en el compose y los dos Dockerfile (también el `redis` de donde el respaldo copia `redis-cli`, en su etapa `rediscli`); una etiqueta movida en Docker Hub ya no llega a un servidor sin pasar por el CI. Quién actualiza cada una: las bases de los Dockerfile (Node, `postgres:16-alpine` y la etapa `rediscli`: Dependabot solo lee las líneas `FROM`) → Dependabot `docker`, y Redis y Caddy del compose → Dependabot `docker-compose`, ambos solo dentro de la versión mayor de Node y PostgreSQL; `pgvector` (PostgreSQL) a propósito no es automático, cambia solo con su procedimiento (`docs/semantic-activation.md`) porque un digest nuevo puede traer otra glibc o collation; Evolution y Gotenberg → su proceso manual de siempre (`EVOLUTION_IMAGE`, `PDF_IMAGE`). Cada PR de Dependabot pasa el CI antes de que `./riverrun update` pueda desplegarlo, y `--pull` y `dc pull` bajan exactamente el digest fijado. `npm ci --ignore-scripts` en el Dockerfile: ninguna dependencia corre scripts de instalación al construir. Flujo «Seguridad»: gitleaks (descarga verificada por su suma) sobre lo que cambia en cada PR y cada push, y cada semana sobre todo el historial, más `npm audit`. | CI |
 
 ## Etapa 9: el servidor (`./riverrun harden` e INF-12)
 
@@ -529,7 +529,7 @@ Revisión independiente: encontró que espacios o comillas saltaban la regla, qu
 | # | Hallazgo | Arreglo | Prueba |
 |---|---|---|---|
 | INF-2 | El backend, Evolution y el respaldo entraban a PostgreSQL con el mismo superusuario: un fallo en Evolution leía las conversaciones del backend, y uno en el backend podía ejecutar programas en el servidor de la base (`COPY … PROGRAM`). Redis, que guarda las claves de las sesiones de WhatsApp, no tenía contraseña, y todo estaba en una sola red. | `docker/db-roles.sql`: `riverrun_app` (dueño de la base `chatbot`) y `riverrun_evolution` (dueño de `evolution`), sin superusuario, sin crear bases ni roles, y cada uno solo puede conectarse a su base; todo lo de `public` pasa a su dueño y el superusuario deja creadas `pgcrypto` y `vector`. `./riverrun` lo aplica en `install` (antes de arrancar), en `update` (después del respaldo; si falla, la versión nueva no se aplica) y en `restore`, y a mano con `./riverrun db-roles`. Redis con contraseña (`REDIS_PASSWORD`, generada). PostgreSQL y Redis en una red interna sin salida a internet que Caddy no alcanza. La vuelta atrás de `update` regresa primero la base y Redis a la configuración anterior. Aviso en la revisión de configuración si producción sigue con el superusuario. | `scripts/test-db-roles.sh` (PostgreSQL real: base migrada por el superusuario y base nueva migrada por la app), `scripts/test-cli.sh`, `config-check.test.ts` |
-| INF-3 | `./riverrun update` nunca actualizaba Caddy, Node, Redis ni PostgreSQL. | `update` construye con `--pull` (la base de Node del backend y del respaldo con sus parches) y descarga Redis y Caddy de su misma etiqueta. PostgreSQL no se cambia solo: cambiar su imagen sobre un volumen existente sigue con su procedimiento (`docs/semantic-activation.md`). | `scripts/test-cli.sh` |
+| INF-3 | `./riverrun update` nunca actualizaba Caddy, Node, Redis ni PostgreSQL. | `update` construye con `--pull` (las bases de Node del backend y del respaldo) y descarga Redis y Caddy. Desde INF-17 todas van por digest: `--pull` y la descarga traen exactamente el digest que fija el código, y los parches llegan como PR de Dependabot con el digest nuevo, pasados por el CI. PostgreSQL no se cambia solo: cambiar su imagen sobre un volumen existente sigue con su procedimiento (`docs/semantic-activation.md`). | `scripts/test-cli.sh` |
 
 Revisión independiente: encontró que la vuelta atrás dejaba al backend anterior sin alcanzar la base (seguía en la red interna) y a Evolution sin poder entrar a Redis (seguía con contraseña), y que en una instalación nueva los usuarios podían crearse mientras PostgreSQL aún corría sus scripts de inicio (solo escucha en el socket); ambos quedaron corregidos (la base y Redis vuelven primero; la espera es por TCP, también en su revisión de salud).
 
@@ -556,9 +556,119 @@ Revisión independiente: encontró que la vuelta atrás dejaba al backend anteri
 - La revisión de IN-2 confía en que el proxy agregue `X-Forwarded-For` (Caddy lo hace siempre). Una instalación fuera de Docker con otro proxy delante (nginx, etc.) debe configurarlo para que lo agregue; si no, sus peticiones parecerían internas.
 - La firma de cada proveedor se sigue revisando con el cuerpo ya leído (hasta 1 MB): no se puede firmar lo que aún no llega.
 
+## Revisión del 4 de noviembre: lo que se corrigió
+
+Los hallazgos de [la revisión del 4 de noviembre](revision-seguridad-2026-11-04.md), en cinco grupos de commits
+(`2e2baa9..3cfa669`, [plan](superpowers/plans/2026-11-04-seguridad-revision-correcciones.md)) y lo que encontró la revisión
+final de la rama (los commits después de `ec4d0bc`). Todos llevan su prueba, que primero falló sin el arreglo. Quedan
+aparte INF-18 (opcional, no se hizo) y PAY-26 (descartado).
+
+### PR 0: secretos
+
+| # | Hallazgo | Arreglo | Prueba |
+|---|---|---|---|
+| INF-20 | El allowlist de gitleaks era por carpeta (una llave real en `test/`, `evals/` o `scripts/test-*` no se veía) y el `SESSION_SECRET` de prueba del CI salía en el historial. | Sin `paths`: el allowlist es por patrón del valor (`regexTarget = "match"`: el `SESSION_SECRET` del CI por su prefijo y las formas de los valores inventados, como `clave-…`, `whsec_prueba_…`), y las huellas de lo que ya está en el historial van en `.gitleaksignore`. Los valores de `startup.test.ts` llevan prefijo `prueba-`. | gitleaks 8.21.2 sobre todo el historial: «no leaks found»; una `sk_live_` y una contraseña plantadas en `test/` se detectan. `startup.test.ts` |
+
+### PR 1: medios
+
+| # | Hallazgo | Arreglo | Prueba |
+|---|---|---|---|
+| IN-23 | El filtro de los `.rels` de las plantillas DOCX se saltaba con atributos en otro orden, entidades o mayúsculas. | Se lee cada `Relationship` atributo por atributo; si no se puede leer o repite un atributo, se rechaza; lo externo solo puede ser un hipervínculo. | `quotes-template.unit.test.ts` |
+| PAY-24 | Las tarifas que pone la cuenta contaban para el tope de IA de la plataforma (un administrador ponía precio 0). | Con tope de plataforma, el cobro usa las tarifas de la plataforma (el máximo, campo por campo, con las propias); sin tarifa de plataforma, `price_unknown`. | `ai-platform-cap.test.ts` |
+| AI-15 | Sin tope de respuestas de IA por contacto en WhatsApp, Telegram, Instagram y Messenger. | 30 turnos por contacto y hora (`AI_TURNS_PER_CONTACT_HOUR`): el contacto se pausa 1 h y el equipo recibe un aviso, uno por hora, sin mensaje al cliente. Además, 10 lecturas de audio, foto o documento por contacto y hora (`AI_MEDIA_PER_CONTACT_HOUR`). | `agent-rules.test.ts`, `media-library.test.ts`, `ai-gate.test.ts` |
+| ID-18 | Registrarse con el correo de otra persona dejaba una app de 2FA que restablecer la contraseña no quitaba. | El reto de login lleva si el correo está comprobado (`ec`): un registro sin verificar no cuenta como confirmado. Con invitación o Google sí. | `identity-login.test.ts` |
+| AI-16 | El tope diario del Copiloto se pasaba con hilos en paralelo. | El uso del día cuenta los pedidos en curso (a su costo máximo) y se revisa dentro de un candado por cuenta; tope de pedidos simultáneos por cuenta (`COPILOT_CONCURRENT_PER_ACCOUNT`, 3); los colgados de otras personas se barren antes de contar. | `copilot.config.test.ts` |
+| PAY-25 | La huella de la tarjeta de Mercado Pago incluía el documento que escribe el titular. | Se quita el documento (`primeros6:últimos4:MM/AAAA`); las marcas viejas se siguen reconociendo (`mpCardKeyLegacy`, a quitar en noviembre de 2028) pero no se vuelven a escribir. | `trial-claims.test.ts`, `trial-start.test.ts` |
+
+### PR 2: servidor y contenedores
+
+| # | Hallazgo | Arreglo | Prueba |
+|---|---|---|---|
+| INF-16 | Contenedores sin `cap_drop`, `read_only` ni `no-new-privileges`. | Los 8 servicios con `no-new-privileges` y `cap_drop: [ALL]`, con solo las capacidades que usan (PostgreSQL, respaldo y restauración las de su cambio de usuario; Redis `CHOWN`, `DAC_OVERRIDE` y `FOWNER`; Caddy `NET_BIND_SERVICE`). Solo lectura con `tmpfs` en el backend, Redis y Caddy (que gana el volumen `caddy_config`). | `compose-hardening.test.ts`; la sección 9 de [`prueba-en-staging.md`](prueba-en-staging.md) |
+| INF-17 | Imágenes base por etiqueta; `npm ci` corría scripts de instalación. | Todas por digest (`@sha256:…`: los dos Dockerfile y el compose), `npm ci --ignore-scripts`. Dependabot propone los digests de los Dockerfile y de Redis y Caddy; pgvector, Evolution y Gotenberg se cambian a mano. | `compose-hardening.test.ts` |
+| INF-19 | `REDIS_PASSWORD` vacío arrancaba Redis sin contraseña sin avisar. | `./riverrun preflight` avisa. | `scripts/test-cli.sh` |
+| INF-21 | `update` confía en GitHub y la firma (`UPDATE_ALLOWED_SIGNERS`) viene apagada. | `preflight` avisa de que no se exige firma (o de que el archivo no existe). Guía en [`produccion.md`](produccion.md), «Firma de las actualizaciones», con dos caminos (PR obligatorio con merge firmado del dueño, o merge de la web sin firma). La protección de la rama la configura el dueño en GitHub. | `scripts/test-cli.sh` |
+
+### PR 3: bajos de identidad y cobros
+
+| # | Hallazgo | Arreglo | Prueba |
+|---|---|---|---|
+| ID-19 | El reporte de una conversación a correos o teléfonos externos no pedía verificación reciente. | Lo externo pide el código si pasaron 15 minutos; solo equipo, no. | `identity-step-up.test.ts` |
+| ID-20 | Una llave de solo lectura gastaba IA con `export?refresh=true`. | `refresh` se ignora si la llave no es de escritura. | `conversation-export.test.ts` |
+| ID-21 | Una cuenta de prueba agotaba el cupo de invitaciones de un correo ajeno. | El tope de 3 por día es por cuenta y correo; en toda la plataforma, 10 por correo al día. Lo rechazado no gasta cupo. | `invitation-limits.test.ts` |
+| PAY-27 | Bajar de plan solo se revisaba al pedirlo, y sin `storage_mb`. | Se vuelve a revisar al aplicarse; si ya no cabe, el plan cambia igual, se avisa al dueño y al superadmin, y no se puede agregar más hasta ajustarlo. La revisión incluye el almacenamiento. | `billing-plan-change.test.ts` |
+| PAY-28 | Subir el precio de un plan marcaba «precio sin plan» a cada suscriptor viejo. | Se guarda el precio aceptado de cada suscripción (migración 119) y se compara contra él; una suscripción nueva con el precio viejo sí se marca. | `billing.test.ts`, `migration.test.ts` |
+| PAY-29 | El filtro de texto del agente en cobros dejaba pasar dígitos de ancho completo. | Se normaliza (NFKC) antes de buscar números y enlaces. | `receivables-e2e.test.ts` |
+
+### PR 4: bajos de IA y entradas
+
+| # | Hallazgo | Arreglo | Prueba |
+|---|---|---|---|
+| AI-17 | La corrección del validador volvía al modelo como mensaje `system`. | Va como mensaje del usuario, el motivo entre « » y cortado a 600 caracteres. | `anti-invention.test.ts`, `prompt-snapshot.test.ts` |
+| AI-18 | El nombre del autor de un comentario público conservaba saltos de línea y largo. | Una sola línea, 80 caracteres como máximo, sin comillas. | `social-comments.test.ts` |
+| AI-19 | Lo que respondió un turno contaminado seguía en el historial del Copiloto como texto limpio. | En los turnos viejos contaminados solo quedan el pedido y los eventos; una lectura de más de un cliente marca el turno. | `copilot.unit.test.ts` |
+| AI-20 | Una cuenta activa sin plan ni excepción no tenía tope de IA. | Lleva `PLAN_DEFAULT_AI_USD`. | `ai-platform-cap.test.ts` |
+| IN-24 | `check-frontend` no veía `innerHTML +=`, `{'html': …}`, comentarios dentro de textos, `setHTMLUnsafe`, `DOMParser`, `srcdoc`, etc., ni los scripts sueltos de `public/`. | Recorrido que respeta comillas y plantillas; todas esas formas se rechazan y se revisa todo `public/**/*.js`. En los scripts sueltos solo se permite escribir un literal completo (`innerHTML = '<span>…</span>';`). | `check-frontend.unit.test.ts` |
+| IN-25 | «Confirmar pago» iba a un `href` sin revisar el esquema. | Se guarda y se pinta solo con `https://`. | `billing.test.ts` |
+| IN-26 | El `verify_token` de Meta se comparaba con `===`. | `safeEqual`. | `meta-connect.test.ts` |
+| IN-27 | La página pública del pool armaba el HTML sin escapar. | `esc()` en título y texto (el ayudante pasó a `routes/util.ts`). | `pools.test.ts` |
+
+### Revisión final de la rama
+
+| # | Hallazgo | Arreglo | Prueba |
+|---|---|---|---|
+| INF-17 (crítico) | El primer `./riverrun update` con esta versión abortaba en todos los servidores: la imagen de PostgreSQL pasó de `pgvector/pgvector:0.8.7-pg16` a la misma etiqueta con `@sha256:…`, y la guardia de PostgreSQL (con `--pg-before`, porque `riverrun` también cambió) lo tomaba como un cambio de imagen. | Si el ref anterior no tiene digest y el nuevo es el mismo ref con `@sha256:X`, sigue cuando la imagen del contenedor de PostgreSQL que corre tiene `X` entre sus `RepoDigests`. Si no, se detiene con su propio mensaje (la misma etiqueta, otra compilación: otra glibc o collation), remite a `docs/semantic-activation.md` y a `--accept-db-image-change`. Cualquier otro cambio, como antes. | `scripts/test-cli.sh` |
+| AI-15 | La pausa automática por el tope de turnos (y la del bucle) iba antes de la detección de emergencias: ese cliente quedaba una hora sin el mensaje fijo de seguridad y sin el 🚨 al equipo. | En una pausa que puso el propio motor, un mensaje de riesgo llega igual al motor (el servicio ya no lo detiene en la puerta) y el paso 0 corre sin IA: mensaje fijo, pasa a una persona y aviso 🚨. Las pausas que pone una persona del equipo siguen igual (solo el aviso). | `agent-rules.test.ts` |
+| AI-20, PAY-24 | Al desplegar, cada cuenta activa sin plan ni excepción recibe el tope por omisión con el gasto del mes ya contado, y sus modelos sin precio pasan a `price_unknown`, sin aviso. | Al arrancar se avisa al superadmin una vez al día (deduplicado en `system_state`): cuántas son, cuáles pasaron el 80 % del tope y qué modelos de sus asistentes no tienen precio. Paso «Antes de actualizar» en [`produccion.md`](produccion.md). | `ai-platform-cap.test.ts` |
+| AI-15, AI-16 | `Number(env)` inválido daba `NaN` y apagaba el tope; `AI_TURNS_PER_CONTACT_HOUR=0` pausaba a todos en su primer turno; `COPILOT_CONCURRENT_PER_ACCOUNT=0` se volvía 3. | Los tres son enteros ≥ 0 y `0` = sin tope (como los demás límites de `.env.example`); un valor inválido usa el de por omisión y la revisión de configuración avisa. | `config-check.test.ts`, `agent-rules.test.ts`, `ai-gate.test.ts`, `copilot.config.test.ts` |
+| PAY-24 | Con tope de la plataforma, una tarifa propia con `per_audio_minute` volvía «de audio» un modelo que la plataforma cobra por tokens. | `per_audio_minute` solo cuenta si la plataforma ya cobra ese modelo por minuto. | `ai-platform-cap.test.ts` |
+| AI-15 | El simulador se pausaba a los 30 turnos. | El canal `playground` no cuenta para el tope, como la cuota mensual. | `agent-rules.test.ts` |
+| INF-17 | Dependabot solo lee líneas `FROM`: el `COPY --from=redis…` del respaldo nunca se actualizaba. | Etapa `FROM redis:7-alpine@sha256:… AS rediscli` y `COPY --from=rediscli`. | `compose-hardening.test.ts` |
+| ID-18 | Quien configuraba su app con el enlace del correo (ID-16) sin tener `email_verified_at` quedaba con el correo sin verificar, y restablecer la contraseña por correo le habría quitado la app. | El enlace de enrolamiento marcaba el correo como verificado. *(Actualización, noviembre: el enlace al correo se quitó en #125, así que esta parte ya no aplica.)* | `identity-login.test.ts` |
+| Docs | `--pull` ya no trae parches (INF-3); la llave de `allowed_signers` era la del servidor (INF-21); una viñeta mezclaba IN-25 y AI-17; `.env.example` decía que el tope de lecturas pausa al asistente. | Corregidos: los parches llegan por los PR de Dependabot; la llave es la de la computadora de quien publica y el correo, su `user.email`; las viñetas con su ID; el tope de lecturas solo deja el archivo sin leer. | — |
+
+**Cambios que nota la gente:**
+- Un mismo cliente que manda más de 30 mensajes por hora a la IA queda en pausa una hora, sin respuesta, y el equipo recibe un aviso (una vez por hora). Los topes se cambian con `AI_TURNS_PER_CONTACT_HOUR` y `AI_MEDIA_PER_CONTACT_HOUR`: enteros ≥ 0, `0` los apaga y un valor inválido usa el de por omisión con un aviso de la revisión de configuración (AI-15).
+- El Copiloto atiende como máximo 3 pedidos a la vez por cuenta (`COPILOT_CONCURRENT_PER_ACCOUNT`; `0` = sin tope, como los demás límites); el cuarto recibe un 429 (AI-16).
+- Quien se registró antes de verificar su correo, configuró su app y restablece la contraseña por correo tiene que configurar su app de autenticación otra vez (ID-18). Solo aplica con `MFA_REQUIRED=true`.
+- `./riverrun preflight` avisa si `REDIS_PASSWORD` está vacío y si `update` no exige firma (INF-19, INF-21). Son avisos: no bloquean.
+- Los contenedores quedan endurecidos (sin privilegios de más, la mayoría de solo lectura). Antes de producción hay que probarlo en staging con la sección 9 de [`prueba-en-staging.md`](prueba-en-staging.md); Caddy lleva un volumen nuevo (`caddy_config`) que se crea solo (INF-16).
+- Dependabot abre PR semanales para los digests de las imágenes; cada uno pasa el CI antes de `./riverrun update`. La imagen de pgvector se cambia a mano, con el procedimiento de PostgreSQL (INF-17).
+- La primera actualización con esta versión recrea PostgreSQL, Redis y Caddy (su imagen ahora se escribe con digest, aunque sea la misma): unos segundos sin servicio. Si el PostgreSQL que corre no es exactamente la compilación del digest fijado (la misma etiqueta, otra compilación: puede traer otra glibc y otra collation), `update` se detiene sin aplicar nada y explica cómo revisarlo o aceptarlo con `--accept-db-image-change` (INF-17).
+- Mandar el reporte de una conversación a un correo o teléfono externo pide el código otra vez si pasaron 15 minutos (ID-19). Una cuenta activa sin plan ni excepción tiene el tope de IA por omisión (20 USD al mes si no se cambió); un modelo sin tarifa en `ai_prices` se rechaza con tope de plataforma (AI-20, PAY-24).
+- Al desplegar, cada cuenta activa sin plan ni excepción recibe ese tope **con el gasto del mes ya contado**, y los modelos de sus asistentes sin fila en `ai_prices` pasan a `price_unknown`. Antes de actualizar, dales un plan o `ia=…` en Cuentas → Límites, o sube `PLAN_DEFAULT_AI_USD` ([`produccion.md`](produccion.md), «Actualizar»). Al arrancar, el backend avisa al superadmin (una vez al día) de cuántas siguen así, cuáles pasaron el 80 % y qué modelos no tienen precio (AI-20).
+
+**Queda para después:**
+- INF-18 (AES-GCM con datos asociados a su fila): no se hizo; es opcional y solo protege si alguien ya puede escribir en la base. Conviene hacerlo cuando se toque el cifrado por otra razón.
+- PAY-26: descartado al planear (cada alta pasa por `trimSocialOverLimit`).
+- Redis corre como root con `DAC_OVERRIDE` y `FOWNER` porque `redis-load.sh` deja `/data` a nombre de `redis`; lo mejor es correrlo con su propio usuario (entrypoint oficial y `redis-load.sh` como `redis`), pero cambia la restauración y no se pudo probar aquí.
+- La prueba en staging del INF-16 (sección 9 de `prueba-en-staging.md`) no se ha corrido: aquí no hay Docker. Hasta entonces, el arranque real de los 8 servicios sin capacidades (sobre todo Evolution y el primer arranque de PostgreSQL) está sin comprobar, y los `docker build` los cubre el CI.
+- Evolution y Gotenberg no son de solo lectura; PostgreSQL, respaldo y restauración tampoco (escriben en volúmenes y `/tmp`).
+- Las imágenes del CI y de los scripts (trivy, pgvector de los flujos, Caddy de `test-image-smoke.sh`) siguen por etiqueta. Dependabot no limita las versiones mayores de Redis y Caddy: llegarían como PR, con CI.
+- Firma de las actualizaciones (INF-21): la protección de la rama y el archivo `allowed_signers` los configura el dueño; el camino A no dice esperar el CI del merge empujado antes de `update`.
+- PAY-25: una marca vieja de Mercado Pago con documento solo se reconoce si se vuelve a escribir el mismo documento (hasta noviembre de 2028).
+- PAY-28: una suscripción anterior a la migración 119 no tiene precio aceptado hasta su siguiente aviso o refresco; una subida de precio antes de eso la marca como hasta ahora.
+- ID-21: el contador que rechaza no se libera; con 10 por día en la plataforma, un tercero puede agotar el cupo de un correo (lo pide el requisito).
+- AI-15: el audio gasta su contador antes de descargarse; una conversación pausada por el tope sigue leyendo fotos hasta el tope de medios.
+- AI-16: el tope por pedido puede pasarse por la última llamada.
+- ID-18: el respaldo para cookies de reto sin `ec` (`routes/mfa.ts`) es temporal; hay que quitarlo. Las cuentas que se hubieran registrado con un correo ajeno antes de este cambio (producto sin lanzar) no se limpian.
+- IN-25: los correos de cobro anteriores al arreglo usan el `payment_action_url` guardado sin filtrar.
+- AI-17: un `»` en el motivo del validador cierra la comilla antes.
+- IN-24: el recorrido de `check-frontend` no tiene pruebas de casos borde (`${…}` con comillas, regex, plantillas anidadas) y no ve `{ html }` abreviado.
+- IN-23: `/hyperlink$` acepta cualquier `Type` que termine así; faltan pruebas de variantes (entidad en `TargetMode`, prefijo, mayúsculas).
+- INF-20: `gitleaks dir` marca `ci.yml` (`SESSION_SECRET=` con `=`); el CI usa el modo `git` y sale limpio. Los prefijos `clave-`, `humo-`, `prueba-` y `llave-` aceptan cualquier cola, por diseño.
+
 ## Hallazgos pendientes por etapa
 
 Abreviaturas: ID identidad, PAY cobros, IN entradas, AI IA y Copiloto, INF servidor.
+
+**Revisión independiente del 4 de noviembre:** encontró hallazgos nuevos (ningún crítico; 7 medios o medio-bajos,
+PAY-24…PAY-29, AI-15…AI-20, ID-18…ID-21, IN-23…IN-27 e INF-16…INF-21; PAY-26 se descartó después) y ninguna regresión
+de lo de abajo. Ya están corregidos, salvo INF-18 (opcional, no se hizo) y lo que anota «Queda para después» en
+[su sección](#revisión-del-4-de-noviembre-lo-que-se-corrigió). El detalle está en
+[`revision-seguridad-2026-11-04.md`](revision-seguridad-2026-11-04.md) y el plan en
+[`superpowers/plans/2026-11-04-seguridad-revision-correcciones.md`](superpowers/plans/2026-11-04-seguridad-revision-correcciones.md).
+Lo que sigue es el estado de los hallazgos de las auditorías anteriores.
 
 ### Altos
 Ninguno: INF-2 e INF-3 se corrigieron en la etapa 8.

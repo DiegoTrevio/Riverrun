@@ -89,8 +89,11 @@ function openZip(buffer: Buffer): { zip?: PizZip; errors: string[] } {
   // Imágenes, plantillas u objetos que se cargan de internet: LibreOffice los descargaría al generar el PDF.
   for (const n of names.filter((x) => x.endsWith('.rels'))) {
     const rels = zip.file(n)?.asText() ?? '';
-    for (const m of rels.matchAll(/<Relationship\b[^>]*>/g)) {
-      if (/TargetMode="External"/i.test(m[0]) && !/\/hyperlink"/i.test(m[0])) {
+    // Etiqueta por etiqueta (el mismo TAG que los campos: un «>» dentro de comillas no la corta) y atributo por atributo.
+    for (const m of rels.matchAll(TAG)) {
+      if (m[1] || m[2].toLowerCase() !== 'relationship') continue;
+      const attrs = parseAttrs(m[3]);
+      if (!attrs || (attrs.get('targetmode')?.toLowerCase() === 'external' && !/\/hyperlink$/.test(attrs.get('type') ?? ''))) {
         errors.push('El archivo carga contenido de internet (imágenes o plantillas vinculadas): insértalo dentro del documento');
         break;
       }
@@ -146,6 +149,30 @@ function flattenXml(xml: string): string {
   }
 }
 
+/**
+ * Etiquetas con sus atributos entre comillas (un «>» dentro de un valor no las corta) y el texto que sigue.
+ * En XML un «<» no puede ir dentro de un valor: cada intento termina en el siguiente «<» y la pasada sigue lineal.
+ */
+const TAG = /<(\/?)(?:[\w.-]+:)?([\w.-]+)((?:[^>"'<]|"[^"<]*"|'[^'<]*')*)>([^<]*)/g;
+
+/**
+ * Los atributos de una etiqueta, en orden y sin buscar dentro de los valores (a diferencia de `attrOf`): claves en
+ * minúsculas, valores decodificados. `null` si sobra algo que no es un atributo (salvo espacios y el «/» final) o si un
+ * atributo se repite (XML inválido: cada lector podría quedarse con uno distinto).
+ */
+function parseAttrs(attrs: string): Map<string, string> | null {
+  const re = /\s*(?:[\w.-]+:)?([\w.-]+)\s*=\s*(?:"([^"<]*)"|'([^'<]*)')/y;
+  const out = new Map<string, string>();
+  let pos = 0;
+  for (let m = re.exec(attrs); m; m = re.exec(attrs)) {
+    const key = m[1].toLowerCase();
+    if (out.has(key)) return null;
+    out.set(key, xmlDecode(m[2] ?? m[3]));
+    pos = re.lastIndex;
+  }
+  return /^\s*\/?\s*$/.test(attrs.slice(pos)) ? out : null;
+}
+
 /** Un atributo (con cualquier prefijo) de una etiqueta ya cortada bien (respetando comillas). */
 const attrOf = (tag: string, name: string) => {
   const m = new RegExp(`\\s(?:[\\w.-]+:)?${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`).exec(tag);
@@ -161,9 +188,6 @@ function externalFields(raw: string): boolean {
   const xml = flattenXml(raw);
   const codes: string[] = [];
   const stack: string[] = [];
-  // Etiquetas con sus atributos entre comillas (un «>» dentro de un valor no las corta), y el texto de los instrText.
-  // En XML un «<» no puede ir dentro de un valor: cada intento termina en el siguiente «<» y la pasada sigue lineal.
-  const TAG = /<(\/?)(?:[\w.-]+:)?([\w.-]+)((?:[^>"'<]|"[^"<]*"|'[^'<]*')*)>([^<]*)/g;
   for (const m of xml.matchAll(TAG)) {
     const [, closing, name, attrs, after] = m;
     if (closing) continue;

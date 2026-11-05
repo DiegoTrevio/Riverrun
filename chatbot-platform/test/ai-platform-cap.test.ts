@@ -109,6 +109,8 @@ t('los modelos por omisión tienen precio (también gemini-2.5-flash, para audio
 
 t('un plan sin su propio tope lleva el de por omisión (PLAN_DEFAULT_AI_USD); con el suyo, el suyo', async () => {
   const { platformAiCap } = await import('../src/ai/budget.js');
+  const savedDefault = config.signup.planDefaultAiUsd;
+  config.signup.planDefaultAiUsd = 20;
   assert.equal((await h.authed('POST', '/api/plans', { key: 'sintope', name: 'Sin tope', price: 99, currency: 'MXN' })).statusCode, 200);
   await pool.query(`UPDATE accounts SET plan = 'sintope', status = 'active' WHERE id = $1`, [h.accountId]);
   try {
@@ -118,6 +120,7 @@ t('un plan sin su propio tope lleva el de por omisión (PLAN_DEFAULT_AI_USD); co
     assert.equal(await platformAiCap(h.accountId), 7);
   } finally {
     await pool.query(`UPDATE accounts SET plan = '' WHERE id = $1`, [h.accountId]);
+    config.signup.planDefaultAiUsd = savedDefault;
   }
 });
 
@@ -137,5 +140,126 @@ t('PAY-6: una cuenta sin cupo no transcribe audios ni empieza pedidos al Copilot
   } finally {
     await pool.query(`DELETE FROM ai_spend WHERE account_id = $1`, [h.accountId]);
     assert.equal((await h.authed('PUT', `/api/accounts/${h.accountId}`, { ai_usd_override: null })).statusCode, 200);
+  }
+});
+
+// PAY-24: la tarifa propia del cliente (ai_budget_settings.prices) no puede abaratar lo que cuenta contra el tope de la plataforma.
+const setPrices = async (prices: object[]) => {
+  const rev = (await pool.query(`SELECT revision FROM ai_budget_settings WHERE account_id = $1`, [h.accountId])).rows[0]?.revision ?? 0;
+  const r = await h.authed('PUT', `/api/ai-budget?account_id=${h.accountId}`, { revision: rev, settings: { prices } });
+  assert.equal(r.statusCode, 200, r.body);
+};
+const setCap = async (usd: number | null) => {
+  await pool.query(`UPDATE accounts SET ai_usd_override = $2${usd === null ? `, plan = '', status = 'active'` : ''} WHERE id = $1`, [h.accountId, usd]);
+};
+const lastCharged = async () => Number((await pool.query(`SELECT charged_usd FROM ai_spend WHERE account_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1`, [h.accountId])).rows[0].charged_usd);
+const blockedWith = async (model: string) => {
+  try {
+    await accountAi(h.ai, h.accountId, h.botId).complete({ ...req, model, fallback_models: 'none' });
+    return '';
+  } catch (e: any) {
+    assert.ok(e instanceof AiBudgetBlocked, String(e));
+    return e.code as string;
+  }
+};
+
+t('PAY-24: con tope de la plataforma, una tarifa propia más baja no abarata lo que se cobra', async () => {
+  try {
+    await setCap(5); await setPrices([]); await call();
+    const base = await lastCharged();
+    assert.ok(base > 0);
+    await setPrices([{ model: 'gpt-4.1-mini', input_per_mtok: 0.000001, output_per_mtok: 0.000001 }]); await call();
+    assert.equal(await lastCharged(), base);
+    await setPrices([{ model: 'gpt-4.1-mini', input_per_mtok: 0, output_per_mtok: 0, is_free: true }]); await call();
+    assert.equal(await lastCharged(), base);
+  } finally {
+    await setPrices([]); await setCap(null);
+  }
+});
+
+t('PAY-24: una tarifa propia por minuto de audio sobre un modelo que la plataforma cobra por tokens no cambia el cobro', async () => {
+  try {
+    await setCap(5); await setPrices([]); await call();
+    const base = await lastCharged();
+    assert.ok(base > 0);
+    await setPrices([{ model: 'gpt-4.1-mini', input_per_mtok: 0.000001, output_per_mtok: 0.000001, per_audio_minute: 5 }]);
+    await call();
+    assert.equal(await lastCharged(), base, 'se sigue cobrando por tokens, con la tarifa de la plataforma');
+  } finally {
+    await setPrices([]); await setCap(null);
+  }
+});
+
+t('PAY-24: con tope de la plataforma, un modelo que solo tiene tarifa propia se bloquea como price_unknown', async () => {
+  try {
+    await setCap(5); await setPrices([{ model: 'modelo-propio', input_per_mtok: 1, output_per_mtok: 1 }]);
+    assert.equal(await blockedWith('modelo-propio'), 'price_unknown');
+  } finally {
+    await setPrices([]); await setCap(null);
+  }
+});
+
+t('PAY-24: sin tope de la plataforma, la tarifa propia sigue mandando', async () => {
+  const saved = config.signup.planDefaultAiUsd;
+  config.signup.planDefaultAiUsd = 0;
+  try {
+    await setCap(null); await setPrices([{ model: 'gpt-4.1-mini', input_per_mtok: 100, output_per_mtok: 100 }]); await call();
+    assert.ok((await lastCharged()) > 0.01);
+  } finally {
+    config.signup.planDefaultAiUsd = saved;
+    await setPrices([]);
+  }
+});
+
+t('AI-20: una cuenta activa sin plan ni excepción también tiene el tope de IA por omisión', async () => {
+  const { platformAiCap } = await import('../src/ai/budget.js');
+  const saved = config.signup.planDefaultAiUsd;
+  config.signup.planDefaultAiUsd = 20;
+  await pool.query(`UPDATE accounts SET status = 'active', plan = '', ai_usd_override = NULL WHERE id = $1`, [h.accountId]);
+  try {
+    assert.equal(await platformAiCap(h.accountId), 20);
+    await spend(20);
+    assert.equal(await blocked(), 'platform_cap');
+  } finally {
+    config.signup.planDefaultAiUsd = saved;
+  }
+});
+
+t('AI-20: al arrancar se avisa al superadmin (una vez al día) de las cuentas activas sin plan ni excepción', async () => {
+  const { warnDefaultCapAccounts } = await import('../src/ai/budget.js');
+  const outbox = (await import('../src/mailer.js')).outbox as { to: string; subject: string; text: string }[];
+  const saved = { cap: config.signup.planDefaultAiUsd, mail: config.signup.superadminEmail };
+  config.signup.planDefaultAiUsd = 20;
+  config.signup.superadminEmail = 'plataforma@riverrun.test';
+  const toSuper = () => outbox.filter((m) => m.to === 'plataforma@riverrun.test');
+  const name = (await pool.query(`SELECT name FROM accounts WHERE id = $1`, [h.accountId])).rows[0].name as string;
+  await pool.query(`UPDATE accounts SET status = 'active', plan = '', ai_usd_override = NULL WHERE id = $1`, [h.accountId]);
+  await pool.query(`UPDATE chatbots SET ai = jsonb_set(ai, '{model}', '"proveedor/modelo-sin-precio"') WHERE id = $1`, [h.botId]);
+  await spend(17); // más del 80 % de 20 USD este mes
+  const before = toSuper().length;
+  try {
+    assert.equal(await warnDefaultCapAccounts(new Date('2026-11-05T15:00:00Z')), true);
+    const mails = toSuper().slice(before);
+    assert.equal(mails.length, 1, 'un aviso');
+    const [mail] = mails;
+    assert.match(mail.text, /\d+ cuentas? activas? sin plan ni excepción/);
+    assert.match(mail.text, /20 USD/);
+    assert.ok(mail.text.includes(name), 'nombra la cuenta que ya pasó el 80 %');
+    assert.match(mail.text, /80 %/);
+    assert.ok(mail.text.includes('proveedor/modelo-sin-precio'), 'y el modelo de su asistente sin precio en ai_prices');
+    assert.match(mail.text, /PLAN_DEFAULT_AI_USD/);
+    assert.equal(await warnDefaultCapAccounts(new Date('2026-11-05T20:00:00Z')), false, 'otro arranque el mismo día no repite');
+    assert.equal(toSuper().length - before, 1);
+    assert.equal(await warnDefaultCapAccounts(new Date('2026-11-06T15:00:00Z')), true, 'al día siguiente, otra vez');
+    // Con plan o excepción, la cuenta ya no cuenta.
+    await pool.query(`UPDATE accounts SET ai_usd_override = 50 WHERE id = $1`, [h.accountId]);
+    const n = toSuper().length;
+    await warnDefaultCapAccounts(new Date('2026-11-07T15:00:00Z'));
+    assert.ok(toSuper().slice(n).every((m) => !m.text.includes(name)));
+  } finally {
+    config.signup.planDefaultAiUsd = saved.cap;
+    config.signup.superadminEmail = saved.mail;
+    await pool.query(`UPDATE accounts SET ai_usd_override = NULL WHERE id = $1`, [h.accountId]);
+    await pool.query(`UPDATE chatbots SET ai = ai - 'model' WHERE id = $1`, [h.botId]);
   }
 });

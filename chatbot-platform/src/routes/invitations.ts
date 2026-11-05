@@ -31,6 +31,8 @@ const DAYS_VALID = 7;
 const DAY = 24 * HOUR;
 const MAX_PER_ACCOUNT = 20;
 const MAX_PER_EMAIL = 3;
+/** Al mismo correo, entre todas las cuentas: una sola cuenta no es el único camino para inundar una bandeja (ID-21). */
+const MAX_PER_EMAIL_PLATFORM = 10;
 const MAX_PENDING = 50;
 const ROLE_LABEL: Record<string, string> = { admin: 'administrador', agent: 'agente' };
 
@@ -101,13 +103,23 @@ async function assertCanInvite(actor: Pick<User, 'role' | 'email_verified_at'>, 
   if (!(await accountOwner(accountId))?.email_verified_at) throw new HttpError(403, 'El dueño de la cuenta tiene que verificar su correo antes de invitar a alguien');
 }
 
-/** Topes guardados en la base: 20 invitaciones por día por cuenta y 3 por día al mismo correo (se cuentan al mandar). */
+/**
+ * Topes guardados en la base: 20 invitaciones por día por cuenta, 3 por día al mismo correo desde la misma cuenta y 10 por
+ * día al mismo correo en toda la plataforma (se cuentan al mandar). Si una invitación se rechaza, no gasta los cupos anteriores.
+ */
 async function countInvite(accountId: string, email: string): Promise<void> {
+  const mail = email.toLowerCase();
   const acct = `invite-acct:${accountId}`;
+  const perAccount = `invite-email:${accountId}:${mail}`;
   if ((await countHit(acct, DAY)) > MAX_PER_ACCOUNT) throw new HttpError(429, `Llegaste al límite de ${MAX_PER_ACCOUNT} invitaciones por día`);
-  if ((await countHit(`invite-email:${email.toLowerCase()}`, DAY)) > MAX_PER_EMAIL) {
+  if ((await countHit(perAccount, DAY)) > MAX_PER_EMAIL) {
     await releaseHit(acct); // esta no salió: no cuenta para la cuenta
     throw new HttpError(429, `Ya invitaste a ese correo ${MAX_PER_EMAIL} veces hoy`);
+  }
+  if ((await countHit(`invite-email-all:${mail}`, DAY)) > MAX_PER_EMAIL_PLATFORM) {
+    await releaseHit(acct);
+    await releaseHit(perAccount);
+    throw new HttpError(429, 'Ese correo ya recibió muchas invitaciones hoy; intenta mañana');
   }
 }
 
