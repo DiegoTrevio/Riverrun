@@ -98,11 +98,12 @@ A cada una dale su plan o una excepción en el panel (Cuentas → **Límites**, 
 
 `./riverrun update` ya comprueba que el commit pasó el CI en GitHub. Pero quien pueda escribir en `main` despliega lo que quiera en todos los servidores, a menudo como root. La firma lo cierra: `update` solo aplica un commit firmado por alguien de tu lista. Viene apagada, y `./riverrun preflight` avisa mientras lo esté (`update no exige firma (UPDATE_ALLOWED_SIGNERS)`). Activarla son tres pasos.
 
-1. **Crea el archivo de firmantes fuera del repositorio**, para que quien cambie el repositorio no pueda cambiarlo. Una línea por persona, en el formato *allowed signers* de `ssh-keygen`: correo, tipo de llave y llave pública.
+1. **Crea el archivo de firmantes fuera del repositorio**, para que quien cambie el repositorio no pueda cambiarlo. Una línea por persona, en el formato *allowed signers* de `ssh-keygen`: correo, tipo de llave y llave pública. La llave es la de **la computadora de quien publica** (con la que firma sus commits), no una del servidor: en esa computadora, `cat ~/.ssh/id_ed25519.pub`, y lo que imprime se copia al servidor. Como correo (el *principal*) pon el mismo `user.email` con el que esa persona firma en git (`git config user.email`): git encuentra la llave en la lista y muestra ese correo como quien firmó, así que deben coincidir para que la lista diga quién es quién.
 
    ```bash
+   # En el servidor, con la llave pública que copiaste de la computadora de quien publica:
    sudo mkdir -p /etc/riverrun
-   echo "tu@correo.mx $(cat ~/.ssh/id_ed25519.pub)" | sudo tee /etc/riverrun/allowed_signers
+   echo 'tu@correo.mx ssh-ed25519 AAAAC3Nza…tu-llave-pública…' | sudo tee /etc/riverrun/allowed_signers
    sudo chmod 644 /etc/riverrun/allowed_signers
    ```
 
