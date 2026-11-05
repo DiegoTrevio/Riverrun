@@ -1,6 +1,7 @@
 /** Cambiar de plan, cambiar la tarjeta y reanudar desde el panel, con Stripe y con Mercado Pago. */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 // Orden obligatorio: los simulados fijan las claves y URLs ANTES de que el arnés cargue la configuración.
 const { fake, mpEvent, stripeSub } = await import('./billing-fakes.js');
 const { createHarness, dbAvailable, pool } = await import('./harness.js');
@@ -69,6 +70,7 @@ before(async () => {
     { key: 'basico', name: 'Básico', price: 199, limits: { channels: 1 } },
     { key: 'pro', name: 'Pro', price: 499 },
     { key: 'anual', name: 'Pro anual', price: 4990, interval: 'year' },
+    { key: 'chico', name: 'Chico', price: 99, limits: { storage_mb: 1 } },
   ]) assert.equal((await h.authed('POST', '/api/plans', p)).statusCode, 200);
 });
 after(async () => {
@@ -227,6 +229,41 @@ t('Stripe: de anual a mensual se programa para el fin del año pagado, sin reemb
   assert.equal((await h.app.inject({ method: 'POST', url: '/webhook/billing/stripe', payload: e.payload, headers: e.headers })).statusCode, 200);
   sub = await subOf(a.accountId);
   assert.deepEqual([sub.plan_key, sub.pending_plan_key, await planOf(a.accountId)], ['pro', '', 'pro']);
+});
+
+t('Stripe: si la cuenta ya no cabe cuando llega el plan programado, el cambio se aplica y avisa al dueño y al superadmin (PAY-27)', async () => {
+  const a = await paidStripe('rut@salon.mx', 'anual', 'sub_rut');
+  fake.stripe.subs.sub_rut.items.data[0].price = { id: 'price_anual', product: 'riverrun_anual', recurring: { interval: 'year' } };
+  const bot = (await a.api('POST', '/api/chatbots', { name: 'Rut' })).json();
+  await store.createChannel({ account_id: a.accountId, chatbot_id: bot.id, type: 'webchat', name: 'Uno', config: {} });
+  const r = await a.api('POST', '/api/billing/change', { plan: 'basico' });
+  assert.equal(r.statusCode, 200, r.body);
+  assert.equal(r.json().scheduled, true);
+  // Mientras llega la renovación, la cuenta crece por encima del límite del plan programado.
+  await store.createChannel({ account_id: a.accountId, chatbot_id: bot.id, type: 'webchat', name: 'Dos', config: {} });
+  fake.stripe.subs.sub_rut.items.data[0].price = { id: 'price_m', product: 'riverrun_basico', recurring: { interval: 'month' } };
+  outbox.length = 0;
+  const before = await superNotices('Tu cuenta no cabe en el plan Básico');
+  const e = (await import('./billing-fakes.js')).stripeEvent('customer.subscription.updated', fake.stripe.subs.sub_rut);
+  assert.equal((await h.app.inject({ method: 'POST', url: '/webhook/billing/stripe', payload: e.payload, headers: e.headers })).statusCode, 200);
+  assert.deepEqual([(await subOf(a.accountId)).plan_key, await planOf(a.accountId)], ['basico', 'basico'], 'el cambio se aplica');
+  const mail = outbox.find((m) => m.to === 'rut@salon.mx' && m.subject === 'Tu cuenta no cabe en el plan Básico');
+  assert.ok(mail, JSON.stringify(outbox.map((m) => m.subject)));
+  assert.match(mail!.text, /Tienes 2 canales \(el plan Básico permite 1\)\. Lo que ya existe sigue funcionando, pero no puedes agregar más hasta ajustarlo o cambiar de plan\./);
+  assert.equal(await superNotices('Tu cuenta no cabe en el plan Básico'), before + 1, 'el superadmin también se entera');
+  // Un aviso más del mismo plan no repite el aviso.
+  outbox.length = 0;
+  assert.equal((await h.app.inject({ method: 'POST', url: '/webhook/billing/stripe', payload: e.payload, headers: e.headers })).statusCode, 200);
+  assert.ok(!outbox.some((m) => m.subject === 'Tu cuenta no cabe en el plan Básico'));
+});
+
+t('bajar de plan también revisa el almacenamiento (PAY-27)', async () => {
+  const a = await paidStripe('almacen@salon.mx', 'pro', 'sub_almacen');
+  await (await import('../src/store/quotes.js')).insertTemplate({ id: crypto.randomUUID(), accountId: a.accountId, name: 'Formato', filePath: 'x.docx', sha256: 'abc', size: 5 * 1024 * 1024, placeholders: [], createdBy: null });
+  const r = await a.api('POST', '/api/billing/change', { plan: 'chico' });
+  assert.equal(r.statusCode, 409, r.body);
+  assert.match(r.json().error, /5 MB de archivos \(el plan Chico permite 1\)/);
+  assert.equal((await subOf(a.accountId)).plan_key, 'pro', 'no se tocó nada');
 });
 
 t('Mercado Pago: subir cambiando de mensual a anual da el plan nuevo con el primer cobro de la sustitución, no al autorizarla', async () => {

@@ -292,17 +292,24 @@ export async function changePlan(o: { accountId: string; email: string; planKey:
   return {};
 }
 
+/**
+ * Lo que la cuenta tiene de más para el plan, en frases listas para un aviso (vacío si cabe). Se ignoran los límites que
+ * el superadmin le dio aparte.
+ */
+export async function overPlanLimits(accountId: string, plan: Plan): Promise<string[]> {
+  const [acc, used] = await Promise.all([queryOne<{ limits_override: Record<string, unknown> | null }>(`SELECT limits_override FROM accounts WHERE id = $1`, [accountId]), usageOf(accountId)]);
+  return (['channels', 'users', 'chatbots', 'social_accounts', 'storage_mb'] as const)
+    .filter((k) => {
+      const max = plan.limits?.[k];
+      return typeof max === 'number' && max > 0 && acc?.limits_override?.[k] == null && used[k] > max;
+    })
+    .map((k) => `${used[k]} ${LIMIT_LABELS[k].plural} (el plan ${plan.name} permite ${plan.limits[k]})`);
+}
+
 /** Bajar de plan: la cuenta tiene que caber en los límites del nuevo (salvo los que el superadmin le dio aparte). */
 async function assertFitsPlan(accountId: string, plan: Plan) {
-  const [acc, used] = await Promise.all([queryOne<{ limits_override: Record<string, unknown> | null }>(`SELECT limits_override FROM accounts WHERE id = $1`, [accountId]), usageOf(accountId)]);
-  const over = (['channels', 'users', 'chatbots', 'social_accounts'] as const).filter((k) => {
-    const max = plan.limits?.[k];
-    return typeof max === 'number' && max > 0 && acc?.limits_override?.[k] == null && used[k] > max;
-  });
-  if (over.length) {
-    const list = over.map((k) => `${used[k]} ${LIMIT_LABELS[k].plural} (el plan ${plan.name} permite ${plan.limits[k]})`).join(', ');
-    throw new HttpError(409, `Para cambiar al plan ${plan.name} primero ajusta tu cuenta: tienes ${list}.`);
-  }
+  const over = await overPlanLimits(accountId, plan);
+  if (over.length) throw new HttpError(409, `Para cambiar al plan ${plan.name} primero ajusta tu cuenta: tienes ${over.join(', ')}.`);
 }
 
 /**
@@ -453,6 +460,19 @@ async function applyStateLocked(state: SubscriptionState & { accountId: string }
   // Una sustitución no es una contratación nueva: sigue del estado en que estaba (al corriente o con pago pendiente).
   const was = prev?.provider_subscription_id === state.subscriptionId || (replacing && ['active', 'past_due'].includes(prev!.status)) ? prev!.status : 'incomplete';
   const plan = planKey ? await getPlan(planKey) : null;
+
+  // El plan cambió (p. ej. llegó el programado): la cuenta pudo crecer desde que se pidió el cambio. Se aplica igual, pero se
+  // avisa de lo que ya no cabe (PAY-27). Un plan puesto a mano por el superadmin no cambia con la suscripción.
+  if (plan && prev?.plan_key && planKey !== prev.plan_key && state.status === 'active' && acc.plan_source !== 'manual') {
+    const over = await overPlanLimits(accountId, plan);
+    if (over.length) {
+      const title = `Tu cuenta no cabe en el plan ${plan.name}`;
+      const list = over.join(', ');
+      await logEvent({ level: 'warn', source: 'admin', message: `La cuenta no cabe en el plan ${plan.name} al aplicarse el cambio: ${list}`, accountId });
+      later.push(() => tell(accountId, title, `Tienes ${list}. Lo que ya existe sigue funcionando, pero no puedes agregar más hasta ajustarlo o cambiar de plan.`));
+      later.push(() => notifySuperadmins(accountId, title, `"${acc.name}" tiene ${list}.`));
+    }
+  }
 
   if (replacing && prev) {
     // La anterior deja de cobrar. Si ya estaba cancelada (reanudar tras cancelar), no hay nada que hacer.
