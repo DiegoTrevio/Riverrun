@@ -54,7 +54,8 @@ async function price(model:string,policy:BudgetPolicy,client?:import('pg').PoolC
   const base=await platformPrice(model,client);
   if(!base)return null;
   if(!local)return base;
-  return {...base,input_per_mtok:Math.max(base.input_per_mtok,local.input_per_mtok),output_per_mtok:Math.max(base.output_per_mtok,local.output_per_mtok),per_audio_minute:Math.max(base.per_audio_minute,local.per_audio_minute)};
+  // El modo de cobro es el de la plataforma: una tarifa propia por minuto no vuelve «de audio» un modelo que se cobra por tokens.
+  return {...base,input_per_mtok:Math.max(base.input_per_mtok,local.input_per_mtok),output_per_mtok:Math.max(base.output_per_mtok,local.output_per_mtok),per_audio_minute:base.per_audio_minute>0?Math.max(base.per_audio_minute,local.per_audio_minute):0};
  }
  if(local)return local.is_free||local.input_per_mtok+local.output_per_mtok+local.per_audio_minute>0?{...local,model:name}:null;
  return platformPrice(model,client);

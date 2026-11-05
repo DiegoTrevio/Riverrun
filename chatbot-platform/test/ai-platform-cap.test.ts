@@ -177,6 +177,19 @@ t('PAY-24: con tope de la plataforma, una tarifa propia más baja no abarata lo 
   }
 });
 
+t('PAY-24: una tarifa propia por minuto de audio sobre un modelo que la plataforma cobra por tokens no cambia el cobro', async () => {
+  try {
+    await setCap(5); await setPrices([]); await call();
+    const base = await lastCharged();
+    assert.ok(base > 0);
+    await setPrices([{ model: 'gpt-4.1-mini', input_per_mtok: 0.000001, output_per_mtok: 0.000001, per_audio_minute: 5 }]);
+    await call();
+    assert.equal(await lastCharged(), base, 'se sigue cobrando por tokens, con la tarifa de la plataforma');
+  } finally {
+    await setPrices([]); await setCap(null);
+  }
+});
+
 t('PAY-24: con tope de la plataforma, un modelo que solo tiene tarifa propia se bloquea como price_unknown', async () => {
   try {
     await setCap(5); await setPrices([{ model: 'modelo-propio', input_per_mtok: 1, output_per_mtok: 1 }]);
