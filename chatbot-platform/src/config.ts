@@ -126,6 +126,9 @@ export const config = {
     /** Lee las fotos y los PDF que mandan los clientes (necesita un modelo que vea imágenes y documentos). */
     mediaModel: env('OPENROUTER_MEDIA_MODEL', env('OPENAI_MEDIA_MODEL', useOpenRouter ? 'google/gemini-2.5-flash' : 'gpt-4.1-mini')),
     timeoutMs: Number(env('OPENROUTER_TIMEOUT_MS', env('OPENAI_TIMEOUT_MS', '45000'))),
+    /** Tope por contacto y hora (AI-15): turnos de IA y lecturas de medios (audio, foto, PDF). Pasado el tope, el asistente se pausa una hora. */
+    turnsPerContactHour: Number(env('AI_TURNS_PER_CONTACT_HOUR', '30')),
+    mediaPerContactHour: Number(env('AI_MEDIA_PER_CONTACT_HOUR', '10')),
   },
   knowledgeSearch: {
     forceOff: env('KNOWLEDGE_SEARCH_FORCE_OFF','false')==='true',

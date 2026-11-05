@@ -4,6 +4,7 @@ import { query, queryOne,withTransaction } from '../db.js';
 import { OutboundBlockedError } from '../outbound-guard.js';
 import { assertOwnership, controlVersion, currentOperation, DeliveryUncertain, OwnershipLost,interruptedOperation, nextDelivery, operationScope, setControlVersion } from './coordination.js';
 import { config } from '../config.js';
+import { countHit, limited } from '../identity/rate-limit.js';
 import type { AiProvider } from '../ai/provider.js';
 import { recordMessage } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
@@ -263,6 +264,19 @@ export class Engine {
       await this.executeHandoff(bot, conv, contact, transport, [], `El cliente escribió "${kw}"`);
       await store.markProcessed(conv.id, lastPendingId);
       return { status: 'handoff', plan: { ...emptyPlan('handoff'), handoffReason: `palabra clave: ${kw}` } };
+    }
+
+    // 1b) Tope de turnos de IA por contacto y hora (AI-15): un desconocido que escribe sin parar no debe gastar el
+    // presupuesto de IA del negocio. Solo cuenta aquí, cuando de verdad se va a gastar IA. Pasado el tope, el asistente
+    // se pausa una hora en esta conversación, sin mensaje al cliente, y el equipo recibe un aviso por hora y contacto.
+    if (await limited(`ai-contact:${conv.contact_id}`, config.openai.turnsPerContactHour, 3_600_000)) {
+      await store.setAgentOff(conv.id, 'demasiados mensajes en una hora', new Date(Date.now() + 3_600_000));
+      await store.markProcessed(conv.id, lastPendingId);
+      await log('warn', 'engine', 'Asistente en pausa una hora: el contacto pasó el tope de turnos de IA por hora');
+      if ((await countHit(`ai-contact-alert:${conv.contact_id}`, 3_600_000)) === 1) {
+        await this.notify(conv, channel, '⏸️ Asistente en pausa: demasiados mensajes', `${customerLabel(contact)} (${channel.name}): mandó más de ${config.openai.turnsPerContactHour} mensajes en una hora. El asistente se pausa una hora en esta conversación para cuidar el presupuesto de IA; atiéndela tú si es un cliente real.`, 'automation');
+      }
+      return { status: 'paused' };
     }
 
     // 2) Contexto controlado.

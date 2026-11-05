@@ -241,6 +241,34 @@ t('lo que se lee de un archivo se enmascara, y con una persona atendiendo no se 
   assert.equal(readCalls().length, before, 'sin llamada a la IA');
 });
 
+t('pasado el tope de lecturas por hora, el archivo del mismo contacto se guarda sin leerlo (AI-15)', async () => {
+  const { config } = await import('../src/config.js');
+  const original = config.openai.mediaPerContactHour;
+  config.openai.mediaPerContactHour = 2;
+  try {
+    h.reset();
+    const phone = '5215550000021';
+    h.setSummary('Comprobante de pago.');
+    h.setScript(() => ({ messages: ['Recibido.'] }));
+    for (const n of [1, 2, 3]) {
+      evo.media.set(`CAP-${n}`, { buffer: Buffer.from(`%PDF-1.4\n% archivo ${n}\n%%EOF\n`), mimetype: 'application/pdf' });
+      await sendWhatsApp(`CAP-${n}`, { documentMessage: { fileName: `pago${n}.pdf`, mimetype: 'application/pdf', fileLength: 40 } }, phone);
+      h.sent.length = 0;
+    }
+    assert.equal((await saved('CAP-1')).ai_summary, 'Comprobante de pago.');
+    assert.equal((await saved('CAP-2')).ai_summary, 'Comprobante de pago.');
+    const third = await saved('CAP-3');
+    assert.ok(!third.ai_summary, 'la tercera se guarda sin leerla');
+    assert.equal(third.kind, 'document', 'pero el archivo sí queda guardado');
+    assert.equal(readCalls().length, 2, 'solo dos lecturas de IA');
+    const runs = (await pool.query(`SELECT count(*)::int n FROM ai_runs ar JOIN conversations c ON c.id = ar.conversation_id JOIN contacts ct ON ct.id = c.contact_id WHERE ar.kind = 'media' AND ct.phone = $1`, [phone])).rows[0].n;
+    assert.equal(runs, 2, 'sin fila de ai_runs para la tercera');
+    h.setSummary('- resumen de prueba');
+  } finally {
+    config.openai.mediaPerContactHour = original;
+  }
+});
+
 t('con «Entender fotos y documentos» apagado no se llama a la IA', async () => {
   await pool.query(`UPDATE chatbots SET ai = ai || '{"understand_media": false}'::jsonb WHERE id = $1`, [h.botId]);
   h.reset();
