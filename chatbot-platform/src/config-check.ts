@@ -145,6 +145,21 @@ const NUMBERS: { name: string; min: number; max: number; int?: boolean; area: Ar
   { name: 'WHATSAPP_POST_UPDATE_HOURS', min: 1, max: 720, int: true, area: 'whatsapp', what: 'horas de vigilancia tras cambiar la versión de Evolution' },
 ];
 
+/**
+ * Topes por contacto y por cuenta (AI-15, AI-16): un entero ≥ 0, y 0 = sin tope (como los demás límites de .env). Otro
+ * valor no detiene el arranque: se usa el de por omisión y la revisión avisa (antes, `Number('abc')` daba NaN y apagaba
+ * el tope en silencio).
+ */
+export const CAPS = {
+  AI_TURNS_PER_CONTACT_HOUR: { def: 30, what: 'turnos de IA por contacto y hora' },
+  AI_MEDIA_PER_CONTACT_HOUR: { def: 10, what: 'lecturas de audio, foto o PDF por contacto y hora' },
+  COPILOT_CONCURRENT_PER_ACCOUNT: { def: 3, what: 'pedidos al Copiloto a la vez por cuenta' },
+} as const;
+const isCap = (raw: string) => /^\d+$/.test(raw.trim());
+export function capValue(name: keyof typeof CAPS, raw: string | undefined): number {
+  return raw !== undefined && isCap(raw) ? Number(raw.trim()) : CAPS[name].def;
+}
+
 /** Interruptores que el código compara con 'true' exacto: cualquier otro valor los apaga sin aviso. */
 const BOOLEANS: { name: string; def: boolean; area: Area }[] = [
   { name: 'SECURE_COOKIES', def: false, area: 'security' },
@@ -186,6 +201,11 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
       `${n.name} (${n.what}) no es válido: debe ser un número${n.int ? ' entero' : ''} entre ${n.min} y ${n.max}.`,
       `Corrige ${n.name} en .env o bórralo para usar el valor por defecto.`,
     );
+  }
+  for (const [name, c] of Object.entries(CAPS)) {
+    if (!has(name) || isCap(get(name))) continue;
+    add('warning', 'ai', `cap.${name}`, [name], `${name} (${c.what}) no es un número entero mayor o igual a 0: se usa ${c.def}.`,
+      `Escribe un entero en ${name} (0 = sin tope) o bórralo para usar ${c.def}.`);
   }
   for (const b of BOOLEANS) {
     if (!has(b.name) || get(b.name) === 'true' || get(b.name) === 'false') continue;

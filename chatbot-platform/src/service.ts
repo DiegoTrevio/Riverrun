@@ -550,7 +550,8 @@ export class ChatService {
     // Con la cuenta en pausa no se gasta IA: el audio se guarda como nota de voz, sin transcribir.
     // Tope de lecturas por contacto y hora (AI-15): se evalúa al final para contar solo lo que de verdad iba a gastar IA.
     const mediaCapped = async () => {
-      if (!(await limited(`ai-media:${conv.contact_id}`, config.openai.mediaPerContactHour, 3_600_000))) return false;
+      // AI_MEDIA_PER_CONTACT_HOUR=0: sin tope de lecturas.
+      if (config.openai.mediaPerContactHour <= 0 || !(await limited(`ai-media:${conv.contact_id}`, config.openai.mediaPerContactHour, 3_600_000))) return false;
       await logEvent({ level: 'info', source: 'engine', message: 'Sin leer el archivo: el cliente mandó demasiados en una hora', ...logBase });
       return true;
     };

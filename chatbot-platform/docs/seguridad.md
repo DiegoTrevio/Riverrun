@@ -601,8 +601,8 @@ primero falló sin el arreglo. Quedan aparte INF-18 (opcional, no se hizo) y PAY
 | IN-27 | La página pública del pool armaba el HTML sin escapar. | `esc()` en título y texto (el ayudante pasó a `routes/util.ts`). | `pools.test.ts` |
 
 **Cambios que nota la gente:**
-- Un mismo cliente que manda más de 30 mensajes por hora a la IA queda en pausa una hora, sin respuesta, y el equipo recibe un aviso (una vez por hora). Los topes se cambian con `AI_TURNS_PER_CONTACT_HOUR` y `AI_MEDIA_PER_CONTACT_HOUR` (AI-15).
-- El Copiloto atiende como máximo 3 pedidos a la vez por cuenta (`COPILOT_CONCURRENT_PER_ACCOUNT`); el cuarto recibe un 429 (AI-16).
+- Un mismo cliente que manda más de 30 mensajes por hora a la IA queda en pausa una hora, sin respuesta, y el equipo recibe un aviso (una vez por hora). Los topes se cambian con `AI_TURNS_PER_CONTACT_HOUR` y `AI_MEDIA_PER_CONTACT_HOUR`: enteros ≥ 0, `0` los apaga y un valor inválido usa el de por omisión con un aviso de la revisión de configuración (AI-15).
+- El Copiloto atiende como máximo 3 pedidos a la vez por cuenta (`COPILOT_CONCURRENT_PER_ACCOUNT`; `0` = sin tope, como los demás límites); el cuarto recibe un 429 (AI-16).
 - Quien se registró antes de verificar su correo y restablece la contraseña tiene que configurar su app de autenticación otra vez (ID-18).
 - `./riverrun preflight` avisa si `REDIS_PASSWORD` está vacío y si `update` no exige firma (INF-19, INF-21). Son avisos: no bloquean.
 - Los contenedores quedan endurecidos (sin privilegios de más, la mayoría de solo lectura). Antes de producción hay que probarlo en staging con la sección 9 de [`prueba-en-staging.md`](prueba-en-staging.md); Caddy lleva un volumen nuevo (`caddy_config`) que se crea solo (INF-16).
@@ -622,8 +622,8 @@ primero falló sin el arreglo. Quedan aparte INF-18 (opcional, no se hizo) y PAY
 - PAY-25: una marca vieja de Mercado Pago con documento solo se reconoce si se vuelve a escribir el mismo documento (hasta noviembre de 2028).
 - PAY-28: una suscripción anterior a la migración 113 no tiene precio aceptado hasta su siguiente aviso o refresco; una subida de precio antes de eso la marca como hasta ahora.
 - ID-21: el contador que rechaza no se libera; con 10 por día en la plataforma, un tercero puede agotar el cupo de un correo (lo pide el requisito).
-- AI-15: el audio gasta su contador antes de descargarse; una conversación pausada por el tope sigue leyendo fotos hasta el tope de medios; el simulador también se pausa a los 30 turnos; `Number(env)` inválido apagaría el tope en silencio.
-- AI-16: `COPILOT_CONCURRENT_PER_ACCOUNT=0` se vuelve 3; el tope por pedido puede pasarse por la última llamada.
+- AI-15: el audio gasta su contador antes de descargarse; una conversación pausada por el tope sigue leyendo fotos hasta el tope de medios; el simulador también se pausa a los 30 turnos.
+- AI-16: el tope por pedido puede pasarse por la última llamada.
 - ID-18: el respaldo para cookies de reto sin `ec` (`routes/mfa.ts`) es temporal; hay que quitarlo.
 - AI-19: los correos de cobro anteriores al IN-25 usan el `payment_action_url` guardado sin filtrar; un `»` en el motivo del validador cierra la comilla antes (AI-17).
 - IN-24: el recorrido de `check-frontend` no tiene pruebas de casos borde (`${…}` con comillas, regex, plantillas anidadas) y no ve `{ html }` abreviado.

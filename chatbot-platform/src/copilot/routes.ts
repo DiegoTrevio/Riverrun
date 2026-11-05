@@ -187,7 +187,7 @@ export async function copilotRoutes(api: FastifyInstance, deps: RunnerDeps) {
       if (used.user_hour >= config.copilot.turnsPerHour) throw new HttpError(429, 'Llegaste al límite de pedidos al Copiloto por hora; intenta en un rato');
       if (used.account_day >= config.copilot.accountTurnsPerDay) throw new HttpError(429, 'La cuenta llegó al límite de pedidos al Copiloto de hoy');
       if (dayCap > 0 && used.account_day_usd >= dayCap) throw new HttpError(429, 'La cuenta llegó al tope de gasto del Copiloto de las últimas 24 horas; intenta más tarde');
-      if (used.account_running >= config.copilot.concurrentPerAccount) throw new HttpError(429, 'Ya hay varios pedidos al Copiloto en curso en tu cuenta; espera a que terminen');
+      if (config.copilot.concurrentPerAccount > 0 && used.account_running >= config.copilot.concurrentPerAccount) throw new HttpError(429, 'Ya hay varios pedidos al Copiloto en curso en tu cuenta; espera a que terminen');
       return { turn: await cs.startTurn(thread, parsePage(b.page.hash), config.copilot.model, client), used };
     });
     if (!turn) throw new HttpError(409, 'Todavía estoy trabajando en tu pedido anterior');

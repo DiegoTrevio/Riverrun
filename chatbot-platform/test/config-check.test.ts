@@ -370,3 +370,23 @@ test('INF-2: en producción, el backend con el superusuario de PostgreSQL es avi
   assert.equal(blocksStartup(r), false, 'no impide arrancar: las instalaciones de antes pasan al actualizar');
   assert.ok(!ids(installed()).includes('database.superuser'));
 });
+
+test('AI-15, AI-16: los topes por contacto y de simultáneos son enteros ≥ 0 (0 = sin tope); otro valor usa el de por omisión y se avisa', async () => {
+  const { capValue } = await import('../src/config-check.js');
+  const caps: [string, number][] = [['AI_TURNS_PER_CONTACT_HOUR', 30], ['AI_MEDIA_PER_CONTACT_HOUR', 10], ['COPILOT_CONCURRENT_PER_ACCOUNT', 3]];
+  for (const [name, def] of caps) {
+    assert.equal(capValue(name as any, '0'), 0, `${name}=0 es «sin tope»`);
+    assert.equal(capValue(name as any, '45'), 45);
+    assert.equal(capValue(name as any, ' 7 '), 7);
+    assert.equal(capValue(name as any, ''), def, `${name} vacío usa ${def}`);
+    for (const bad of ['muchos', '-1', '2.5', 'NaN', '1e3']) {
+      assert.equal(capValue(name as any, bad), def, `${name}=${bad} usa ${def}, no NaN ni un tope apagado`);
+      const r = validateConfig(installed({ [name]: bad }));
+      const issue = r.issues.find((i) => i.id === `cap.${name}`);
+      assert.ok(issue && issue.level === 'warning', `${name}=${bad} se avisa: ${formatReport(r)}`);
+      assert.match(issue.message, new RegExp(`se usa ${def}`));
+      assert.equal(blocksStartup(r), false, 'es un aviso, no impide arrancar');
+    }
+    for (const good of ['0', '45']) assert.equal(ids(installed({ [name]: good })).includes(`cap.${name}`), false, `${name}=${good} no avisa`);
+  }
+});

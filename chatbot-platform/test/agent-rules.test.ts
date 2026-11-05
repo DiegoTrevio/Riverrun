@@ -168,6 +168,23 @@ t('pasado el tope de turnos, una emergencia sí recibe el mensaje fijo y pasa a 
   }
 });
 
+t('AI_TURNS_PER_CONTACT_HOUR=0 apaga el tope: el primer turno no pausa a nadie (AI-15)', async () => {
+  const { config } = await import('../src/config.js');
+  const original = config.openai.turnsPerContactHour;
+  config.openai.turnsPerContactHour = 0;
+  try {
+    h.reset();
+    h.setScript(() => ({ messages: ['Claro, dime.'] }));
+    const phone = '5215530000026';
+    for (let i = 0; i < 3; i++) await say(`duda número ${i}`, phone);
+    assert.equal(decisions(), 3, 'con 0 no hay tope');
+    assert.equal(textsTo(phone).length, 3);
+    assert.equal((await pool.query(`SELECT agent_off_at FROM conversations WHERE id = $1`, [(await convOf(phone)).id])).rows[0].agent_off_at, null);
+  } finally {
+    config.openai.turnsPerContactHour = original;
+  }
+});
+
 t('una pausa que puso el equipo sigue igual ante una emergencia: sin respuesta del asistente, con aviso (AI-15)', async () => {
   h.reset();
   h.setScript(() => ({ messages: ['Claro, dime.'] }));

@@ -564,3 +564,17 @@ t('AI-16: un pedido colgado de otra persona de la cuenta no bloquea ni cuenta pa
     config.copilot.concurrentPerAccount = saved.conc;
   }
 });
+
+t('AI-16: COPILOT_CONCURRENT_PER_ACCOUNT=0 es «sin tope de simultáneos» (antes se volvía 3)', async () => {
+  const { config } = await import('../src/config.js');
+  const saved = { usd: config.copilot.accountUsdPerDay, conc: config.copilot.concurrentPerAccount };
+  try {
+    config.copilot.concurrentPerAccount = 0;
+    config.copilot.accountUsdPerDay = 100;
+    const out = await ask(owner, 'hola');
+    assert.ok(out.turn, 'con 0 el pedido pasa');
+  } finally {
+    config.copilot.accountUsdPerDay = saved.usd;
+    config.copilot.concurrentPerAccount = saved.conc;
+  }
+});
