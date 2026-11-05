@@ -12,7 +12,7 @@ import * as store from '../store/index.js';
 import type { Channel, Chatbot, Contact, Conversation, DataField, ImageAsset, Message, SavedMessage } from '../types.js';
 import { detectRisk, isAutomatedMessage, promisesFollowUp, repeatedCustomerText, SAFETY_MESSAGES, type RiskHit } from './safety.js';
 import { asksQuestion, contactNameKey } from './questions.js';
-import { agentActive, agentStatus, offAfterReply } from './activation.js';
+import { agentActive, agentStatus, offAfterReply, PAUSE_LOOP, PAUSE_TURN_CAP, pausedByEngine } from './activation.js';
 import { automaticField, customerLabel, customerProvided } from './customer-data.js';
 import { CLAIM_JUDGE_PROMPT, CLAIM_JUDGE_SCHEMA } from './claims.js';
 import { buildContext, type BusinessInfo } from './context.js';
@@ -223,13 +223,15 @@ export class Engine {
       await store.markProcessed(conv.id, lastPendingId);
       return { status: 'human' };
     }
-    // Asistente en pausa en esta conversación, o esperando su palabra de activación.
-    if (!agentActive(bot, conv)) {
+    const customerText = pending.map((m) => m.content).join('\n');
+    // Asistente en pausa en esta conversación, o esperando su palabra de activación. Una pausa que puso el propio motor
+    // (tope de turnos por hora o bucle) no se salta el paso 0: una emergencia recibe igual el mensaje fijo, sin IA, y el
+    // equipo su aviso (AI-15). Las pausas que pone una persona del equipo quedan como siempre.
+    if (!agentActive(bot, conv) && !(pausedByEngine(conv) && detectRisk(customerText))) {
       await store.markProcessed(conv.id, lastPendingId);
       return { status: 'paused' };
     }
 
-    const customerText = pending.map((m) => m.content).join('\n');
     const log = (level: 'info' | 'warn' | 'error', source: 'engine' | 'ai' | 'validator' | 'channel', message: string, details?: unknown) =>
       logEvent({ level, source, message, details, accountId: conv.account_id, chatbotId: bot.id, channelId: conv.channel_id, conversationId: conv.id });
 
@@ -251,7 +253,7 @@ export class Engine {
     const since = Date.now() - 30 * 60_000;
     const inbound = (await store.recentMessages(conv.id, 12)).filter((m) => m.direction === 'in' && new Date(m.created_at).getTime() >= since).map((m) => m.content);
     if (repeatedCustomerText(inbound)) {
-      await store.setAgentOff(conv.id, 'posible bucle: el cliente repite el mismo mensaje', new Date(Date.now() + 4 * 3600_000));
+      await store.setAgentOff(conv.id, PAUSE_LOOP, new Date(Date.now() + 4 * 3600_000));
       await store.markProcessed(conv.id, lastPendingId);
       await log('warn', 'engine', 'Asistente en pausa: el cliente repite el mismo mensaje (posible contestador o bot)');
       await this.notify(conv, channel, '🔁 Asistente en pausa: posible bucle', `${customerLabel(contact)} (${channel.name}): el mismo mensaje llegó varias veces (¿un contestador o un bot?). Si es una persona, reactiva al asistente desde la conversación.`, 'automation');
@@ -270,7 +272,7 @@ export class Engine {
     // presupuesto de IA del negocio. Solo cuenta aquí, cuando de verdad se va a gastar IA. Pasado el tope, el asistente
     // se pausa una hora en esta conversación, sin mensaje al cliente, y el equipo recibe un aviso por hora y contacto.
     if (await limited(`ai-contact:${conv.contact_id}`, config.openai.turnsPerContactHour, 3_600_000)) {
-      await store.setAgentOff(conv.id, 'demasiados mensajes en una hora', new Date(Date.now() + 3_600_000));
+      await store.setAgentOff(conv.id, PAUSE_TURN_CAP, new Date(Date.now() + 3_600_000));
       await store.markProcessed(conv.id, lastPendingId);
       await log('warn', 'engine', 'Asistente en pausa una hora: el contacto pasó el tope de turnos de IA por hora');
       if ((await countHit(`ai-contact-alert:${conv.contact_id}`, 3_600_000)) === 1) {

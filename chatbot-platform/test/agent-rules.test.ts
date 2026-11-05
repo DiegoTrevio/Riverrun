@@ -140,6 +140,49 @@ t('el tope de turnos es por contacto: otro cliente del mismo canal sigue con res
   }
 });
 
+t('pasado el tope de turnos, una emergencia sí recibe el mensaje fijo y pasa a una persona; un mensaje normal sigue sin respuesta (AI-15)', async () => {
+  const { config } = await import('../src/config.js');
+  const original = config.openai.turnsPerContactHour;
+  config.openai.turnsPerContactHour = 2;
+  try {
+    h.reset();
+    h.setScript(() => ({ messages: ['Claro, dime.'] }));
+    const phone = '5215530000024';
+    for (let i = 0; i < 3; i++) await say(`consulta número ${i}`, phone);
+    const conv = await convOf(phone);
+    assert.match((await pool.query(`SELECT agent_off_reason FROM conversations WHERE id = $1`, [conv.id])).rows[0].agent_off_reason, /demasiados mensajes/);
+    await say('y otra pregunta más', phone);
+    assert.equal(decisions(), 2);
+    assert.equal(textsTo(phone).length, 2, 'un mensaje normal sigue sin respuesta');
+    const alerts = (await alertsOf('safety')).length;
+    await say('quiero morirme', phone);
+    assert.equal(decisions(), 2, 'la emergencia no pasa por la IA');
+    const sent = textsTo(phone);
+    assert.equal(sent.length, 3, 'la emergencia sí recibe respuesta');
+    assert.match(sent[2], /911/);
+    assert.match(sent[2], /Línea de la Vida/);
+    assert.equal((await convOf(phone)).status, 'human', 'queda escalada a una persona');
+    assert.equal((await alertsOf('safety')).length - alerts >= 1, true, 'el equipo recibe el 🚨');
+  } finally {
+    config.openai.turnsPerContactHour = original;
+  }
+});
+
+t('una pausa que puso el equipo sigue igual ante una emergencia: sin respuesta del asistente, con aviso (AI-15)', async () => {
+  h.reset();
+  h.setScript(() => ({ messages: ['Claro, dime.'] }));
+  const phone = '5215530000025';
+  await say('hola', phone);
+  const conv = await convOf(phone);
+  await pool.query(`UPDATE conversations SET agent_off_at = now(), agent_off_reason = 'pausa del equipo', agent_off_until = NULL WHERE id = $1`, [conv.id]);
+  const before = textsTo(phone).length;
+  const alerts = (await alertsOf('safety')).length;
+  await say('quiero morirme', phone);
+  assert.equal(textsTo(phone).length, before, 'el asistente no habla en una pausa del equipo');
+  assert.equal((await convOf(phone)).status, 'bot');
+  assert.equal((await alertsOf('safety')).length - alerts >= 1, true, 'el equipo se entera igual');
+});
+
 t('tarjeta: el número se guarda enmascarado y la IA no lo recibe completo', async () => {
   h.reset();
   h.setScript(() => ({ messages: ['Recibido, gracias.'] }));

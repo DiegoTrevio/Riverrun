@@ -22,7 +22,7 @@ import { adapterFor } from './channels/index.js';
 import { INBOUND_MEDIA_MAX_BYTES, removeInboundFiles, saveInboundMedia, type StoredMedia } from './channels/media.js';
 import { config } from './config.js';
 import { limited } from './identity/rate-limit.js';
-import { gate } from './engine/activation.js';
+import { gate, pausedByEngine } from './engine/activation.js';
 import { describeInbound, type InboundMessage } from './channels/types.js';
 import { describeWithMedia, understandMedia } from './engine/media-understanding.js';
 import { query, queryOne } from './db.js';
@@ -685,9 +685,13 @@ export class ChatService {
       if (stopAi) await store.markMessageProcessed(inserted.id);
       current = (await store.getConversation(conv.id)) ?? current;
     }
-    let canReply = current.status === 'bot' && !!bot && bot.active && channel.active && channel.account_active !== false;
+    const botOn = current.status === 'bot' && !!bot && bot.active && channel.active && channel.account_active !== false;
+    let canReply = botOn;
     // Activadores y desactivadores del asistente (palabras que lo encienden o lo apagan en esta conversación).
     if (canReply) canReply = await this.applyGate(bot!, channel, current, contact, content);
+    // AI-15: en una pausa que puso el propio motor (tope de turnos por hora o bucle), una emergencia sí llega al motor,
+    // que responde con el mensaje fijo, sin IA, pasa la conversación a una persona y avisa al equipo.
+    if (!canReply && botOn && pausedByEngine(current) && detectRisk(content)) canReply = true;
     if (!canReply) {
       // El asistente no va a responder (pausa, palabra de activación o una persona atiende): si hay una emergencia,
       // el equipo se entera igual. Con el asistente activo, el motor se encarga de responder y avisar.
