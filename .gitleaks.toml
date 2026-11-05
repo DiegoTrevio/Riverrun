@@ -14,8 +14,8 @@ description = "Datos inventados de las pruebas y SESSION_SECRET de prueba del CI
 # Se compara contra el texto completo del hallazgo («password: 'clave-duena-123'»), no contra el archivo.
 regexTarget = "match"
 regexes = [
-  # SESSION_SECRET de las pruebas del CI (0123456789…): no es de ningún servidor.
-  '''SESSION_SECRET:\s*0123456789abcdef0123456789abcdef''',
+  # SESSION_SECRET de las pruebas del CI, por su prefijo falso (0123456789abcdef…): no es de ningún servidor.
+  '''SESSION_SECRET:\s*0123456789abcdef''',
   # Valores que empiezan con una palabra inventada: clave-…, humo-…, prueba-…, llave-…
   '''(?i)['"=](?:clave|humo|prueba|llave)-[a-z0-9-]+['"]?$''',
   # Valores con «prueba», «perfil», etc. en medio: diego-prueba-123, mp-prueba-secreto-123, TEST-prueba-123, other-pass-123…
