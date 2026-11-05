@@ -170,6 +170,12 @@ export async function recentlyTainted(threadId: string, exceptTurnId: string, tu
   ));
 }
 
+/** Ids de los turnos del hilo que leyeron texto de clientes (su respuesta puede repetirlo). */
+export async function taintedTurnIds(threadId: string): Promise<Set<string>> {
+  const rows = await query<{ id: string }>(`SELECT id FROM copilot_turns WHERE thread_id = $1 AND tainted`, [threadId]);
+  return new Set(rows.map((r) => r.id));
+}
+
 /**
  * Uso reciente. Un pedido en curso cuenta como `turnMaxUsd` (lo máximo que puede gastar) hasta que termina, no como
  * su costo parcial: así los pedidos en paralelo no se cuelan bajo el tope del día.

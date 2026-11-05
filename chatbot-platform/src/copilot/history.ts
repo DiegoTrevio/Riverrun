@@ -61,7 +61,11 @@ function repair(list: AnyMessage[]): AnyMessage[] {
   return out;
 }
 
-export function buildHistory(messages: Message[], actions: Action[]): AnyMessage[] {
+/**
+ * `tainted`: ids de los turnos que leyeron texto de clientes. En los turnos viejos (fuera de los completos) solo quedan
+ * lo que pidió la persona y los avisos del panel: lo que respondió el asistente puede repetir texto escrito por un cliente.
+ */
+export function buildHistory(messages: Message[], actions: Action[], tainted: Set<string> = new Set()): AnyMessage[] {
   const byId = new Map(actions.map((a) => [a.id, a]));
   // Cada mensaje de la persona abre un turno; lo demás (pasos, resultados, avisos de confirmación) va con el turno abierto.
   const turns: Message[][] = [];
@@ -72,7 +76,8 @@ export function buildHistory(messages: Message[], actions: Action[]): AnyMessage
   const rendered = turns.map((t, i) => {
     const full = i >= turns.length - FULL_TURNS;
     const toolMax = i >= turns.length - RECENT_TURNS ? MAX_TOOL : OLD_TOOL;
-    const kept = full ? t : t.filter((m) => m.role === 'user' || m.role === 'event' || (m.role === 'assistant' && !m.tool_calls?.length && !!m.content));
+    const dirty = !full && !!t[0].turn_id && tainted.has(t[0].turn_id);
+    const kept = full ? t : t.filter((m) => m.role === 'user' || m.role === 'event' || (!dirty && m.role === 'assistant' && !m.tool_calls?.length && !!m.content));
     return repair(kept.map((m) => toModel(m, byId, toolMax)).filter((m): m is AnyMessage => !!m));
   });
   // Tope de tamaño: se quitan los turnos más viejos (siempre queda el último).
