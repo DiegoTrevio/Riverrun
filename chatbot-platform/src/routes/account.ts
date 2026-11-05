@@ -4,6 +4,7 @@
  * activo de la cuenta con su correo verificado y su verificación en dos pasos. El cambio es una sola escritura
  * condicionada: si el destino dejó de cumplir o la cuenta cambió de dueño mientras tanto, no se aplica.
  */
+import { config } from '../config.js';
 import { ipLimitKey, limited } from '../identity/rate-limit.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -20,7 +21,9 @@ import { DISPOSABLE_MESSAGE, isDisposableEmail } from '../signup-guard.js';
 import * as store from '../store/index.js';
 import { parse } from './util.js';
 
-const NOT_ELIGIBLE = 'Solo puedes transferirla a un administrador con su correo verificado y su verificación en dos pasos activa';
+const NOT_ELIGIBLE = config.mfa.required
+  ? 'Solo puedes transferirla a un administrador con su correo verificado y su verificación en dos pasos activa'
+  : 'Solo puedes transferirla a un administrador activo con su correo verificado';
 const EMAIL_TAKEN = 'Ese correo ya tiene una cuenta';
 const LINK_GONE = 'Este enlace ya no sirve. Pide el cambio otra vez desde Mi perfil.';
 const HOUR = 3600_000;
@@ -68,9 +71,9 @@ export async function accountRoutes(api: FastifyInstance) {
       `UPDATE accounts a SET owner_user_id = $2, deletion_nonce = NULL, updated_at = now()
         WHERE a.id = $1 AND a.owner_user_id IS NOT DISTINCT FROM $3
           AND EXISTS (SELECT 1 FROM users u WHERE u.id = $2 AND u.account_id = a.id AND u.role = 'admin' AND u.active
-                        AND u.totp_enabled_at IS NOT NULL AND u.email_verified_at IS NOT NULL)
+                        AND ($4::boolean OR u.totp_enabled_at IS NOT NULL) AND u.email_verified_at IS NOT NULL)
         RETURNING a.id`,
-      [accountId, target.id, owner?.id ?? null],
+      [accountId, target.id, owner?.id ?? null, !config.mfa.required],
     );
     if (!moved.length) {
       if ((await accountOwner(accountId))?.id !== owner?.id) throw new HttpError(409, 'La cuenta cambió de dueño mientras tanto: recarga la página');

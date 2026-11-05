@@ -166,7 +166,8 @@ export const config = {
     /** Horas que vive un archivo adjunto al Copiloto (foto, PDF, CSV). */
     fileHours: Math.max(1, Number(env('COPILOT_FILE_HOURS', '24')) || 24),
     /** Acciones delicadas que se confirman con el código escrito en la tarjeta; false = el Copiloto no las propone. */
-    codeActions: env('COPILOT_CODE_ACTIONS', 'true') !== 'false',
+    // Sin verificación en dos pasos no hay código que escribir: el Copiloto no propone esas acciones.
+    codeActions: env('COPILOT_CODE_ACTIONS', 'true') !== 'false' && env('MFA_REQUIRED', 'false') === 'true',
     /** «Confirmar y seguir»: cuántas continuaciones seguidas puede encadenar un pedido (0 = nunca sigue solo). */
     maxContinuations: Math.max(0, Number(env('COPILOT_MAX_CONTINUATIONS', '4')) || 0),
     turnsPerHour: Number(env('COPILOT_TURNS_PER_HOUR', '30')),
@@ -216,6 +217,13 @@ export const config = {
     resendApiKey: env('RESEND_API_KEY', ''),
     provider: (env('SMTP_URL', '') ? 'smtp' : env('RESEND_API_KEY', '') ? 'resend' : '') as 'smtp' | 'resend' | '',
     from: env('MAIL_FROM', 'Chatbots <no-responder@localhost>'),
+  },
+  /**
+   * Verificación en dos pasos (código de una app de autenticación). Apagada (por defecto): se entra solo con correo y
+   * contraseña (o Google), y las acciones delicadas no piden código. MFA_REQUIRED=true la vuelve obligatoria.
+   */
+  mfa: {
+    required: env('MFA_REQUIRED', 'false') === 'true',
   },
   /** Autoregistro de empresas. */
   signup: {

@@ -88,6 +88,15 @@ export async function beginLogin(reply: FastifyReply, user: SessionUser & { totp
     await openSession(reply, user, via, null);
     return { ok: true };
   }
+  // Sin verificación en dos pasos (MFA_REQUIRED apagado): la contraseña (o Google) abre la sesión. El dispositivo se
+  // anota igual que al terminar el segundo paso, para el aviso de inicio de sesión desde un dispositivo nuevo.
+  if (!config.mfa.required) {
+    const device = await noteDevice(reply.request, reply, user.id);
+    const who = device.isNew && !device.first ? await store.getUser(user.id).catch(() => null) : null;
+    if (who) void notifyUser(who, 'new_device', { device: browserOf(String(reply.request.headers['user-agent'] ?? '')), ip: reply.request.ip });
+    await openSession(reply, user, via, new Date());
+    return { ok: true };
+  }
   const purpose: ChallengePurpose = user.totp_enabled_at ? 'verify' : 'enroll';
   const c: Challenge = { uid: user.id, pv: passwordVersion(user.password_hash), via, purpose, cid: crypto.randomBytes(12).toString('base64url'), exp: Date.now() + CHALLENGE_MS,
     ...(EMAIL_PROVEN.includes(via) ? { ev: true } : {}) };
