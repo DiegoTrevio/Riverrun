@@ -194,6 +194,6 @@ Mucho gusto, Ana. ¿Qué día llegas?
 Llego el viernes
 ¿Y tienen cita para ver el salón?
 
-======== system ========
-Tu propuesta anterior fue rechazada por el validador: Te faltó la siguiente pregunta de la lista. Termina con esta pregunta, tal cual: «¿Qué día llegas?».
+======== user ========
+Tu propuesta anterior fue rechazada por el validador: «Te faltó la siguiente pregunta de la lista. Termina con esta pregunta, tal cual: «¿Qué día llegas?».»
 Genera una nueva propuesta que cumpla todas las reglas.

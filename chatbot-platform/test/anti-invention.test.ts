@@ -193,3 +193,14 @@ test('datos opcionales: tampoco se guardan si el cliente no los dijo (y "buen d�
   assert.deepEqual(loose('quiero reservar una doble', [{ field: 'empresa', value: 'Reservación de habitación doble' }]), { empresa: 'Reservación de habitación doble' });
   assert.deepEqual(loose('una habitación para 2 adultos y 1 niño', [{ field: 'personas', value: '3' }]), { personas: '3' });
 });
+
+test('corrección del validador: va como mensaje del usuario, con el motivo entre «» y cortado', async () => {
+  const { CASES } = await import('./prompt-fixtures.js');
+  const base = CASES['hotel-en-curso']();
+  const ctx = buildContext({ ...base, correction: 'x'.repeat(2000) });
+  const last = ctx.messages[ctx.messages.length - 1];
+  assert.equal(last.role, 'user');
+  assert.ok(last.content.startsWith('Tu propuesta anterior fue rechazada por el validador: «'), last.content.slice(0, 80));
+  assert.ok(last.content.includes('»'));
+  assert.ok(!last.content.includes('x'.repeat(601)), 'el motivo se corta a 600 caracteres');
+});
