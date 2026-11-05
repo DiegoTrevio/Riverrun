@@ -117,7 +117,7 @@ const SINK_PATTERNS = [
 ];
 // Los scripts sueltos de public/ (widget, reservar…) pueden escribir una constante literal; nunca algo armado.
 const LITERAL = String.raw`(['"])(?:(?!\1)[^\\\n]|\\.)*\1`;
-const LITERAL_WRITES = [new RegExp(String.raw`\.\s*innerHTML\s*=\s*${LITERAL}\s*[;\n]`, 'g'), new RegExp(String.raw`\.insertAdjacentHTML\s*\(\s*(['"])[\w]+\1\s*,\s*(['"])(?:(?!\2)[^\\\n]|\\.)*\2\s*\)`, 'g')];
+const LITERAL_WRITES = [new RegExp(String.raw`\.\s*innerHTML\s*=\s*${LITERAL}[ \t]*;`, 'g'), new RegExp(String.raw`\.insertAdjacentHTML\s*\(\s*(['"])[\w]+\1\s*,\s*(['"])(?:(?!\2)[^\\\n]|\\.)*\2[ \t]*\)[ \t]*;`, 'g')];
 function rawHtmlProblems(name, text, { panel }) {
   let code = stripComments(text);
   if (!panel) for (const re of LITERAL_WRITES) code = code.replace(re, '');

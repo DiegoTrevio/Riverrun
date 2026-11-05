@@ -72,3 +72,22 @@ test('IN-24: los scripts sueltos de public/ también se revisan (una constante l
   assert.notEqual(bad.status, 0);
   assert.match(bad.stderr, /widget\.js/);
 });
+
+test('IN-24: la excepción de literal solo vale con la sentencia completa', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cf-'));
+  const panel = path.join(dir, 'js');
+  fs.mkdirSync(panel);
+  fs.writeFileSync(path.join(panel, 'core.js'), 'export const h = () => null;\n');
+  const shapes = [
+    "el.innerHTML = 'a'\n+ x;\n",
+    "el.innerHTML = '<b>'\n`x`;\n",
+    "el.innerHTML = 'a'\n(x);\n",
+    "el.insertAdjacentHTML('afterbegin', 'a')\n+ x;\n",
+    "el.insertAdjacentHTML('afterbegin', 'a')\n(x);\n",
+  ];
+  for (const body of shapes) {
+    fs.writeFileSync(path.join(dir, 'widget.js'), body);
+    const r = spawnSync(process.execPath, ['scripts/check-frontend.mjs'], { env: { ...process.env, CHECK_FRONTEND_DIR: panel }, encoding: 'utf8' });
+    assert.notEqual(r.status, 0, `debía rechazar: ${JSON.stringify(body)}`);
+  }
+});
