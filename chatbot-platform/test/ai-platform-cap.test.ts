@@ -109,6 +109,8 @@ t('los modelos por omisión tienen precio (también gemini-2.5-flash, para audio
 
 t('un plan sin su propio tope lleva el de por omisión (PLAN_DEFAULT_AI_USD); con el suyo, el suyo', async () => {
   const { platformAiCap } = await import('../src/ai/budget.js');
+  const savedDefault = config.signup.planDefaultAiUsd;
+  config.signup.planDefaultAiUsd = 20;
   assert.equal((await h.authed('POST', '/api/plans', { key: 'sintope', name: 'Sin tope', price: 99, currency: 'MXN' })).statusCode, 200);
   await pool.query(`UPDATE accounts SET plan = 'sintope', status = 'active' WHERE id = $1`, [h.accountId]);
   try {
@@ -118,6 +120,7 @@ t('un plan sin su propio tope lleva el de por omisión (PLAN_DEFAULT_AI_USD); co
     assert.equal(await platformAiCap(h.accountId), 7);
   } finally {
     await pool.query(`UPDATE accounts SET plan = '' WHERE id = $1`, [h.accountId]);
+    config.signup.planDefaultAiUsd = savedDefault;
   }
 });
 
@@ -192,5 +195,19 @@ t('PAY-24: sin tope de la plataforma, la tarifa propia sigue mandando', async ()
   } finally {
     config.signup.planDefaultAiUsd = saved;
     await setPrices([]);
+  }
+});
+
+t('AI-20: una cuenta activa sin plan ni excepción también tiene el tope de IA por omisión', async () => {
+  const { platformAiCap } = await import('../src/ai/budget.js');
+  const saved = config.signup.planDefaultAiUsd;
+  config.signup.planDefaultAiUsd = 20;
+  await pool.query(`UPDATE accounts SET status = 'active', plan = '', ai_usd_override = NULL WHERE id = $1`, [h.accountId]);
+  try {
+    assert.equal(await platformAiCap(h.accountId), 20);
+    await spend(20);
+    assert.equal(await blocked(), 'platform_cap');
+  } finally {
+    config.signup.planDefaultAiUsd = saved;
   }
 });

@@ -91,7 +91,9 @@ export async function platformAiCap(accountId:string,client?:import('pg').PoolCl
  if(r.ai_usd_per_month!==null&&r.ai_usd_per_month!==undefined)return Number(r.ai_usd_per_month);
  // Un plan sin su propio tope lleva el de por omisión (PLAN_DEFAULT_AI_USD).
  if(r.plan_key&&config.signup.planDefaultAiUsd>0)return config.signup.planDefaultAiUsd;
- return r.status==='trial'&&config.signup.trialAiUsd>0?config.signup.trialAiUsd:null;
+ if(r.status==='trial'&&config.signup.trialAiUsd>0)return config.signup.trialAiUsd;
+ // Una cuenta activa sin plan ni excepción tampoco queda sin tope (AI-20).
+ return r.status==='active'&&config.signup.planDefaultAiUsd>0?config.signup.planDefaultAiUsd:null;
 }
 async function reserve(accountId:string,chatbotId:string|null,spec:Spec) {
  try{return await withTransaction(async client=>{

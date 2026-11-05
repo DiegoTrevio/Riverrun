@@ -400,6 +400,8 @@ process.env.UPLOADS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'cp-uploads-'));
 process.env.ADMIN_USER = 'admin@test.mx';
 process.env.ADMIN_PASSWORD = 'secreto123';
 process.env.SESSION_SECRET = 'una-clave-de-pruebas-muy-larga';
+// Sin tope de IA por omisión (AI-20): las pruebas que lo necesitan lo fijan ellas (ai-platform-cap).
+process.env.PLAN_DEFAULT_AI_USD = process.env.PLAN_DEFAULT_AI_USD || '0';
 // Las pruebas no salen a internet: las contraseñas nuevas se revisan solo contra la lista local.
 process.env.PWNED_PASSWORDS_URL = 'off';
 // Hash de contraseñas con un costo bajo: con el de producción (OWASP) cada usuario de prueba tardaría unos 300 ms.
