@@ -57,6 +57,10 @@ case "$*" in
   "inspect --format {{.Config.Image}} evo-contenedor") cat EVO_RUNNING ;;
   "inspect --format {{.Image}} evo-contenedor") echo "id-$(cat EVO_RUNNING)" ;;
   "image inspect --format {{.Id}} "*) ref="${*##* }"; [[ -f "PULLED" && "$(cat PULLED)" == "$ref" || "$ref" == "$(cat EVO_RUNNING 2>/dev/null)" ]] && echo "id-$ref" ;;
+  # PostgreSQL: el contenedor que corre y los digests de su imagen (PG_DIGESTS, uno por línea).
+  "compose ps -q postgres") echo "pg-contenedor" ;;
+  "inspect --format {{.Image}} pg-contenedor") echo "id-pg" ;;
+  "image inspect --format {{range .RepoDigests}}{{println .}}{{end}} id-pg") cat PG_DIGESTS 2>/dev/null || true ;;
   "image inspect --format {{range .RepoDigests}}"*) echo "$(cat EVO_RUNNING)@sha256:anterior" ;;
   # Usuarios de PostgreSQL por servicio: guarda lo que recibe (las contraseñas y docker/db-roles.sql).
   *"psql -X -q -U chatbot -d postgres"*) cat > ROLES_IN; [[ -f FALLA_ROLES ]] && exit 1; exit 0 ;;
@@ -94,7 +98,7 @@ git init -q --bare "$work/origin.git"
 git clone -q "$work/origin.git" "$work/app" 2>/dev/null
 cd "$work/app"
 # Estado del docker simulado y .env: nunca entran en los commits de prueba (EVO_IMAGE sí: es "código").
-printf '%s\n' .env EVO_RUNNING EVO_MIG EVO_PLAN_RC EVO_VERIFY_RC PULLED MIGRA_AL_ARRANCAR CONFIG_MALA PULL_FALLA FALLA_RESPALDO FALLA_PREVIA SIN_FUNCIONAL CONFIG_NO_CORRE HEALTH_N FALLA_TARDIA FALLA_SOSTENIDA REKEY_IN FALLA_REKEY ROLES_IN FALLA_ROLES CI_RESPUESTA CI_CODIGO > .gitignore
+printf '%s\n' .env EVO_RUNNING EVO_MIG EVO_PLAN_RC EVO_VERIFY_RC PULLED MIGRA_AL_ARRANCAR CONFIG_MALA PULL_FALLA FALLA_RESPALDO FALLA_PREVIA SIN_FUNCIONAL CONFIG_NO_CORRE HEALTH_N FALLA_TARDIA FALLA_SOSTENIDA REKEY_IN FALLA_REKEY ROLES_IN FALLA_ROLES CI_RESPUESTA CI_CODIGO PG_DIGESTS > .gitignore
 cp "$here/riverrun" . && mkdir -p docker && cp "$here/docker/db-roles.sql" docker/ && echo "v1" > VERSION && git add -A && git commit -qm "v1" && git push -q origin HEAD:main 2>/dev/null
 git branch -q --set-upstream-to=origin/main 2>/dev/null || git branch -q -u origin/main
 # Publica una versión nueva en el "origin" y deja la copia local donde estaba. $3 = imagen de Evolution del código nuevo.
@@ -168,6 +172,23 @@ if ./riverrun update >/dev/null 2>&1; then echo "ERROR: aplicó el cambio de ima
 ./riverrun update --accept-db-image-change >/dev/null
 [[ "$(cat VERSION)" == v5 ]]
 
+echo "== la misma etiqueta de PostgreSQL ahora fijada por digest: sigue si es la imagen que corre; si no, se detiene"
+# INF-17: el compose pasa de «pgvector/pgvector:0.8.7-pg16» a «…@sha256:…» y riverrun cambia en el mismo commit, así que
+# update se relanza con --pg-before (el texto anterior, sin digest).
+: > "$LOG"
+base="$(git rev-parse HEAD)"; git fetch -q origin; git reset -q --hard origin/main
+echo "pgvector/pgvector:0.8.7-pg16@sha256:fijada" > PG_IMAGE; echo "# imágenes por digest" >> riverrun; echo v5b > VERSION
+git add -A; git commit -qm v5b; git push -q origin HEAD:main; git reset -q --hard "$base"
+echo "pgvector/pgvector@sha256:otra" > PG_DIGESTS
+if ./riverrun update > "$work/out" 2>&1; then cat "$work/out"; echo "ERROR: aplicó otra compilación de la misma etiqueta de PostgreSQL"; exit 1; fi
+grep -q "misma etiqueta" "$work/out" && grep -q "otra compilación" "$work/out" && grep -q "accept-db-image-change" "$work/out" \
+  || { cat "$work/out"; echo "ERROR: falta el mensaje de otra compilación de la misma etiqueta"; exit 1; }
+[[ "$(cat VERSION)" == v5 ]] && ! grep -q "up -d --build" "$LOG" || { echo "ERROR: no revirtió el código"; exit 1; }
+printf '%s\n' "pgvector/pgvector@sha256:otra" "pgvector/pgvector@sha256:fijada" > PG_DIGESTS
+: > "$LOG"
+./riverrun update > "$work/out" 2>&1 || { cat "$work/out"; echo "ERROR: se detuvo aunque corre exactamente esa imagen"; exit 1; }
+[[ "$(cat VERSION)" == v5b ]] && grep -q "se continúa con el nuevo" "$work/out" || { cat "$work/out"; echo "ERROR: no aplicó por el relanzamiento"; exit 1; }
+
 echo "== con cambios hechos a mano se niega"
 echo "cambio" >> VERSION
 if ./riverrun update >/dev/null 2>&1; then echo "ERROR: actualizó con cambios locales"; exit 1; fi
@@ -177,7 +198,7 @@ echo "== la versión nueva no arrancaría con este .env: se detiene antes de apl
 : > "$LOG"; newcommit v6; touch CONFIG_MALA
 if ./riverrun update > "$work/out" 2>&1; then echo "ERROR: aplicó con configuración crítica"; exit 1; fi
 grep -q "SESSION_SECRET" "$work/out" && grep -q "No se aplicó nada" "$work/out"
-[[ "$(cat VERSION)" == v5 ]]; ! grep -q "up -d" "$LOG"; ! grep -q "backup.sh now" "$LOG"
+[[ "$(cat VERSION)" == v5b ]]; ! grep -q "up -d" "$LOG"; ! grep -q "backup.sh now" "$LOG"
 grep -q "docker tag riverrun-backend:previous plataforma-backend" "$LOG" # la imagen ya construida no queda como la actual
 rm -f CONFIG_MALA
 ./riverrun update >/dev/null; [[ "$(cat VERSION)" == v6 ]]

@@ -607,6 +607,7 @@ primero falló sin el arreglo. Quedan aparte INF-18 (opcional, no se hizo) y PAY
 - `./riverrun preflight` avisa si `REDIS_PASSWORD` está vacío y si `update` no exige firma (INF-19, INF-21). Son avisos: no bloquean.
 - Los contenedores quedan endurecidos (sin privilegios de más, la mayoría de solo lectura). Antes de producción hay que probarlo en staging con la sección 9 de [`prueba-en-staging.md`](prueba-en-staging.md); Caddy lleva un volumen nuevo (`caddy_config`) que se crea solo (INF-16).
 - Dependabot abre PR semanales para los digests de las imágenes; cada uno pasa el CI antes de `./riverrun update`. La imagen de pgvector se cambia a mano, con el procedimiento de PostgreSQL (INF-17).
+- La primera actualización con esta versión recrea PostgreSQL, Redis y Caddy (su imagen ahora se escribe con digest, aunque sea la misma): unos segundos sin servicio. Si el PostgreSQL que corre no es exactamente la compilación del digest fijado (la misma etiqueta, otra compilación: puede traer otra glibc y otra collation), `update` se detiene sin aplicar nada y explica cómo revisarlo o aceptarlo con `--accept-db-image-change` (INF-17).
 - Mandar el reporte de una conversación a un correo o teléfono externo pide el código otra vez si pasaron 15 minutos (ID-19). Una cuenta activa sin plan ni excepción tiene el tope de IA por omisión (20 USD al mes si no se cambió); un modelo sin tarifa en `ai_prices` se rechaza con tope de plataforma (AI-20, PAY-24).
 
 **Queda para después:**
