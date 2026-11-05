@@ -299,14 +299,23 @@ export async function updatesSince(threadId: string, afterRev: number) {
 export async function sweepStale(threadId?: string) {
   const scope = threadId ? ' AND thread_id = $1' : '';
   const params = threadId ? [threadId] : [];
-  await query(`UPDATE copilot_turns SET status = 'interrupted', step_label = '', finished_at = now(), error = 'Se interrumpió antes de terminar.' WHERE status = 'running' AND heartbeat_at < now() - interval '45 seconds'${scope}`, params);
+  await query(`UPDATE copilot_turns SET status = 'interrupted', step_label = '', finished_at = now(), error = 'Se interrumpió antes de terminar.' WHERE status = 'running' AND heartbeat_at < now() - make_interval(secs => ${STALE_TURN_SECONDS})${scope}`, params);
   await query(`UPDATE copilot_actions SET status = 'unknown', updated_at = now(), error = 'Se interrumpió a la mitad: revisa si se aplicó.' WHERE status IN ('executing', 'undoing') AND updated_at < now() - interval '2 minutes'${scope}`, params);
   await query(`UPDATE copilot_actions SET status = 'expired', updated_at = now() WHERE status = 'proposed' AND expires_at < now()${scope}`, params);
 }
 
+/** Un turno «en curso» sin latido en estos segundos se da por colgado. */
+const STALE_TURN_SECONDS = 45;
+const STALE_TURN_SET = `status = 'interrupted', step_label = '', finished_at = now(), error = 'Se interrumpió antes de terminar.'`;
+
 /** Turnos colgados de una persona (en cualquier conversación): así un reinicio a la mitad no la deja sin poder pedir nada. */
 export async function sweepStaleUser(userId: string) {
-  await query(`UPDATE copilot_turns SET status = 'interrupted', step_label = '', finished_at = now(), error = 'Se interrumpió antes de terminar.' WHERE status = 'running' AND user_id = $1 AND heartbeat_at < now() - interval '45 seconds'`, [userId]);
+  await query(`UPDATE copilot_turns SET ${STALE_TURN_SET} WHERE status = 'running' AND user_id = $1 AND heartbeat_at < now() - make_interval(secs => ${STALE_TURN_SECONDS})`, [userId]);
+}
+
+/** Turnos colgados de cualquier persona de la cuenta: cuentan para el tope de simultáneos y del día, así que no pueden esperar al barrido de mantenimiento. */
+export async function sweepStaleAccount(accountId: string) {
+  await query(`UPDATE copilot_turns SET ${STALE_TURN_SET} WHERE status = 'running' AND account_id = $1 AND heartbeat_at < now() - make_interval(secs => ${STALE_TURN_SECONDS})`, [accountId]);
 }
 
 /** Retención: hilos sin actividad en `COPILOT_RETENTION_DAYS` (o antes, si la cuenta guarda los mensajes menos tiempo). */

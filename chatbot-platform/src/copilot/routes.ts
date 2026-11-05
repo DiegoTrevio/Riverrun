@@ -174,6 +174,7 @@ export async function copilotRoutes(api: FastifyInstance, deps: RunnerDeps) {
     }), req.body);
     await cs.sweepStale(thread.id);
     await cs.sweepStaleUser(req.user.id);
+    await cs.sweepStaleAccount(thread.account_id);
     if (await budgetTight(thread.account_id)) throw new HttpError(409, 'El presupuesto de IA de la cuenta está por acabarse: el Copiloto se pausa para no dejar sin IA a tu agente. Revísalo en Consumo de IA.');
     const refs = (await cs.actionsByIds(b.refs, thread.id)).map((a) => a.id);
     const cookie = sessionCookie(req);
