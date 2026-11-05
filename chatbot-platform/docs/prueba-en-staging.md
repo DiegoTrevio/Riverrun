@@ -133,6 +133,26 @@ Cuando haya un cambio nuevo en `main` (o al día siguiente):
 4. **Reinicia el servidor** (`sudo reboot`) y repite `ssh usuario@IP`, `curl -I https://prueba.tudominio.com` y el
    paso 3: todo debe seguir igual después de reiniciar.
 
+## 9. Contenedores endurecidos (INF-16)
+
+Todos los servicios corren con `no-new-privileges`, sin capacidades de Linux de más (`cap_drop: [ALL]` y solo las que
+cada uno usa) y, en el backend, Caddy y Redis, con el sistema de archivos de solo lectura. Docker no se pudo probar al
+escribir el cambio: aquí se comprueba que ninguno se rompió.
+
+| Haz | Debe salir |
+|---|---|
+| `./riverrun update` | Termina sin error (respaldo, actualización y verificación de sesiones). |
+| `docker compose ps` | Los 8 servicios (con `--profile https`; `restore` solo existe con `--profile tools`) en `healthy` o `running`, ninguno reiniciándose. |
+| `docker compose logs --tail 50 backend caddy redis` | Sin «Read-only file system», «Permission denied» ni «operation not permitted». |
+| Manda un WhatsApp de prueba al número vinculado | El asistente responde. |
+| Genera el PDF de una cotización desde el panel | Se descarga un PDF con el contenido de la plantilla. |
+| `./riverrun backup` y luego `./riverrun status` | El respaldo termina sin error y `status` sale todo en verde. |
+| `docker compose exec backend sh -c 'touch /app/x'` | Falla con «Read-only file system». |
+| `docker inspect -f '{{.HostConfig.CapAdd}} {{.HostConfig.CapDrop}}' $(docker compose ps -q backend)` | `[] [ALL]` (el backend no necesita ninguna capacidad). |
+
+Si un servicio no arranca por una capacidad que falta, anota el mensaje completo: la capacidad se agrega en
+`docker-compose.yml` y en la tabla de `test/compose-hardening.test.ts`, con un comentario de por qué.
+
 ## Al terminar
 
 Anota cada sección como ✅ o ❌ con el mensaje que salió. Si todo es ✅, aplica lo mismo en producción en este orden:
