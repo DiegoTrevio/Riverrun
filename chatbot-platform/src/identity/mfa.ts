@@ -135,8 +135,8 @@ export async function sendEnrollLink(user: ChallengeUser, o: { resend?: boolean 
 }
 
 /**
- * El enlace del correo: si es el vigente de la persona del reto, el reto queda con el correo comprobado (y 15 minutos más)
- * y el enlace ya no sirve. Solo funciona en el navegador que tiene el reto: abrir un enlace que pidió otro no le abre nada.
+ * El enlace del correo: si es el vigente de la persona del reto, el reto queda con el correo comprobado (y 15 minutos más),
+ * el correo queda verificado en su cuenta y el enlace ya no sirve. Solo funciona en el navegador que tiene el reto: abrir un enlace que pidió otro no le abre nada.
  */
 export async function useEnrollLink(reply: FastifyReply, c: Challenge, token: string): Promise<boolean> {
   const used = await queryOne(
@@ -144,6 +144,9 @@ export async function useEnrollLink(reply: FastifyReply, c: Challenge, token: st
     [c.uid, sha256(token), ENROLL_LINK_MS / 1000],
   );
   if (!used) return false;
+  // El enlace llegó al correo de la cuenta: abrirlo prueba el buzón, así que el correo también queda verificado (ID-18).
+  // El correo solo cambia con la confirmación del correo nuevo, que ya lo deja verificado: el enlace no puede probar otro.
+  await store.markEmailVerified(c.uid);
   setChallenge(reply, { ...c, ev: true, ec: true, exp: Date.now() + CHALLENGE_MS });
   return true;
 }

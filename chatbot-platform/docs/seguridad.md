@@ -612,13 +612,13 @@ aparte INF-18 (opcional, no se hizo) y PAY-26 (descartado).
 | PAY-24 | Con tope de la plataforma, una tarifa propia con `per_audio_minute` volvía «de audio» un modelo que la plataforma cobra por tokens. | `per_audio_minute` solo cuenta si la plataforma ya cobra ese modelo por minuto. | `ai-platform-cap.test.ts` |
 | AI-15 | El simulador se pausaba a los 30 turnos. | El canal `playground` no cuenta para el tope, como la cuota mensual. | `agent-rules.test.ts` |
 | INF-17 | Dependabot solo lee líneas `FROM`: el `COPY --from=redis…` del respaldo nunca se actualizaba. | Etapa `FROM redis:7-alpine@sha256:… AS rediscli` y `COPY --from=rediscli`. | `compose-hardening.test.ts` |
-| ID-18 | Las apps de 2FA ya configuradas al registrarse sin verificar el correo seguían marcadas como configuradas por correo. | Migración 114: con 2FA activo y `email_verified_at` nulo, `totp_email_confirmed = false`. | `migration.test.ts` |
+| ID-18 | Quien configuraba su app con el enlace del correo (ID-16) sin tener `email_verified_at` quedaba con el correo sin verificar, y restablecer la contraseña por correo le habría quitado la app. | El enlace de enrolamiento marca el correo como verificado (`useEnrollLink`, solo si no lo estaba). No hay migración. | `identity-login.test.ts` |
 | Docs | `--pull` ya no trae parches (INF-3); la llave de `allowed_signers` era la del servidor (INF-21); una viñeta mezclaba IN-25 y AI-17; `.env.example` decía que el tope de lecturas pausa al asistente. | Corregidos: los parches llegan por los PR de Dependabot; la llave es la de la computadora de quien publica y el correo, su `user.email`; las viñetas con su ID; el tope de lecturas solo deja el archivo sin leer. | — |
 
 **Cambios que nota la gente:**
 - Un mismo cliente que manda más de 30 mensajes por hora a la IA queda en pausa una hora, sin respuesta, y el equipo recibe un aviso (una vez por hora). Los topes se cambian con `AI_TURNS_PER_CONTACT_HOUR` y `AI_MEDIA_PER_CONTACT_HOUR`: enteros ≥ 0, `0` los apaga y un valor inválido usa el de por omisión con un aviso de la revisión de configuración (AI-15).
 - El Copiloto atiende como máximo 3 pedidos a la vez por cuenta (`COPILOT_CONCURRENT_PER_ACCOUNT`; `0` = sin tope, como los demás límites); el cuarto recibe un 429 (AI-16).
-- Quien se registró antes de verificar su correo y restablece la contraseña tiene que configurar su app de autenticación otra vez (ID-18). La migración 114 lo aplica también a las apps que ya estaban configuradas así (2FA activo y correo nunca verificado).
+- Quien se registró antes de verificar su correo y restablece la contraseña tiene que configurar su app de autenticación otra vez (ID-18).
 - `./riverrun preflight` avisa si `REDIS_PASSWORD` está vacío y si `update` no exige firma (INF-19, INF-21). Son avisos: no bloquean.
 - Los contenedores quedan endurecidos (sin privilegios de más, la mayoría de solo lectura). Antes de producción hay que probarlo en staging con la sección 9 de [`prueba-en-staging.md`](prueba-en-staging.md); Caddy lleva un volumen nuevo (`caddy_config`) que se crea solo (INF-16).
 - Dependabot abre PR semanales para los digests de las imágenes; cada uno pasa el CI antes de `./riverrun update`. La imagen de pgvector se cambia a mano, con el procedimiento de PostgreSQL (INF-17).
@@ -639,7 +639,7 @@ aparte INF-18 (opcional, no se hizo) y PAY-26 (descartado).
 - ID-21: el contador que rechaza no se libera; con 10 por día en la plataforma, un tercero puede agotar el cupo de un correo (lo pide el requisito).
 - AI-15: el audio gasta su contador antes de descargarse; una conversación pausada por el tope sigue leyendo fotos hasta el tope de medios.
 - AI-16: el tope por pedido puede pasarse por la última llamada.
-- ID-18: el respaldo para cookies de reto sin `ec` (`routes/mfa.ts`) es temporal; hay que quitarlo. La migración 114 también quita la marca a quien configuró su app con el enlace por correo (ID-16) sin tener `email_verified_at` (el enlace prueba el correo pero no lo marca): tras restablecer la contraseña por correo, configura la app otra vez.
+- ID-18: el respaldo para cookies de reto sin `ec` (`routes/mfa.ts`) es temporal; hay que quitarlo. El enlace de enrolamiento marca el correo como verificado; las cuentas que se hubieran registrado con un correo ajeno antes de este cambio (producto sin lanzar) no se limpian.
 - IN-25: los correos de cobro anteriores al arreglo usan el `payment_action_url` guardado sin filtrar.
 - AI-17: un `»` en el motivo del validador cierra la comilla antes.
 - IN-24: el recorrido de `check-frontend` no tiene pruebas de casos borde (`${…}` con comillas, regex, plantillas anidadas) y no ve `{ html }` abreviado.

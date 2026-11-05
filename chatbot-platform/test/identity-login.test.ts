@@ -288,6 +288,22 @@ t('con el enlace del correo enrola normal; el enlace sirve una vez (ID-16)', asy
   assert.equal((await pool.query(`SELECT totp_email_confirmed FROM users WHERE email = 'conenlace@login.mx'`)).rows[0].totp_email_confirmed, true);
 });
 
+t('abrir el enlace del correo verifica el correo; restablecer la contraseña no quita la app (ID-18)', async () => {
+  await newUser('enlace-verifica@login.mx');
+  // Entra solo con la contraseña, sin correo verificado (como quien se registró y nunca abrió el enlace de verificación).
+  await pool.query(`UPDATE users SET email_verified_at = NULL WHERE email = 'enlace-verifica@login.mx'`);
+  const verifiedAt = async () => (await pool.query(`SELECT email_verified_at FROM users WHERE email = 'enlace-verifica@login.mx'`)).rows[0].email_verified_at;
+  const c = await challenge('enlace-verifica@login.mx', PASS);
+  assert.ok(await verifiedAt(), 'abrir el enlace del correo prueba el buzón: queda verificado');
+  await enrollWith(c);
+  const row = await userRow('enlace-verifica@login.mx');
+  assert.ok(row.totp_enabled_at);
+  assert.equal(row.totp_email_confirmed, true);
+  await resetByEmail('enlace-verifica@login.mx', 'Pz-961-Qx-962-Kv');
+  assert.ok((await userRow('enlace-verifica@login.mx')).totp_enabled_at, 'la app sigue');
+  assert.deepEqual((await login('enlace-verifica@login.mx', 'Pz-961-Qx-962-Kv')).json(), { mfa: 'verify' });
+});
+
 t('una cuenta nueva del registro (o por Google o invitación) enrola sin enlace (ID-16)', async () => {
   const s = await h.app.inject({ method: 'POST', url: '/api/signup', remoteAddress: '10.62.0.9', payload: { name: 'Lalo', company: 'Taller Lalo', business_type: 'servicios', email: 'lalo@taller.mx', password: PASS, accept_terms: true } });
   assert.equal(s.statusCode, 200, s.body);
