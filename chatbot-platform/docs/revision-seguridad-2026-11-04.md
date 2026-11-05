@@ -13,6 +13,22 @@ PAY-1…PAY-23, AI-1…AI-14 e INF-1…INF-15 siguen corregidos en el código. L
 **Plan de corrección:** [`superpowers/plans/2026-11-04-seguridad-revision-correcciones.md`](superpowers/plans/2026-11-04-seguridad-revision-correcciones.md)
 (seis PR, con las decisiones que quedan del dueño).
 
+## Estado: cada hallazgo y su corrección
+
+Cierre del programa, en la rama `claude/affectionate-curie-5p572s` (base `2e2baa9`). El detalle de cada arreglo y su
+prueba está en [`seguridad.md`](seguridad.md#revisión-del-4-de-noviembre-lo-que-se-corrigió).
+
+| Hallazgos | Grupo | Commits |
+|---|---|---|
+| INF-20 | PR 0: secretos | `2e2baa9..8e65d1e` |
+| IN-23, PAY-24, AI-15, ID-18, AI-16, PAY-25 | PR 1: medios | `8e65d1e..5f03348` |
+| INF-16, INF-17, INF-19, INF-21 | PR 2: servidor y contenedores | `5f03348..8caec51` |
+| ID-19, ID-20, ID-21, PAY-27, PAY-28, PAY-29 | PR 3: bajos de identidad y cobros | `8caec51..6cbcbc1` |
+| AI-17, AI-18, AI-19, AI-20, IN-24, IN-25, IN-26, IN-27 | PR 4: bajos de IA y entradas | `6cbcbc1..3cfa669` |
+
+**Quedó abierto:** INF-18 (AES-GCM con datos asociados; opcional, no se hizo) y PAY-26 (descartado al planear). Además,
+lo que `seguridad.md` anota en «Queda para después»: sobre todo la prueba en staging de INF-16, que falta correr.
+
 ## Herramientas automáticas
 
 | Qué | Resultado |
