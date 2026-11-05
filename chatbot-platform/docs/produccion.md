@@ -84,6 +84,14 @@ Lo que fuerza, aunque el `.env` diga otra cosa: proyecto propio (`riverrun-stagi
 
 Hace, en orden: revisar cambios locales, descargar, construir **sin arrancar**, revisar la configuración para la versión nueva, respaldar (obligatorio), levantar, verificar Evolution si cambió, y comprobar la salud funcional. Cualquier problema antes de levantar deja todo como estaba. Si la versión nueva no queda sana, vuelve sola (ver la siguiente sección). El detalle de Evolution está en [evolution-api.md](evolution-api.md).
 
+**Antes de actualizar a la versión de la revisión del 4 de noviembre (AI-20, PAY-24).** Toda cuenta activa sin plan ni excepción pasa a llevar el tope de IA por omisión (`PLAN_DEFAULT_AI_USD`, 20 USD al mes si no lo cambiaste), contando lo que ya gastó este mes; y con ese tope, los modelos de sus asistentes (`model` y respaldos) que no tengan fila en `ai_prices` se rechazan (`price_unknown`). Para ver cuáles son:
+
+```bash
+docker compose exec -T postgres psql -U chatbot -d chatbot -c "SELECT a.name FROM accounts a LEFT JOIN plans p ON p.key = a.plan WHERE a.status = 'active' AND a.active AND a.ai_usd_override IS NULL AND p.key IS NULL ORDER BY a.name"
+```
+
+A cada una dale su plan o una excepción en el panel (Cuentas → **Límites**, `ia=…` en USD al mes), o sube `PLAN_DEFAULT_AI_USD` en `.env`; y agrega en Consumo de IA → «Precios por modelo (USD)» el precio de los modelos que usen. Después de actualizar, el backend avisa al superadmin al arrancar (una vez al día) de cuántas cuentas siguen así, cuáles ya pasaron el 80 % del tope y qué modelos de sus asistentes no tienen precio.
+
 **Ventana de observación.** Después de levantar la versión nueva, `./riverrun update` la observa durante `RIVERRUN_OBSERVE_SECONDS` (120 por defecto; `0` la apaga), midiendo la salud funcional cada `RIVERRUN_OBSERVE_POLL` segundos (15 por defecto). Un fallo aislado no revierte: hacen falta dos comprobaciones seguidas malas, como en las alertas. Una falla sostenida vuelve a la versión anterior, igual que una falla al levantar. La ventana añade ese tiempo a cada actualización; si necesitas actualizar más rápido, bájala con cuidado. Lo verifica `scripts/test-cli.sh` (un fallo aislado no revierte; una falla sostenida sí; un valor inválido se rechaza antes de descargar). **Limitación:** la ventana observa la salud funcional, no el tráfico real: un fallo que solo aparece con mensajes reales no se detecta aquí.
 
 ## Firma de las actualizaciones

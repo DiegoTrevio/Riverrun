@@ -211,3 +211,42 @@ t('AI-20: una cuenta activa sin plan ni excepción también tiene el tope de IA 
     config.signup.planDefaultAiUsd = saved;
   }
 });
+
+t('AI-20: al arrancar se avisa al superadmin (una vez al día) de las cuentas activas sin plan ni excepción', async () => {
+  const { warnDefaultCapAccounts } = await import('../src/ai/budget.js');
+  const outbox = (await import('../src/mailer.js')).outbox as { to: string; subject: string; text: string }[];
+  const saved = { cap: config.signup.planDefaultAiUsd, mail: config.signup.superadminEmail };
+  config.signup.planDefaultAiUsd = 20;
+  config.signup.superadminEmail = 'plataforma@riverrun.test';
+  const toSuper = () => outbox.filter((m) => m.to === 'plataforma@riverrun.test');
+  const name = (await pool.query(`SELECT name FROM accounts WHERE id = $1`, [h.accountId])).rows[0].name as string;
+  await pool.query(`UPDATE accounts SET status = 'active', plan = '', ai_usd_override = NULL WHERE id = $1`, [h.accountId]);
+  await pool.query(`UPDATE chatbots SET ai = jsonb_set(ai, '{model}', '"proveedor/modelo-sin-precio"') WHERE id = $1`, [h.botId]);
+  await spend(17); // más del 80 % de 20 USD este mes
+  const before = toSuper().length;
+  try {
+    assert.equal(await warnDefaultCapAccounts(new Date('2026-11-05T15:00:00Z')), true);
+    const mails = toSuper().slice(before);
+    assert.equal(mails.length, 1, 'un aviso');
+    const [mail] = mails;
+    assert.match(mail.text, /\d+ cuentas? activas? sin plan ni excepción/);
+    assert.match(mail.text, /20 USD/);
+    assert.ok(mail.text.includes(name), 'nombra la cuenta que ya pasó el 80 %');
+    assert.match(mail.text, /80 %/);
+    assert.ok(mail.text.includes('proveedor/modelo-sin-precio'), 'y el modelo de su asistente sin precio en ai_prices');
+    assert.match(mail.text, /PLAN_DEFAULT_AI_USD/);
+    assert.equal(await warnDefaultCapAccounts(new Date('2026-11-05T20:00:00Z')), false, 'otro arranque el mismo día no repite');
+    assert.equal(toSuper().length - before, 1);
+    assert.equal(await warnDefaultCapAccounts(new Date('2026-11-06T15:00:00Z')), true, 'al día siguiente, otra vez');
+    // Con plan o excepción, la cuenta ya no cuenta.
+    await pool.query(`UPDATE accounts SET ai_usd_override = 50 WHERE id = $1`, [h.accountId]);
+    const n = toSuper().length;
+    await warnDefaultCapAccounts(new Date('2026-11-07T15:00:00Z'));
+    assert.ok(toSuper().slice(n).every((m) => !m.text.includes(name)));
+  } finally {
+    config.signup.planDefaultAiUsd = saved.cap;
+    config.signup.superadminEmail = saved.mail;
+    await pool.query(`UPDATE accounts SET ai_usd_override = NULL WHERE id = $1`, [h.accountId]);
+    await pool.query(`UPDATE chatbots SET ai = ai - 'model' WHERE id = $1`, [h.botId]);
+  }
+});

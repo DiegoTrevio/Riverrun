@@ -86,6 +86,9 @@ async function main() {
     const { emailSuperadmin } = await import('./platform/digest.js');
     await emailSuperadmin('Modelos de IA sin precio', text, { urgent: true });
   }).catch((e) => logEvent({ level: 'warn', source: 'system', message: `Revisión de precios de IA: ${e?.message ?? e}` }));
+  // Cuentas activas sin plan ni excepción: llevan el tope de IA por omisión (AI-20). Se avisa al superadmin una vez al día.
+  void import('./ai/budget.js').then(({ warnDefaultCapAccounts }) => warnDefaultCapAccounts())
+    .catch((e) => logEvent({ level: 'warn', source: 'system', message: `Revisión de cuentas con el tope de IA por omisión: ${e?.message ?? e}` }));
 
   // Pagos recurrentes: el cobro de cada periodo se crea unos días antes de que venza (cada hora; no se duplica).
   const plans = () => void import('./receivables/plans.js').then(({ runPlans }) => runPlans(service.receivables))

@@ -3,6 +3,7 @@ import { query, queryOne, withTransaction } from '../db.js';
 import { config } from '../config.js';
 import { logEvent } from '../logs.js';
 import { notifyUsers } from '../automation/store.js';
+import { notifyPlatform } from '../platform/digest.js';
 import { HttpError } from '../access.js';
 import type { AiProvider, CompletionRequest, CompletionResult, EmbeddingResult } from './provider.js';
 import { assertAiAllowed } from './gate.js';
@@ -81,6 +82,39 @@ export async function unpricedModels():Promise<string[]> {
  const out:string[]=[];
  for(const m of [...new Set(models.filter(Boolean))])if(!(await platformPrice(m)))out.push(m);
  return out;
+}
+/**
+ * Cuentas activas sin plan ni excepción (AI-20): llevan el tope por omisión (PLAN_DEFAULT_AI_USD; con 0, ninguno),
+ * contando lo que ya gastaron este mes, y con ese tope un modelo sin fila en ai_prices se rechaza (price_unknown,
+ * PAY-24). Al arrancar se avisa al superadmin, una vez al día (el día se aparta en system_state): cuántas son, cuáles ya
+ * pasaron el 80 % del tope y qué modelos de sus asistentes no tienen precio. Devuelve si avisó.
+ */
+export async function warnDefaultCapAccounts(now=new Date()):Promise<boolean> {
+ const cap=config.signup.planDefaultAiUsd>0?config.signup.planDefaultAiUsd:null;
+ const accounts=await query<{id:string;name:string;used:number}>(`SELECT a.id,a.name,coalesce((SELECT sum(coalesce(s.charged_usd,s.reserved_usd)) FROM ai_spend s WHERE s.account_id=a.id AND s.created_at>=date_trunc('month',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AND s.state<>'rejected'),0)::float8 AS used FROM accounts a LEFT JOIN plans p ON p.key=a.plan WHERE a.status='active' AND a.active AND a.ai_usd_override IS NULL AND p.key IS NULL ORDER BY a.name`);
+ if(!accounts.length)return false;
+ const first=await queryOne(`INSERT INTO system_state(key,value) VALUES($1,'{}') ON CONFLICT(key) DO NOTHING RETURNING key`,[`ai-default-cap:${now.toISOString().slice(0,10)}`]);
+ if(!first)return false;
+ const list=(names:string[])=>names.slice(0,20).join(', ')+(names.length>20?` y ${names.length-20} más`:'');
+ const n=accounts.length,which=`${n} cuenta${n===1?'':'s'} activa${n===1?'':'s'} sin plan ni excepción`;
+ const fix='Para cambiarlo, dales un plan o una excepción en Cuentas → Límites (ia=…), o cambia PLAN_DEFAULT_AI_USD.';
+ let title='Cuentas activas sin tope de IA',body=`${which} no tienen tope de IA de la plataforma (PLAN_DEFAULT_AI_USD = 0): ${list(accounts.map(a=>a.name))}. ${fix}`,urgent=false;
+ if(cap!==null){
+  const nearing=accounts.filter(a=>Number(a.used)>=cap*0.8);
+  const bots=await query<{model:string|null;fallbacks:string[]}>(`SELECT ai->>'model' AS model,COALESCE(ARRAY(SELECT jsonb_array_elements_text(ai->'fallback_models')),'{}') AS fallbacks FROM chatbots WHERE account_id=ANY($1::uuid[])`,[accounts.map(a=>a.id)]);
+  const models=new Set(bots.flatMap(b=>[b.model||config.openai.defaultModel,...(b.fallbacks.length?b.fallbacks:config.openai.fallbackModels)]).filter(Boolean));
+  const unpriced:string[]=[];
+  for(const m of models)if(!(await platformPrice(m)))unpriced.push(m);
+  title='Cuentas activas con el tope de IA por omisión';
+  body=[`${which} llevan el tope de IA por omisión: ${cap} USD al mes (PLAN_DEFAULT_AI_USD), contando lo que ya gastaron este mes.`,
+   nearing.length?`Ya pasaron el 80 % este mes: ${list(nearing.map(a=>`${a.name} (${Number(a.used).toFixed(2)} USD)`))}.`:'',
+   unpriced.length?`Con ese tope, estos modelos de sus asistentes no tienen precio en ai_prices y sus llamadas se rechazan: ${unpriced.join(', ')}. Agrega su precio en Consumo de IA → «Precios por modelo (USD)».`:'',
+   fix].filter(Boolean).join(' ');
+  urgent=nearing.length>0||unpriced.length>0;
+ }
+ await logEvent({level:'warn',source:'system',message:body});
+ await notifyPlatform(title,body,{urgent});
+ return true;
 }
 /** Tope de IA al mes que pone la plataforma: la excepción de la cuenta, el de su plan o el de la prueba (null = sin tope). */
 export async function platformAiCap(accountId:string,client?:import('pg').PoolClient):Promise<number|null> {
