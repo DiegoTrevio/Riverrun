@@ -61,8 +61,10 @@ test('toda imagen va por digest', () => {
   for (const m of compose.matchAll(/^x-[\w-]+-image:\s*&\S+\s+(\S+)/gm)) refs.push({ where: 'docker-compose.yml (ancla)', ref: m[1] });
   for (const file of ['Dockerfile', 'docker/backup/Dockerfile']) {
     const text = fs.readFileSync(path.join(root, file), 'utf8');
-    for (const m of text.matchAll(/^FROM\s+(?:--\S+\s+)*(\S+)/gm)) if (m[1] !== 'build') refs.push({ where: file, ref: m[1] });
-    for (const m of text.matchAll(/^COPY\s+--from=(\S+)/gm)) if (m[1] !== 'build') refs.push({ where: file, ref: m[1] });
+    const stages = new Set([...text.matchAll(/^FROM\s+.*\s+AS\s+(\S+)\s*$/gim)].map((m) => m[1]));
+    for (const m of text.matchAll(/^FROM\s+(?:--\S+\s+)*(\S+)/gm)) if (!stages.has(m[1])) refs.push({ where: file, ref: m[1] });
+    // Dependabot solo lee las líneas FROM: una imagen escrita en COPY --from se quedaría con su digest viejo para siempre.
+    for (const m of text.matchAll(/^COPY\s+--from=(\S+)/gm)) assert.ok(stages.has(m[1]), `${file}: COPY --from=${m[1]} debe copiar de una etapa con nombre (FROM <imagen>@sha256:… AS <nombre>), no de una imagen`);
   }
   assert.ok(refs.length >= 10, `se esperaban al menos 10 imágenes y hay ${refs.length}`);
   for (const { where, ref } of refs) {
