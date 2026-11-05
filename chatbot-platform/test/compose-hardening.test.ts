@@ -49,3 +49,31 @@ test('caddy guarda certificados (/data) y configuración (/config) en volúmenes
   assert.match(b, /caddy_config:\/config/);
   assert.match(compose, /^volumes:[\s\S]*^  caddy_config:/m);
 });
+
+/**
+ * INF-17: toda imagen va por digest (`etiqueta@sha256:…`), para que una etiqueta movida en Docker Hub no llegue a un servidor
+ * sin pasar por el CI. Las que vienen de una variable llevan el digest en su valor por omisión. Dependabot las actualiza.
+ */
+test('toda imagen va por digest', () => {
+  const root = path.resolve(import.meta.dirname, '..');
+  const refs: Array<{ where: string; ref: string }> = [];
+  for (const m of compose.matchAll(/^\s*image:\s*(\S+)/gm)) refs.push({ where: 'docker-compose.yml', ref: m[1] });
+  for (const m of compose.matchAll(/^x-[\w-]+-image:\s*&\S+\s+(\S+)/gm)) refs.push({ where: 'docker-compose.yml (ancla)', ref: m[1] });
+  for (const file of ['Dockerfile', 'docker/backup/Dockerfile']) {
+    const text = fs.readFileSync(path.join(root, file), 'utf8');
+    for (const m of text.matchAll(/^FROM\s+(?:--\S+\s+)*(\S+)/gm)) if (m[1] !== 'build') refs.push({ where: file, ref: m[1] });
+    for (const m of text.matchAll(/^COPY\s+--from=(\S+)/gm)) if (m[1] !== 'build') refs.push({ where: file, ref: m[1] });
+  }
+  assert.ok(refs.length >= 10, `se esperaban al menos 10 imágenes y hay ${refs.length}`);
+  for (const { where, ref } of refs) {
+    if (ref.startsWith('*')) continue; // alias de YAML: la ancla ya se revisa
+    assert.match(ref, /@sha256:[0-9a-f]{64}\}?$/, `${where}: ${ref} no va por digest`);
+  }
+});
+
+test('npm ci del Dockerfile no corre scripts de instalación', () => {
+  const text = fs.readFileSync(path.resolve(import.meta.dirname, '..', 'Dockerfile'), 'utf8');
+  const calls = text.match(/npm ci[^\n&]*/g) ?? [];
+  assert.ok(calls.length >= 1);
+  for (const c of calls) assert.match(c, /--ignore-scripts/, c);
+});
