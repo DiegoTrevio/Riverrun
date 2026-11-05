@@ -59,7 +59,7 @@ export function day(value: string | Date | null | undefined, timeZone: string): 
 // --- Enlaces al panel: solo estas rutas -------------------------------------------------------------------------------
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const BOT_TABS = new Set(['general', 'instrucciones', 'preguntas', 'activacion', 'avisos', 'cotizaciones', 'conocimiento', 'imagenes', 'conexiones', 'probar']);
+const BOT_TABS = new Set(['general', 'instrucciones', 'preguntas', 'activacion', 'avisos', 'cotizaciones', 'conocimiento', 'imagenes', 'conexiones', 'probar', 'empezar']);
 
 export const links = {
   contact: (id: string, label = 'Ver contacto'): Link => ({ label, href: `#/contact/${id}` }),

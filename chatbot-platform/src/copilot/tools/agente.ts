@@ -14,20 +14,20 @@ import { botOf, editList, fromPaths, Id, snapshot } from './common.js';
 const Text = (max: number) => z.string().trim().min(1).max(max);
 const Items = (len = 300) => z.array(Text(len)).max(10);
 
-const versions = (ctx: Ctx, botId: string) => ctx.call.get<any>(path`/api/chatbots/${botId}/versions`);
+export const versions = (ctx: Ctx, botId: string) => ctx.call.get<any>(path`/api/chatbots/${botId}/versions`);
 /** Lo que el agente usa hoy, con los valores por omisión llenos. */
-const liveOf = (bot: any, v: any) => hydrateChatbot({ ...bot, ...v.live });
-const pending = (v: any) => stableJson(v.draft?.configuration ?? {}) !== stableJson(v.draft?.base_configuration ?? {});
+export const liveOf = (bot: any, v: any) => hydrateChatbot({ ...bot, ...v.live });
+export const pending = (v: any) => stableJson(v.draft?.configuration ?? {}) !== stableJson(v.draft?.base_configuration ?? {});
 /** Cambios a medias en la página del agente: el Copiloto no los aplica de paso. */
-function noPending(v: any) {
+export function noPending(v: any) {
   if (pending(v)) throw new ToolError('conflicto', 'Este agente tiene cambios sin aplicar en su página. Aplícalos o descártalos ahí y vuelve a pedírmelo.');
 }
 /** Aplica un cambio parcial: llega de inmediato a sus canales y queda en su historial de versiones. */
-const apply = (ctx: Ctx, botId: string, v: any, patch: Record<string, unknown>) =>
+export const apply = (ctx: Ctx, botId: string, v: any, patch: Record<string, unknown>) =>
   ctx.call.send<any>('POST', path`/api/chatbots/${botId}/version-apply`, { revision: v.draft.revision, patch });
 
 /** Deshacer un cambio de configuración: solo si lo que se cambió sigue como lo dejó el Copiloto. */
-async function undoConfig(ctx: Ctx, p: { bot_id: string; before: Record<string, unknown>; after: Record<string, unknown> }) {
+export async function undoConfig(ctx: Ctx, p: { bot_id: string; before: Record<string, unknown>; after: Record<string, unknown> }) {
   const bot = await botOf(ctx, p.bot_id);
   const v = await versions(ctx, bot.id);
   noPending(v);
@@ -263,6 +263,7 @@ const knowledgeShape = (k: any) => ({ title: k.title, content: k.content, catego
 export const agregarConocimiento = defineTool({
   name: 'agregar_conocimiento',
   area: 'agente',
+  pack: 'conocimiento',
   roles: ['admin'],
   description: 'Agrega información que el agente usa para contestar (precios, horarios, políticas, preguntas frecuentes).',
   schema: z.object({ agente_id: Id, titulo: Text(200), contenido: Text(20000), categoria: Text(60).optional() }),
@@ -295,6 +296,7 @@ export const agregarConocimiento = defineTool({
 export const editarConocimiento = defineTool({
   name: 'editar_conocimiento',
   area: 'agente',
+  pack: 'conocimiento',
   roles: ['admin'],
   description: 'Cambia el título, el contenido o la categoría de un elemento del conocimiento del agente, o lo desactiva/activa.',
   schema: z.object({ agente_id: Id, conocimiento_id: Id, titulo: Text(200).optional(), contenido: Text(20000).optional(), categoria: Text(60).optional(), activo: z.boolean().optional() })
@@ -338,6 +340,7 @@ export const editarConocimiento = defineTool({
 export const borrarConocimiento = defineTool({
   name: 'borrar_conocimiento',
   area: 'agente',
+  pack: 'conocimiento',
   roles: ['admin'],
   description: 'Borra un elemento del conocimiento del agente (requiere confirmación; se puede deshacer volviéndolo a crear).',
   schema: z.object({ agente_id: Id, conocimiento_id: Id }),

@@ -8,6 +8,13 @@ alto se comprobó en el código; el de la conversión de HTML, además, midiendo
 tarjetas que nunca pasan por el servidor, firmas de los avisos de pago, CSP estricta del panel, SSRF, archivos por su
 contenido) se dejó igual.
 
+> **Noviembre: la verificación en dos pasos está apagada por ahora** (`MFA_REQUIRED=false`, el valor por defecto). Se
+> entra solo con correo y contraseña (o Google); las acciones delicadas no piden código y el Copiloto no propone las que
+> se confirman con código. Lo que dicen las etapas 2a y 2c sobre el segundo paso, la verificación reciente y el enlace al
+> correo aplica solo con `MFA_REQUIRED=true`, que la vuelve obligatoria otra vez para todos sin cambiar código (quien ya
+> había configurado su app la sigue usando; los demás la configuran al entrar). Con la verificación apagada, una
+> contraseña filtrada basta para entrar: conviene encenderla antes de abrir el registro al público.
+
 ## Etapas
 
 Cada etapa es un PR con pruebas que fallan con el código anterior y pasan con el nuevo, de lo más grave a lo menos grave.
@@ -141,7 +148,7 @@ Los medios y bajos de identidad de [la revisión del 31 de octubre](revision-seg
 | # | Hallazgo | Arreglo | Prueba |
 |---|---|---|---|
 | ID-15 | El tope de códigos se revisaba antes y se contaba solo el código malo: 200 a la vez en un reto revisaban muchos más que 5. | Cada intento se cuenta antes de revisar el código: 5 por reto, 10 por persona en una hora (después se bloquea) y uno nuevo de 5 por sesión en 15 minutos para la verificación reciente y «Cambiar de app». Un código bueno devuelve su intento. | `identity-limits.test.ts` |
-| ID-16 | El primer enrolamiento de 2FA (todas las cuentas al desplegar la 2a, tras «Restablecer 2FA», usuarios que crea un administrador) se hacía solo con la contraseña: quien la tuviera filtrada enrolaba su app primero. | Quien entra solo con la contraseña recibe un enlace al correo antes de ver el QR (token de 256 bits guardado como SHA-256, una hora, un solo uso) y solo sirve en el navegador que tiene el reto. Registro, invitación y Google ya prueban el correo. Restablecer la contraseña por correo quita una app que no se configuró por correo. Migración 108. | `identity-login.test.ts`, `test:identity:ux` |
+| ID-16 | El primer enrolamiento de 2FA (todas las cuentas al desplegar la 2a, tras «Restablecer 2FA», usuarios que crea un administrador) se hacía solo con la contraseña: quien la tuviera filtrada enrolaba su app primero. | Quien entra solo con la contraseña recibe un enlace al correo antes de ver el QR (token de 256 bits guardado como SHA-256, una hora, un solo uso) y solo sirve en el navegador que tiene el reto. Registro, invitación y Google ya prueban el correo. Restablecer la contraseña por correo quita una app que no se configuró por correo. Migración 108. *(Actualización, noviembre: se quitó el enlace al correo antes del QR; quien entra solo con la contraseña configura la app directo. Se queda lo de restablecer por correo, que quita una app configurada así.)* | `identity-login.test.ts`, `test:identity:ux` |
 | ID-17 | Al dar de baja a alguien, su Google u Outlook seguía recibiendo las citas, también si pasó a otra cuenta. | Desactivar, borrar o mover a alguien deja sus citas futuras sin asignar (antes las quita de su calendario) y desconecta su calendario; bajarle el rol no. La sincronización solo escribe en el calendario de una persona activa de la misma cuenta. | `offboarding.test.ts` |
 | Bajos | Verificación reciente en planes, cuentas, precios de IA, marcas y tipo de cambio. | Las rutas del superadmin que cambian dinero, dominios o límites piden el código reciente. | `identity-step-up.test.ts` |
 | Bajos | El agente veía la configuración de los canales y datos internos de la cuenta. | Lista blanca: del canal, nombre, tipo y estado; de la cuenta, sin límites especiales, dueño, borrado ni datos internos. | `visibility.test.ts` |
@@ -152,9 +159,14 @@ Los medios y bajos de identidad de [la revisión del 31 de octubre](revision-seg
 | Bajos | Quien pegaba su contraseña en el campo del correo la dejaba en la bitácora. | El acceso fallido guarda el correo solo si tiene forma de correo. | `identity-limits.test.ts` |
 
 **Cambios que nota la gente:**
-- Quien entra por primera vez con su contraseña (o después de «Restablecer 2FA») ve «Revisa tu correo»: abre el enlace en el mismo navegador y después escanea el QR. Hay «Mandar otro enlace».
+- Quien entra por primera vez con su contraseña (o después de «Restablecer 2FA») ve «Revisa tu correo»: abre el enlace en el mismo navegador y después escanea el QR. Hay «Mandar otro enlace». *(Actualización, noviembre: ya no; pasa directo al QR.)*
 - Al restablecer la contraseña por correo, una app de verificación configurada antes de este cambio se quita y se configura otra vez.
-- El Copiloto ya no hace nada que pida el código o que sea del dueño: lo hace la persona desde el panel.
+- El Copiloto ya no hace nada que pida el código o que sea del dueño: lo hace la persona desde el panel. *(Actualización,
+  noviembre: ahora puede hacerlo, pero solo con el código escrito en la tarjeta de esa propuesta.)*
+  - Ese código crea un permiso de un uso, atado a la persona, la sesión, la acción y sus rutas.
+  - El permiso no hace dueño a nadie.
+  - Nunca abre cobro, la cuenta entera, el perfil, llaves, secretos, planes, marcas ni sistema.
+  - Detalles en [copiloto.md](copiloto.md#riesgo); pruebas en `copilot-code.test.ts` y `copilot-grant.unit.test.ts`.
 - Dar de baja a alguien deja sus citas futuras sin asignar.
 - El enlace para borrar la cuenta sirve una vez.
 
@@ -564,7 +576,7 @@ aparte INF-18 (opcional, no se hizo) y PAY-26 (descartado).
 | IN-23 | El filtro de los `.rels` de las plantillas DOCX se saltaba con atributos en otro orden, entidades o mayúsculas. | Se lee cada `Relationship` atributo por atributo; si no se puede leer o repite un atributo, se rechaza; lo externo solo puede ser un hipervínculo. | `quotes-template.unit.test.ts` |
 | PAY-24 | Las tarifas que pone la cuenta contaban para el tope de IA de la plataforma (un administrador ponía precio 0). | Con tope de plataforma, el cobro usa las tarifas de la plataforma (el máximo, campo por campo, con las propias); sin tarifa de plataforma, `price_unknown`. | `ai-platform-cap.test.ts` |
 | AI-15 | Sin tope de respuestas de IA por contacto en WhatsApp, Telegram, Instagram y Messenger. | 30 turnos por contacto y hora (`AI_TURNS_PER_CONTACT_HOUR`): el contacto se pausa 1 h y el equipo recibe un aviso, uno por hora, sin mensaje al cliente. Además, 10 lecturas de audio, foto o documento por contacto y hora (`AI_MEDIA_PER_CONTACT_HOUR`). | `agent-rules.test.ts`, `media-library.test.ts`, `ai-gate.test.ts` |
-| ID-18 | Registrarse con el correo de otra persona dejaba una app de 2FA que restablecer la contraseña no quitaba. | El reto de login lleva si el correo está comprobado (`ec`): un registro sin verificar no cuenta como confirmado. Con enlace por correo, invitación o Google sí. | `identity-login.test.ts` |
+| ID-18 | Registrarse con el correo de otra persona dejaba una app de 2FA que restablecer la contraseña no quitaba. | El reto de login lleva si el correo está comprobado (`ec`): un registro sin verificar no cuenta como confirmado. Con invitación o Google sí. | `identity-login.test.ts` |
 | AI-16 | El tope diario del Copiloto se pasaba con hilos en paralelo. | El uso del día cuenta los pedidos en curso (a su costo máximo) y se revisa dentro de un candado por cuenta; tope de pedidos simultáneos por cuenta (`COPILOT_CONCURRENT_PER_ACCOUNT`, 3); los colgados de otras personas se barren antes de contar. | `copilot.config.test.ts` |
 | PAY-25 | La huella de la tarjeta de Mercado Pago incluía el documento que escribe el titular. | Se quita el documento (`primeros6:últimos4:MM/AAAA`); las marcas viejas se siguen reconociendo (`mpCardKeyLegacy`, a quitar en noviembre de 2028) pero no se vuelven a escribir. | `trial-claims.test.ts`, `trial-start.test.ts` |
 
@@ -585,7 +597,7 @@ aparte INF-18 (opcional, no se hizo) y PAY-26 (descartado).
 | ID-20 | Una llave de solo lectura gastaba IA con `export?refresh=true`. | `refresh` se ignora si la llave no es de escritura. | `conversation-export.test.ts` |
 | ID-21 | Una cuenta de prueba agotaba el cupo de invitaciones de un correo ajeno. | El tope de 3 por día es por cuenta y correo; en toda la plataforma, 10 por correo al día. Lo rechazado no gasta cupo. | `invitation-limits.test.ts` |
 | PAY-27 | Bajar de plan solo se revisaba al pedirlo, y sin `storage_mb`. | Se vuelve a revisar al aplicarse; si ya no cabe, el plan cambia igual, se avisa al dueño y al superadmin, y no se puede agregar más hasta ajustarlo. La revisión incluye el almacenamiento. | `billing-plan-change.test.ts` |
-| PAY-28 | Subir el precio de un plan marcaba «precio sin plan» a cada suscriptor viejo. | Se guarda el precio aceptado de cada suscripción (migración 113) y se compara contra él; una suscripción nueva con el precio viejo sí se marca. | `billing.test.ts`, `migration.test.ts` |
+| PAY-28 | Subir el precio de un plan marcaba «precio sin plan» a cada suscriptor viejo. | Se guarda el precio aceptado de cada suscripción (migración 119) y se compara contra él; una suscripción nueva con el precio viejo sí se marca. | `billing.test.ts`, `migration.test.ts` |
 | PAY-29 | El filtro de texto del agente en cobros dejaba pasar dígitos de ancho completo. | Se normaliza (NFKC) antes de buscar números y enlaces. | `receivables-e2e.test.ts` |
 
 ### PR 4: bajos de IA y entradas
@@ -612,13 +624,13 @@ aparte INF-18 (opcional, no se hizo) y PAY-26 (descartado).
 | PAY-24 | Con tope de la plataforma, una tarifa propia con `per_audio_minute` volvía «de audio» un modelo que la plataforma cobra por tokens. | `per_audio_minute` solo cuenta si la plataforma ya cobra ese modelo por minuto. | `ai-platform-cap.test.ts` |
 | AI-15 | El simulador se pausaba a los 30 turnos. | El canal `playground` no cuenta para el tope, como la cuota mensual. | `agent-rules.test.ts` |
 | INF-17 | Dependabot solo lee líneas `FROM`: el `COPY --from=redis…` del respaldo nunca se actualizaba. | Etapa `FROM redis:7-alpine@sha256:… AS rediscli` y `COPY --from=rediscli`. | `compose-hardening.test.ts` |
-| ID-18 | Quien configuraba su app con el enlace del correo (ID-16) sin tener `email_verified_at` quedaba con el correo sin verificar, y restablecer la contraseña por correo le habría quitado la app. | El enlace de enrolamiento marca el correo como verificado (`useEnrollLink`, solo si no lo estaba). No hay migración. | `identity-login.test.ts` |
+| ID-18 | Quien configuraba su app con el enlace del correo (ID-16) sin tener `email_verified_at` quedaba con el correo sin verificar, y restablecer la contraseña por correo le habría quitado la app. | El enlace de enrolamiento marcaba el correo como verificado. *(Actualización, noviembre: el enlace al correo se quitó en #125, así que esta parte ya no aplica.)* | `identity-login.test.ts` |
 | Docs | `--pull` ya no trae parches (INF-3); la llave de `allowed_signers` era la del servidor (INF-21); una viñeta mezclaba IN-25 y AI-17; `.env.example` decía que el tope de lecturas pausa al asistente. | Corregidos: los parches llegan por los PR de Dependabot; la llave es la de la computadora de quien publica y el correo, su `user.email`; las viñetas con su ID; el tope de lecturas solo deja el archivo sin leer. | — |
 
 **Cambios que nota la gente:**
 - Un mismo cliente que manda más de 30 mensajes por hora a la IA queda en pausa una hora, sin respuesta, y el equipo recibe un aviso (una vez por hora). Los topes se cambian con `AI_TURNS_PER_CONTACT_HOUR` y `AI_MEDIA_PER_CONTACT_HOUR`: enteros ≥ 0, `0` los apaga y un valor inválido usa el de por omisión con un aviso de la revisión de configuración (AI-15).
 - El Copiloto atiende como máximo 3 pedidos a la vez por cuenta (`COPILOT_CONCURRENT_PER_ACCOUNT`; `0` = sin tope, como los demás límites); el cuarto recibe un 429 (AI-16).
-- Quien se registró antes de verificar su correo, configuró su app con solo la contraseña (sin pasar por el enlace del correo) y restablece la contraseña tiene que configurar su app de autenticación otra vez; quien la configuró con el enlace del correo ya queda con el correo verificado y conserva la app (ID-18).
+- Quien se registró antes de verificar su correo, configuró su app y restablece la contraseña por correo tiene que configurar su app de autenticación otra vez (ID-18). Solo aplica con `MFA_REQUIRED=true`.
 - `./riverrun preflight` avisa si `REDIS_PASSWORD` está vacío y si `update` no exige firma (INF-19, INF-21). Son avisos: no bloquean.
 - Los contenedores quedan endurecidos (sin privilegios de más, la mayoría de solo lectura). Antes de producción hay que probarlo en staging con la sección 9 de [`prueba-en-staging.md`](prueba-en-staging.md); Caddy lleva un volumen nuevo (`caddy_config`) que se crea solo (INF-16).
 - Dependabot abre PR semanales para los digests de las imágenes; cada uno pasa el CI antes de `./riverrun update`. La imagen de pgvector se cambia a mano, con el procedimiento de PostgreSQL (INF-17).
@@ -635,11 +647,11 @@ aparte INF-18 (opcional, no se hizo) y PAY-26 (descartado).
 - Las imágenes del CI y de los scripts (trivy, pgvector de los flujos, Caddy de `test-image-smoke.sh`) siguen por etiqueta. Dependabot no limita las versiones mayores de Redis y Caddy: llegarían como PR, con CI.
 - Firma de las actualizaciones (INF-21): la protección de la rama y el archivo `allowed_signers` los configura el dueño; el camino A no dice esperar el CI del merge empujado antes de `update`.
 - PAY-25: una marca vieja de Mercado Pago con documento solo se reconoce si se vuelve a escribir el mismo documento (hasta noviembre de 2028).
-- PAY-28: una suscripción anterior a la migración 113 no tiene precio aceptado hasta su siguiente aviso o refresco; una subida de precio antes de eso la marca como hasta ahora.
+- PAY-28: una suscripción anterior a la migración 119 no tiene precio aceptado hasta su siguiente aviso o refresco; una subida de precio antes de eso la marca como hasta ahora.
 - ID-21: el contador que rechaza no se libera; con 10 por día en la plataforma, un tercero puede agotar el cupo de un correo (lo pide el requisito).
 - AI-15: el audio gasta su contador antes de descargarse; una conversación pausada por el tope sigue leyendo fotos hasta el tope de medios.
 - AI-16: el tope por pedido puede pasarse por la última llamada.
-- ID-18: el respaldo para cookies de reto sin `ec` (`routes/mfa.ts`) es temporal; hay que quitarlo. El enlace de enrolamiento marca el correo como verificado; las cuentas que se hubieran registrado con un correo ajeno antes de este cambio (producto sin lanzar) no se limpian.
+- ID-18: el respaldo para cookies de reto sin `ec` (`routes/mfa.ts`) es temporal; hay que quitarlo. Las cuentas que se hubieran registrado con un correo ajeno antes de este cambio (producto sin lanzar) no se limpian.
 - IN-25: los correos de cobro anteriores al arreglo usan el `payment_action_url` guardado sin filtrar.
 - AI-17: un `»` en el motivo del validador cierra la comilla antes.
 - IN-24: el recorrido de `check-frontend` no tiene pruebas de casos borde (`${…}` con comillas, regex, plantillas anidadas) y no ve `{ html }` abreviado.

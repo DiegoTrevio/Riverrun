@@ -102,3 +102,13 @@ button.cp-thread:hover, button.cp-thread.active { background: var(--raised); }
 .sidebar button.nav-item { width: 100%; border: 0; background: transparent; font: inherit; text-align: left; justify-content: flex-start; cursor: pointer; }
 .sidebar button.nav-item[aria-expanded="true"] { background: var(--accent-soft); color: var(--accent-ink); }
 .sidebar button.nav-item[aria-expanded="true"] .icon { color: var(--accent); }
+
+/* Confirmar con código: el campo va en la tarjeta (nunca en el chat), a 16px para que el teléfono no haga zoom. */
+.cp-code-row { display: grid; gap: 6px; margin: 8px 0 0; }
+.cp-code { width: 100%; max-width: 16ch; font-size: 16px; letter-spacing: .12em; font-variant-numeric: tabular-nums; }
+
+/* Adjuntar: el clip siempre; «Tomar foto» solo en pantallas táctiles (en la computadora no hay cámara que abrir). */
+.cp-composer-bar .cp-attach, .cp-composer-bar .cp-camera { flex: 0 0 auto; }
+.cp-composer-bar .cp-camera { display: none; }
+@media (pointer: coarse) { .cp-composer-bar .cp-camera { display: inline-flex; } }
+.cp-chip.file .icon { color: var(--muted); }

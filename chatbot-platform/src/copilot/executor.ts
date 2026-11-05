@@ -3,6 +3,8 @@
  * sesión de quien la pidió. Así los permisos, la validación, los límites y los efectos son los mismos que en el panel.
  * El modelo nunca elige la URL ni el método: las herramientas arman su ruta con `path` (ids validados).
  */
+import { randomBytes } from 'node:crypto';
+
 export type ToolErrorCode = 'datos_invalidos' | 'sin_permiso' | 'no_encontrado' | 'conflicto' | 'limite' | 'error' | 'sesion' | 'no_disponible';
 
 export class ToolError extends Error {
@@ -14,7 +16,7 @@ export class ToolError extends Error {
 export type Inject = (o: {
   method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   url: string;
-  payload?: string;
+  payload?: string | Buffer;
   headers: Record<string, string>;
   remoteAddress?: string;
 }) => Promise<{ statusCode: number; body: string }>;
@@ -22,6 +24,8 @@ export type Inject = (o: {
 export interface Caller {
   get<T = any>(url: string): Promise<T>;
   send<T = any>(method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', url: string, body?: unknown): Promise<T>;
+  /** Sube un archivo adjunto (multipart) a una ruta del panel que recibe formularios. */
+  upload<T = any>(url: string, file: { buffer: Buffer; name: string; mime: string }, fields?: Record<string, string | number | boolean>, field?: string): Promise<T>;
 }
 
 /** Parte de una ruta: solo ids, números y nombres simples (nunca una barra, un `..` ni un `?` del modelo). */
@@ -69,9 +73,14 @@ export function keepAccount<T>(value: T, accountId: string): T {
   return value;
 }
 
-export function makeCaller(o: { inject: Inject; cookie: string; accountId: string; superadmin: boolean; ip?: string; actionId?: string }): Caller {
-  // x-copilot: las rutas delicadas y las del dueño no las hace el Copiloto (las rechazan aunque haya código reciente).
-  const headers: Record<string, string> = { cookie: o.cookie, 'user-agent': 'riverrun-copilot', 'x-copilot': '1', ...(o.actionId ? { 'x-copilot-action': o.actionId } : {}) };
+export function makeCaller(o: { inject: Inject; cookie: string; accountId: string; superadmin: boolean; ip?: string; actionId?: string; grant?: string }): Caller {
+  // x-copilot: las rutas delicadas y las del dueño no las hace el Copiloto (las rechazan aunque haya código reciente),
+  // salvo con el permiso de un uso que da el código escrito en la tarjeta (`grant`, solo al confirmar esa propuesta).
+  const headers: Record<string, string> = {
+    cookie: o.cookie, 'user-agent': 'riverrun-copilot', 'x-copilot': '1',
+    ...(o.actionId ? { 'x-copilot-action': o.actionId } : {}),
+    ...(o.grant && o.actionId ? { 'x-copilot-grant': o.grant } : {}),
+  };
   // El superadmin trabaja en la cuenta del hilo: cada llamada la lleva en la consulta (y en el cuerpo, donde la leen).
   const scoped = (url: string) => (o.superadmin ? url + (url.includes('?') ? '&' : '?') + `account_id=${encodeURIComponent(o.accountId)}` : url);
   const withAccount = (body: unknown) => (o.superadmin && body && typeof body === 'object' && !Array.isArray(body) && !('account_id' in (body as object)) ? { ...(body as object), account_id: o.accountId } : body);
@@ -87,6 +96,31 @@ export function makeCaller(o: { inject: Inject; cookie: string; accountId: strin
     const issues = Array.isArray(json?.issues) ? json.issues.map(String).slice(0, 8) : [];
     throw new ToolError(code, message, issues, res.statusCode);
   }
+  /**
+   * Sube un archivo adjunto a una ruta del panel que recibe formularios (multipart): el cuerpo lo arma el servidor con los
+   * bytes del archivo; el modelo solo eligió el `archivo_id`.
+   */
+  async function upload(url: string, file: { buffer: Buffer; name: string; mime: string }, fields: Record<string, string | number | boolean> = {}, field = 'file') {
+    if (!url.startsWith('/api/')) throw new ToolError('no_disponible', 'Ruta no permitida');
+    const boundary = `----riverrun${randomBytes(16).toString('hex')}`;
+    const parts: Buffer[] = [];
+    const all = o.superadmin && !('account_id' in fields) ? { ...fields, account_id: o.accountId } : fields;
+    for (const [k, v] of Object.entries(all)) {
+      const value = String(v);
+      if (!/^[a-z_]{1,40}$/.test(k) || value.includes(boundary)) throw new ToolError('datos_invalidos', 'Campo no válido');
+      parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${value}\r\n`));
+    }
+    if (!/^[a-z_]{1,40}$/.test(field)) throw new ToolError('datos_invalidos', 'Campo no válido');
+    const filename = file.name.replace(/["\\\r\n]/g, '').slice(0, 120) || 'archivo';
+    const mime = /^[\w.+-]+\/[\w.+-]+$/.test(file.mime) ? file.mime : 'application/octet-stream';
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${field}"; filename="${filename}"\r\nContent-Type: ${mime}\r\n\r\n`), file.buffer, Buffer.from(`\r\n--${boundary}--\r\n`));
+    const res = await o.inject({ method: 'POST', url: scoped(url), payload: Buffer.concat(parts), headers: { ...headers, 'content-type': `multipart/form-data; boundary=${boundary}` }, remoteAddress: o.ip });
+    let json: any = null;
+    try { json = res.body ? JSON.parse(res.body) : null; } catch { json = null; }
+    if (res.statusCode >= 200 && res.statusCode < 300) return json;
+    const code = MESSAGES[res.statusCode] ?? 'error';
+    throw new ToolError(code, typeof json?.error === 'string' ? json.error : 'No se pudo subir el archivo', Array.isArray(json?.issues) ? json.issues.map(String).slice(0, 8) : [], res.statusCode);
+  }
   return {
     async get(url) {
       const json = await call('GET', url);
@@ -95,5 +129,6 @@ export function makeCaller(o: { inject: Inject; cookie: string; accountId: strin
     async send(method, url, body) {
       return call(method, url, body);
     },
+    upload,
   };
 }

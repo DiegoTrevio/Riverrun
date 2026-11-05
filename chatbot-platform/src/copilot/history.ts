@@ -5,6 +5,8 @@
  */
 import type { AnyMessage } from '../ai/provider.js';
 import { actionLine, tidy } from './prompt.js';
+import { forModel } from './summarize.js';
+import { fileLine, type CopilotFile } from './files.js';
 import type { Action, Message } from './store.js';
 
 /** Turnos que se repiten completos (con los resultados de sus herramientas). */
@@ -15,15 +17,29 @@ const MAX_TOOL = 3000;
 const RECENT_TURNS = 2;
 const OLD_TOOL = 800;
 
-function userText(m: Message, actions: Map<string, Action>): string {
+function userText(m: Message, actions: Map<string, Action>, files: Map<string, CopilotFile>): string {
   const text = m.redacted ? '(mensaje borrado)' : m.content;
   const refs = (m.refs ?? []).map((id) => actions.get(id)).filter((a): a is Action => !!a);
-  return refs.length ? `${text}\n\n[Se refiere a estas acciones]\n${refs.map(actionLine).join('\n')}` : text;
+  const attached = m.redacted ? [] : (m.files ?? []).map((id) => files.get(id)).filter((f): f is CopilotFile => !!f);
+  return [
+    text,
+    refs.length ? `[Se refiere a estas acciones]\n${refs.map(actionLine).join('\n')}` : '',
+    // Las herramientas que reciben archivos piden su archivo_id; el contenido nunca va en el prompt.
+    attached.length ? `[Archivos adjuntos]\n${attached.map(fileLine).join('\n')}` : '',
+  ].filter(Boolean).join('\n\n');
 }
 
-function toModel(m: Message, actions: Map<string, Action>, toolMax = MAX_TOOL): AnyMessage | null {
-  if (m.role === 'user') return { role: 'user', content: userText(m, actions) };
-  if (m.role === 'event') return { role: 'user', content: `${NOTICE} ${m.redacted ? '(borrado)' : tidy(m.content, 300)}` };
+/** Aviso del panel; si es de una propuesta confirmada, con su resultado (el id de lo creado, para seguir trabajando). */
+function noticeText(m: Message, actions: Map<string, Action>): string {
+  if (m.redacted) return `${NOTICE} (borrado)`;
+  const a = m.refs?.length ? actions.get(m.refs[0]) : undefined;
+  const result = a && a.status === 'done' && a.result != null ? `\nResultado: ${forModel(a.result, 1200)}` : '';
+  return `${NOTICE} ${tidy(m.content, 300)}${result}`;
+}
+
+function toModel(m: Message, actions: Map<string, Action>, toolMax = MAX_TOOL, files: Map<string, CopilotFile> = new Map()): AnyMessage | null {
+  if (m.role === 'user') return { role: 'user', content: userText(m, actions, files) };
+  if (m.role === 'event') return { role: 'user', content: noticeText(m, actions) };
   if (m.role === 'assistant') {
     if (m.tool_calls?.length) return { role: 'assistant', content: m.content || null, tool_calls: m.tool_calls };
     return m.content ? { role: 'assistant', content: m.content } : null;
@@ -61,24 +77,43 @@ function repair(list: AnyMessage[]): AnyMessage[] {
   return out;
 }
 
-/**
- * `tainted`: ids de los turnos que leyeron texto de clientes. En los turnos viejos (fuera de los completos) solo quedan
- * lo que pidió la persona y los avisos del panel: lo que respondió el asistente puede repetir texto escrito por un cliente.
- */
-export function buildHistory(messages: Message[], actions: Action[], tainted: Set<string> = new Set()): AnyMessage[] {
-  const byId = new Map(actions.map((a) => [a.id, a]));
-  // Cada mensaje de la persona abre un turno; lo demás (pasos, resultados, avisos de confirmación) va con el turno abierto.
+/** Cada mensaje de la persona abre un turno; lo demás (pasos, resultados, avisos de confirmación) va con el turno abierto. */
+function groupTurns(messages: Message[]): Message[][] {
   const turns: Message[][] = [];
   for (const m of messages) {
     if (m.role === 'user' || !turns.length) turns.push([]);
     turns[turns.length - 1].push(m);
   }
+  return turns;
+}
+
+/**
+ * Herramientas cuyas llamadas se repiten completas en el historial: sus paquetes tienen que ir en el pedido (un
+ * proveedor rechaza una llamada a una herramienta que no está en la lista).
+ */
+export function replayedToolNames(messages: Message[]): Set<string> {
+  const names = new Set<string>();
+  for (const t of groupTurns(messages).slice(-FULL_TURNS)) {
+    for (const m of t) if (m.role === 'assistant') for (const c of m.tool_calls ?? []) names.add(c.name);
+  }
+  return names;
+}
+
+/**
+ * `files`: los archivos adjuntos del hilo. `tainted`: ids de los turnos que leyeron texto de clientes. En los turnos viejos
+ * (fuera de los completos) solo quedan lo que pidió la persona y los avisos del panel: lo que respondió el asistente puede
+ * repetir texto escrito por un cliente.
+ */
+export function buildHistory(messages: Message[], actions: Action[], files: CopilotFile[] = [], tainted: Set<string> = new Set()): AnyMessage[] {
+  const byId = new Map(actions.map((a) => [a.id, a]));
+  const fileById = new Map(files.map((f) => [f.id, f]));
+  const turns = groupTurns(messages);
   const rendered = turns.map((t, i) => {
     const full = i >= turns.length - FULL_TURNS;
     const toolMax = i >= turns.length - RECENT_TURNS ? MAX_TOOL : OLD_TOOL;
     const dirty = !full && !!t[0].turn_id && tainted.has(t[0].turn_id);
     const kept = full ? t : t.filter((m) => m.role === 'user' || m.role === 'event' || (!dirty && m.role === 'assistant' && !m.tool_calls?.length && !!m.content));
-    return repair(kept.map((m) => toModel(m, byId, toolMax)).filter((m): m is AnyMessage => !!m));
+    return repair(kept.map((m) => toModel(m, byId, toolMax, fileById)).filter((m): m is AnyMessage => !!m));
   });
   // Tope de tamaño: se quitan los turnos más viejos (siempre queda el último).
   const size = (t: AnyMessage[]) => t.reduce((n, m) => n + JSON.stringify(m).length, 0);

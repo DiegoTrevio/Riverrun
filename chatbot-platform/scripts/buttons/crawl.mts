@@ -122,7 +122,7 @@ async function session(context: BrowserContext, base: string, log: (m: string) =
   const describe = (fx: any, beforeHash: string) => [
     ev.requests.length ? `peticiones: ${ev.requests.map((r) => `${r.method()} ${new URL(r.url()).pathname}`).join(', ')}` : '',
     fx.hash && fx.hash !== beforeHash ? `navega a ${fx.hash}` : '', fx.external ? `salió a ${fx.external}` : '',
-    fx.mutations ? `cambió la página (${fx.mutations})` : '', fx.stateChanged ? 'cambió su estado' : '', fx.focusMoved ? 'movió el foco' : '', fx.scrolled ? 'desplazó la página' : '',
+    fx.mutations ? `cambió la página (${fx.mutations})` : '', fx.stateChanged ? 'cambió su estado' : '', fx.focusMoved ? 'movió el foco' : '', fx.fieldFilled ? 'llenó el campo con el foco' : '', fx.scrolled ? 'desplazó la página' : '',
     fx.dialogOpened ? `abrió el diálogo «${fx.dialogTitle}»` : '', fx.clipboard ? 'copió al portapapeles' : '', fx.printed ? 'imprimió' : '',
     ...(fx.opened || []).map((u: string) => `abrió ${u}`), ...ev.popups.map((u) => `ventana ${u}`), ...ev.downloads.map((f) => `descargó ${f}`),
     ev.files ? 'pidió un archivo' : '', ...ev.native.map((m) => `diálogo nativo ${m}`), fx.toast ? `aviso «${fx.toast}»` : '',

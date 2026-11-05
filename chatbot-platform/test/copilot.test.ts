@@ -71,15 +71,18 @@ after(async () => {
   if (ok) await h.app.close();
 });
 
-t('el Copiloto se enciende por cuenta: apagado responde 403 y /api/me lo dice', async () => {
+t('el Copiloto viene encendido (migración 114); el superadmin lo apaga por cuenta y apagado responde 403', async () => {
+  assert.equal((await owner('GET', '/api/me')).json().copilot.enabled, true, 'encendido por omisión');
+  assert.equal((await owner('GET', '/api/copilot/threads')).statusCode, 200);
+  assert.equal((await owner('PUT', `/api/accounts/${h.accountId}`, { copilot_enabled: false })).statusCode, 403, 'solo el superadmin lo apaga');
+  assert.equal((await h.authed('PUT', `/api/accounts/${h.accountId}`, { copilot_enabled: false })).statusCode, 200);
   assert.equal((await owner('GET', '/api/me')).json().copilot.enabled, false);
   assert.equal((await owner('GET', '/api/copilot/threads')).statusCode, 403);
-  assert.equal((await owner('PUT', `/api/accounts/${h.accountId}`, { copilot_enabled: true })).statusCode, 403, 'solo el superadmin lo enciende');
   assert.equal((await h.authed('PUT', `/api/accounts/${h.accountId}`, { copilot_enabled: true })).statusCode, 200);
   assert.equal((await owner('GET', '/api/me')).json().copilot.enabled, true);
   assert.equal((await owner('GET', '/api/copilot/threads')).statusCode, 200);
-  const logs = await pool.query(`SELECT message FROM event_logs WHERE account_id = $1 AND message LIKE '%Copiloto encendido%'`, [h.accountId]);
-  assert.equal(logs.rowCount, 1);
+  const logs = await pool.query(`SELECT message FROM event_logs WHERE account_id = $1 AND message ~ 'Copiloto (apagado|encendido)'`, [h.accountId]);
+  assert.equal(logs.rowCount, 2);
 });
 
 t('etiquetar: se aplica, queda en la bitácora con quién, se deshace una vez y no dos', async () => {
@@ -529,4 +532,231 @@ t('sin costo del proveedor, el tope por pedido usa el estimado con ai_prices y l
     else await pool.query(`DELETE FROM ai_prices WHERE model = $1`, [model]);
     await pool.query(`UPDATE copilot_turns SET cost_usd = 0 WHERE account_id = $1`, [h.accountId]);
   }
+});
+
+t('acción larga: mientras renueva su plazo sigue «ejecutándose»; con el plazo vencido pasa a «no sabemos»', async () => {
+  const cs = await import('../src/copilot/store.js');
+  const id = await thread(owner);
+  script(['Listo.']);
+  const turnId = (await ask(owner, id, 'Hola')).turn.id;
+  const insert = (lease: string | null) => pool.query(
+    `INSERT INTO copilot_actions (thread_id, turn_id, account_id, user_id, tool, risk, status, updated_at, lease_until)
+     SELECT $1, $2, $3, user_id, 'etiquetar', 'reversible', 'executing', now() - interval '10 minutes', ${lease ?? 'NULL'}
+       FROM copilot_threads WHERE id = $1 RETURNING id, rev`,
+    [id, turnId, h.accountId],
+  ).then((r) => r.rows[0] as { id: string; rev: string });
+  const vivo = await insert(`now() + interval '60 seconds'`);
+  const vencido = await insert(`now() - interval '1 second'`);
+  const viejo = await insert(null); // de antes de la migración 113: sin plazo, vale el de 2 minutos
+  await cs.renewLease(vivo.id);
+  const renovado = (await pool.query(`SELECT rev, lease_until > now() + interval '80 seconds' AS largo FROM copilot_actions WHERE id = $1`, [vivo.id])).rows[0];
+  assert.equal(renovado.rev, vivo.rev, 'renovar el plazo no es novedad para el panel');
+  assert.equal(renovado.largo, true);
+  await owner('GET', `/api/copilot/threads/${id}/updates?after_rev=0`);
+  const status = async (a: { id: string }) => (await pool.query(`SELECT status FROM copilot_actions WHERE id = $1`, [a.id])).rows[0].status;
+  assert.equal(await status(vivo), 'executing');
+  assert.equal(await status(vencido), 'unknown');
+  assert.equal(await status(viejo), 'unknown');
+  // withLease renueva mientras corre y deja de hacerlo al terminar.
+  assert.equal(await cs.withLease(vivo.id, async () => 'hecho'), 'hecho');
+  await pool.query(`DELETE FROM copilot_actions WHERE id = ANY($1::uuid[])`, [[vivo.id, vencido.id, viejo.id]]);
+});
+
+t('paquetes: la página carga su área; una herramienta de otra área se carga sola; usar_herramientas no deja tarjeta', async () => {
+  // Este archivo hace muchos pedidos con la misma persona: aquí no cuenta el tope por hora.
+  await withLimits({ turnsPerHour: 1000 }, async () => {
+    const names = (i: number) => ((h.copilotCalls[i] as any).tools as any[]).map((x) => x.name);
+    // Sin página: solo el núcleo.
+    let id = await thread(owner);
+    h.copilotCalls.length = 0;
+    script(['Hola.']);
+    await ask(owner, id, 'Hola');
+    assert.ok(names(0).includes('buscar_contactos') && names(0).includes('usar_herramientas'));
+    assert.ok(!names(0).includes('crear_cita'), 'la agenda no va si no hace falta');
+
+    // En la agenda: sus herramientas van desde el primer paso.
+    id = await thread(owner);
+    h.copilotCalls.length = 0;
+    script(['Listo.']);
+    await ask(owner, id, '¿Qué citas hay?', { page: { hash: '#/agenda' } });
+    assert.ok(names(0).includes('crear_cita') && names(0).includes('horarios_libres'));
+
+    // Una herramienta de otra área con argumentos válidos se ejecuta y el siguiente paso ya la trae.
+    id = await thread(owner);
+    h.copilotCalls.length = 0;
+    script([call('ver_oportunidades', {}), 'Listo.']);
+    const r = await ask(owner, id, 'Muéstrame las oportunidades');
+    assert.ok(!names(0).includes('ver_oportunidades'));
+    assert.ok(names(1).includes('ver_oportunidades'), 'el siguiente paso trae su esquema');
+    assert.equal(r.actions.find((a: any) => a.tool === 'ver_oportunidades')?.status, 'done');
+
+    // El siguiente pedido de la misma conversación conserva el paquete.
+    h.copilotCalls.length = 0;
+    script(['Ok.']);
+    await ask(owner, id, 'Gracias');
+    assert.ok(names(0).includes('ver_oportunidades'), 'el pedido siguiente lo conserva');
+
+    // usar_herramientas: carga las áreas que pidió, sin dejar tarjeta en la conversación.
+    id = await thread(owner);
+    h.copilotCalls.length = 0;
+    script([call('usar_herramientas', { areas: ['cobros', 'cotizaciones'] }), 'Listo.']);
+    const u = await ask(owner, id, 'Voy a revisar cobros y cotizaciones');
+    assert.ok(names(1).includes('crear_cobro') || names(1).includes('ver_cotizaciones'));
+    assert.ok(names(1).includes('ver_cotizaciones'));
+    assert.equal(u.actions.filter((a: any) => a.tool === 'usar_herramientas').length, 0, 'no deja tarjeta');
+    const turn = (await pool.query(`SELECT packs FROM copilot_turns WHERE thread_id = $1 ORDER BY started_at DESC LIMIT 1`, [id])).rows[0];
+    assert.ok(turn.packs.includes('cotizaciones'));
+
+    // Con argumentos inválidos y el paquete sin cargar: no se ejecuta, pero el siguiente paso ya trae el esquema.
+    id = await thread(owner);
+    h.copilotCalls.length = 0;
+    script([call('crear_cita', { nada: true }), 'No pude.']);
+    const bad = await ask(owner, id, 'Agenda algo');
+    assert.equal(bad.actions.filter((a: any) => a.tool === 'crear_cita').length, 0);
+    assert.ok(names(1).includes('crear_cita'));
+    const toolMsg = (await pool.query(`SELECT content FROM copilot_messages WHERE thread_id = $1 AND role = 'tool'`, [id])).rows[0].content;
+    assert.match(toolMsg, /Ya cargué su esquema/);
+  });
+});
+
+t('«Confirmar y seguir»: al confirmar la última propuesta, el Copiloto sigue solo con lo que anotó (con el resultado a la vista)', async () => {
+  await withLimits({ turnsPerHour: 1000 }, async () => {
+    const id = await thread(owner);
+    h.copilotCalls.length = 0;
+    script([
+      call('enviar_mensaje', { conversacion_id: ana.id, texto: 'Hola Ana, ya quedó tu pedido.' }),
+      call('seguir_al_confirmar', { faltan: 'Etiquetar a Ana como «avisada»' }),
+      'Te dejé el mensaje para confirmar; luego la etiqueto.',
+      // Lo que hace la continuación:
+      call('etiquetar', { contacto_ids: [ana.contact_id], agregar: ['avisada'] }),
+      'Listo: la etiqueté como avisada.',
+    ]);
+    const r = await ask(owner, id, 'Avísale a Ana que ya quedó su pedido y luego etiquétala como avisada');
+    assert.equal(r.turn.continue_plan, 'Etiquetar a Ana como avisada', JSON.stringify(r.turn));
+    assert.equal(r.actions.filter((a: any) => a.tool === 'seguir_al_confirmar').length, 0, 'anotar no deja tarjeta');
+    const p = r.actions.find((a: any) => a.tool === 'enviar_mensaje');
+    const c = await owner('POST', `/api/copilot/actions/${p.id}/confirm`, { seen_hash: p.seen_hash, seguir: true });
+    assert.equal(c.statusCode, 200, c.body);
+    const continued = c.json().continued_turn;
+    assert.ok(continued, 'arrancó la continuación');
+    assert.equal(continued.origin, 'continuation');
+    await waitFor(async () => (await owner('GET', `/api/copilot/threads/${id}`)).json().turn?.status !== 'running', 8000);
+    const after = (await owner('GET', `/api/copilot/threads/${id}`)).json();
+    assert.equal(after.turn.id, continued.id);
+    assert.ok(after.actions.some((a: any) => a.tool === 'etiquetar' && a.status === 'done'), 'siguió y etiquetó');
+    assert.ok((await contact(ana.contact_id)).tags.includes('avisada'));
+    const row = (await pool.query(`SELECT parent_turn_id, chain_depth FROM copilot_turns WHERE id = $1`, [continued.id])).rows[0];
+    assert.equal(row.parent_turn_id, r.turn.id);
+    assert.equal(row.chain_depth, 1);
+    // La continuación vio lo que anotó y el resultado de lo confirmado.
+    const first = h.copilotCalls.find((x: any) => JSON.stringify(x.messages).includes('Sigues el pedido anterior')) as any;
+    assert.ok(first, 'las instrucciones dicen que sigue el pedido anterior');
+    const last = first.messages.at(-1);
+    assert.equal(last.role, 'user');
+    assert.match(String(last.content), /Confirmaste: .*Resultado: /s);
+  });
+});
+
+t('«Confirmar y seguir»: no sigue sin «seguir», con otra propuesta pendiente, ni pasado el tope de continuaciones', async () => {
+  await withLimits({ turnsPerHour: 1000 }, async () => {
+    const proposeTwo = async () => {
+      const id = await thread(owner);
+      script([
+        { tool_calls: [{ name: 'enviar_mensaje', arguments: { conversacion_id: ana.id, texto: 'Uno' } }, { name: 'enviar_mensaje', arguments: { conversacion_id: beto.id, texto: 'Dos' } }] },
+        call('seguir_al_confirmar', { faltan: 'Etiquetar a los dos' }),
+        'Revisa las tarjetas.',
+      ]);
+      const r = await ask(owner, id, 'Manda los dos mensajes y etiquétalos');
+      return r.actions.filter((a: any) => a.tool === 'enviar_mensaje');
+    };
+    const [a, b] = await proposeTwo();
+    const first = (await owner('POST', `/api/copilot/actions/${a.id}/confirm`, { seen_hash: a.seen_hash, seguir: true })).json();
+    assert.equal(first.continued_turn, null, 'queda otra propuesta pendiente: todavía no sigue');
+    const second = (await owner('POST', `/api/copilot/actions/${b.id}/decline`, {})).json();
+    assert.equal(second.status, 'declined');
+
+    const [c, d] = await proposeTwo();
+    await owner('POST', `/api/copilot/actions/${c.id}/decline`, {});
+    const noFollow = (await owner('POST', `/api/copilot/actions/${d.id}/confirm`, { seen_hash: d.seen_hash })).json();
+    assert.equal(noFollow.continued_turn, null, 'sin «seguir» no sigue');
+
+    const [e, f] = await proposeTwo();
+    await owner('POST', `/api/copilot/actions/${e.id}/decline`, {});
+    await withLimits({ maxContinuations: 0 }, async () => {
+      const capped = (await owner('POST', `/api/copilot/actions/${f.id}/confirm`, { seen_hash: f.seen_hash, seguir: true })).json();
+      assert.equal(capped.continued_turn, null, 'con el tope en 0 no sigue');
+    });
+  });
+});
+
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+
+/** Sube un archivo a una conversación del Copiloto como lo hace el panel (multipart). */
+async function uploadTo(req: Req, threadId: string, name: string, bytes: Buffer, type = 'image/png') {
+  const boundary = '----prueba' + Math.random().toString(16).slice(2);
+  const body = Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\nContent-Type: ${type}\r\n\r\n`),
+    bytes, Buffer.from(`\r\n--${boundary}--\r\n`),
+  ]);
+  return h.app.inject({ method: 'POST', url: `/api/copilot/threads/${threadId}/files`, payload: body, headers: { cookie: req.cookie, 'content-type': `multipart/form-data; boundary=${boundary}` } });
+}
+
+t('archivos: se adjuntan a la conversación, el modelo ve su archivo_id (nunca el contenido) y se borran con ella', async () => {
+  await withLimits({ turnsPerHour: 1000 }, async () => {
+    const fs = await import('node:fs/promises');
+    const { attachmentAbsolutePath } = await import('../src/attachments.js');
+    const id = await thread(owner);
+    const up = await uploadTo(owner, id, 'menu del dia.png', PNG);
+    assert.equal(up.statusCode, 200, up.body);
+    const file = up.json();
+    assert.equal(file.kind, 'image');
+    assert.equal((await uploadTo(owner, id, 'pagina.html', Buffer.from('<html><script>alert(1)</script></html>'), 'text/html')).statusCode, 400, 'HTML no');
+    // La conversación de otra persona no existe para quien sube.
+    assert.equal((await uploadTo(agent, id, 'x.png', PNG)).statusCode, 404);
+
+    h.copilotCalls.length = 0;
+    script(['Recibí la foto del menú.']);
+    const r = await owner('POST', `/api/copilot/threads/${id}/messages`, { text: '', files: [file.id] });
+    assert.equal(r.statusCode, 202, r.body);
+    await waitFor(async () => (await owner('GET', `/api/copilot/threads/${id}`)).json().turn?.status !== 'running', 8000);
+    const sent = JSON.stringify((h.copilotCalls[0] as any).messages);
+    assert.match(sent, new RegExp(`archivo_id ${file.id}`));
+    assert.match(sent, /menu del dia\.png/);
+    assert.ok(!sent.includes(PNG.toString('base64')), 'los bytes nunca van al modelo');
+    const shown = (await owner('GET', `/api/copilot/threads/${id}`)).json();
+    assert.deepEqual(shown.messages.find((m: any) => m.role === 'user').files, [file.id]);
+    assert.equal(shown.files[0].name, 'menu del dia.png');
+
+    // Un id que no es de esta conversación (o ya venció) no se acepta.
+    await pool.query(`UPDATE copilot_files SET expires_at = now() - interval '1 minute' WHERE id = $1`, [file.id]);
+    const stale = await owner('POST', `/api/copilot/threads/${id}/messages`, { text: 'otra vez', files: [file.id] });
+    assert.equal(stale.statusCode, 400, stale.body);
+    assert.equal((await owner('GET', `/api/copilot/files/${file.id}`)).statusCode, 404, 'vencido no se descarga');
+
+    // Una herramienta sube el archivo a una ruta del panel (multipart armado por el servidor).
+    const fresh = (await uploadTo(owner, id, 'logo.png', PNG)).json();
+    const { makeCaller } = await import('../src/copilot/executor.js');
+    const caller = makeCaller({ inject: (o) => h.app.inject(o as any).then((x) => ({ statusCode: x.statusCode, body: x.body })), cookie: owner.cookie, accountId: h.accountId, superadmin: false });
+    const saved = await caller.upload('/api/attachments', { buffer: PNG, name: 'logo "raro"\r\n.png', mime: 'image/png' });
+    assert.ok(saved.id, JSON.stringify(saved));
+
+    // Borrar la conversación borra sus archivos, del disco también.
+    const row = (await pool.query(`SELECT file_path FROM copilot_files WHERE id = $1`, [fresh.id])).rows[0];
+    await fs.access(attachmentAbsolutePath(row.file_path));
+    assert.equal((await owner('DELETE', `/api/copilot/threads/${id}`)).statusCode, 200);
+    assert.equal((await pool.query(`SELECT 1 FROM copilot_files WHERE thread_id = $1`, [id])).rowCount, 0);
+    await assert.rejects(fs.access(attachmentAbsolutePath(row.file_path)), 'el archivo ya no está en disco');
+  });
+});
+
+t('archivos: la limpieza borra los vencidos (fila y disco)', async () => {
+  const fs = await import('node:fs/promises');
+  const { attachmentAbsolutePath } = await import('../src/attachments.js');
+  const { sweepCopilotFiles } = await import('../src/copilot/files.js');
+  const id = await thread(owner);
+  const f = (await uploadTo(owner, id, 'viejo.png', PNG)).json();
+  const row = (await pool.query(`UPDATE copilot_files SET expires_at = now() - interval '1 minute' WHERE id = $1 RETURNING file_path`, [f.id])).rows[0];
+  await sweepCopilotFiles();
+  assert.equal((await pool.query(`SELECT 1 FROM copilot_files WHERE id = $1`, [f.id])).rowCount, 0);
+  await assert.rejects(fs.access(attachmentAbsolutePath(row.file_path)));
 });

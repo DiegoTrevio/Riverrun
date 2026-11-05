@@ -6,23 +6,31 @@ import { createHash } from 'node:crypto';
 import type pg from 'pg';
 import { deleteInBatches, query, queryOne } from '../db.js';
 import { config } from '../config.js';
+import { removeAttachmentFile } from '../attachments.js';
+import { deleteThreadFiles } from './files.js';
 
 export type TurnStatus = 'running' | 'done' | 'stopped' | 'failed' | 'interrupted';
-export type Risk = 'read' | 'reversible' | 'confirm';
+export type Risk = 'read' | 'reversible' | 'confirm' | 'code';
 export type ActionStatus = 'proposed' | 'executing' | 'done' | 'failed' | 'declined' | 'expired' | 'undoing' | 'undone' | 'unknown';
 
 export interface Thread { id: string; account_id: string; user_id: string; title: string; created_at: Date; updated_at: Date; rev: string }
-export interface Page { hash?: string; kind?: string; id?: string; label?: string; area?: string }
+export interface Page { hash?: string; kind?: string; id?: string; label?: string; area?: string; tab?: string }
 export interface Turn {
   id: string; thread_id: string; account_id: string; user_id: string; status: TurnStatus; page: Page; step_label: string; model: string;
   steps: number; tool_calls: number; input_tokens: number; cached_tokens: number; output_tokens: number; cost_usd: string;
   tainted: boolean; contact_ids: string[]; error: string; cancel_requested_at: Date | null; heartbeat_at: Date;
   started_at: Date; finished_at: Date | null; rev: string;
+  /** Paquetes de herramientas que tuvo cargados (el siguiente pedido los conserva; migración 115). */
+  packs: string[];
+  /** «Confirmar y seguir» (migración 116): de dónde salió, de qué pedido sigue y lo que anotó que faltaba. */
+  origin: 'user' | 'continuation'; parent_turn_id: string | null; chain_depth: number; continue_plan: string;
 }
 export interface StoredToolCall { id: string; name: string; arguments: string }
 export interface Message {
   id: string; thread_id: string; turn_id: string | null; role: 'user' | 'assistant' | 'tool' | 'event'; content: string;
   tool_calls: StoredToolCall[] | null; tool_call_id: string | null; refs: string[]; redacted: boolean; created_at: Date; rev: string;
+  /** Archivos adjuntos a este mensaje (migración 118). */
+  files: string[];
 }
 export interface Link { label: string; href: string }
 /** Lo que ve quien revisa o confirma una acción: lo arma el servidor, nunca el modelo. */
@@ -46,6 +54,8 @@ export interface Action {
   preview: Preview | null; result: unknown; links: Link[]; before: unknown; after: unknown; undo: UndoRecipe | null;
   undo_until: Date | null; contact_ids: string[]; error: string; expires_at: Date | null; confirmed_at: Date | null;
   executed_at: Date | null; undone_at: Date | null; created_at: Date; updated_at: Date; rev: string;
+  /** Hasta cuándo sigue viva la ejecución en curso (quien la corre lo renueva; migración 113). */
+  lease_until: Date | null;
 }
 
 type Db = Pick<pg.PoolClient, 'query'>;
@@ -92,19 +102,28 @@ export async function touchThread(id: string, title?: string) {
 }
 
 export async function deleteThread(id: string) {
+  // Sus archivos adjuntos, del disco también (las filas se irían en cascada, los archivos no).
+  await deleteThreadFiles(id);
   await query(`DELETE FROM copilot_threads WHERE id = $1`, [id]);
 }
 
 // --- Turnos ----------------------------------------------------------------------------------------------------------
 
 /**
- * Abre un turno; `null` si ya hay uno en curso en ese hilo o de esa persona (índices únicos parciales).
- * Con `client` corre dentro de la transacción de quien llama (el candado de la cuenta).
+ * Abre un turno; `null` si ya hay uno en curso en ese hilo o de esa persona (índices únicos parciales). `follow`: es la
+ * continuación de otro turno («Confirmar y seguir»). Con `client` corre dentro de la transacción de quien llama (el
+ * candado de la cuenta).
  */
-export async function startTurn(thread: Thread, page: Page, model: string, client?: pg.PoolClient): Promise<Turn | null> {
+export async function startTurn(
+  thread: Thread, page: Page, model: string,
+  follow?: { parent: Pick<Turn, 'id' | 'chain_depth' | 'contact_ids'> },
+  client?: pg.PoolClient,
+): Promise<Turn | null> {
   // ON CONFLICT DO NOTHING: una violación única no aborta la transacción de quien llama.
-  const sql = `INSERT INTO copilot_turns (thread_id, account_id, user_id, page, model) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING RETURNING *`;
-  const params = [thread.id, thread.account_id, thread.user_id, JSON.stringify(page), model];
+  const sql = `INSERT INTO copilot_turns (thread_id, account_id, user_id, page, model, origin, parent_turn_id, chain_depth, contact_ids)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT DO NOTHING RETURNING *`;
+  const params = [thread.id, thread.account_id, thread.user_id, JSON.stringify(page), model,
+    follow ? 'continuation' : 'user', follow?.parent.id ?? null, follow ? follow.parent.chain_depth + 1 : 0, follow?.parent.contact_ids ?? []];
   if (client) return (await client.query<Turn>(sql, params)).rows[0] ?? null;
   return queryOne<Turn>(sql, params);
 }
@@ -139,11 +158,35 @@ export async function countToolCall(id: string) {
 }
 
 /** Marca que el turno leyó texto de clientes y qué contactos tocó (para la privacidad y el alcance). */
-export async function markTurn(id: string, o: { tainted?: boolean; contactIds?: string[] }) {
+export async function markTurn(id: string, o: { tainted?: boolean; contactIds?: string[]; packs?: string[] }) {
   await query(
-    `UPDATE copilot_turns SET tainted = tainted OR $2, contact_ids = ARRAY(SELECT DISTINCT unnest(contact_ids || $3::uuid[])) WHERE id = $1`,
-    [id, !!o.tainted, o.contactIds ?? []],
+    `UPDATE copilot_turns SET tainted = tainted OR $2, contact_ids = ARRAY(SELECT DISTINCT unnest(contact_ids || $3::uuid[])),
+            packs = CASE WHEN $4::text[] IS NULL THEN packs ELSE $4::text[] END WHERE id = $1`,
+    [id, !!o.tainted, o.contactIds ?? [], o.packs ?? null],
   );
+}
+
+/** Lo que el pedido anotó que falta para cuando se confirme su propuesta («Confirmar y seguir»). */
+export async function setContinuePlan(id: string, plan: string) {
+  await query(`UPDATE copilot_turns SET continue_plan = $2 WHERE id = $1`, [id, plan.slice(0, 300)]);
+}
+
+/** Propuestas de la conversación que esperan el código de verificación. */
+export async function pendingCodeProposals(threadId: string): Promise<number> {
+  return (await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM copilot_actions WHERE thread_id = $1 AND risk = 'code' AND status = 'proposed' AND expires_at > now()`, [threadId]))!.n;
+}
+
+/** Propuestas de ese pedido que siguen esperando confirmación. */
+export async function pendingProposals(turnId: string): Promise<number> {
+  return (await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM copilot_actions WHERE turn_id = $1 AND status = 'proposed' AND expires_at > now()`, [turnId]))!.n;
+}
+
+/** Paquetes que tuvo cargados el pedido anterior del hilo (el nuevo los conserva). */
+export async function previousPacks(threadId: string, exceptTurnId: string): Promise<string[]> {
+  return (await queryOne<{ packs: string[] }>(
+    `SELECT packs FROM copilot_turns WHERE thread_id = $1 AND id <> $2 ORDER BY started_at DESC LIMIT 1`,
+    [threadId, exceptTurnId],
+  ))?.packs ?? [];
 }
 
 export async function finishTurn(id: string, status: Exclude<TurnStatus, 'running'>, error = '') {
@@ -195,10 +238,10 @@ export async function recentTurns(userId: string, accountId: string, client?: pg
 
 // --- Mensajes --------------------------------------------------------------------------------------------------------
 
-export async function addMessage(m: { thread_id: string; turn_id?: string | null; role: Message['role']; content?: string; tool_calls?: StoredToolCall[] | null; tool_call_id?: string | null; refs?: string[] }): Promise<Message> {
+export async function addMessage(m: { thread_id: string; turn_id?: string | null; role: Message['role']; content?: string; tool_calls?: StoredToolCall[] | null; tool_call_id?: string | null; refs?: string[]; files?: string[] }): Promise<Message> {
   return (await queryOne<Message>(
-    `INSERT INTO copilot_messages (thread_id, turn_id, role, content, tool_calls, tool_call_id, refs) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-    [m.thread_id, m.turn_id ?? null, m.role, m.content ?? '', m.tool_calls ? JSON.stringify(m.tool_calls) : null, m.tool_call_id ?? null, m.refs ?? []],
+    `INSERT INTO copilot_messages (thread_id, turn_id, role, content, tool_calls, tool_call_id, refs, files) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+    [m.thread_id, m.turn_id ?? null, m.role, m.content ?? '', m.tool_calls ? JSON.stringify(m.tool_calls) : null, m.tool_call_id ?? null, m.refs ?? [], m.files ?? []],
   ))!;
 }
 
@@ -210,7 +253,11 @@ export async function threadMessages(threadId: string, limit = 400): Promise<Mes
 // --- Acciones --------------------------------------------------------------------------------------------------------
 
 const ACTION_JSON = new Set(['args', 'risk_reasons', 'preview', 'result', 'links', 'before', 'after', 'undo']);
-const ACTION_COLUMNS = new Set(['tool_call_id', 'tool', 'args', 'args_hash', 'risk', 'risk_reasons', 'status', 'title', 'preview', 'result', 'links', 'before', 'after', 'undo', 'undo_until', 'contact_ids', 'error', 'expires_at', 'confirmed_at', 'executed_at', 'undone_at']);
+const ACTION_COLUMNS = new Set(['tool_call_id', 'tool', 'args', 'args_hash', 'risk', 'risk_reasons', 'status', 'title', 'preview', 'result', 'links', 'before', 'after', 'undo', 'undo_until', 'contact_ids', 'error', 'expires_at', 'confirmed_at', 'executed_at', 'undone_at', 'lease_until']);
+
+/** Cuánto vive la ejecución de una acción sin renovarse, y cada cuánto se renueva mientras corre. */
+const LEASE_SECONDS = 90;
+const LEASE_RENEW_MS = 30_000;
 
 function columns(patch: Record<string, unknown>, from: number) {
   const keys = Object.keys(patch).filter((k) => ACTION_COLUMNS.has(k) && patch[k] !== undefined);
@@ -225,6 +272,8 @@ export type NewAction = Partial<Action> & Pick<Action, 'thread_id' | 'turn_id' |
 
 export async function insertAction(a: NewAction): Promise<Action> {
   const base = { thread_id: a.thread_id, turn_id: a.turn_id, account_id: a.account_id, user_id: a.user_id };
+  // La que nace ejecutándose ya trae su plazo (lo renueva `withLease` mientras corre).
+  if (a.status === 'executing' && !a.lease_until) a = { ...a, lease_until: new Date(Date.now() + LEASE_SECONDS * 1000) };
   const c = columns(a as Record<string, unknown>, 5);
   return (await queryOne<Action>(
     `INSERT INTO copilot_actions (thread_id, turn_id, account_id, user_id${c.keys.length ? ', ' + c.keys.join(', ') : ''})
@@ -256,19 +305,41 @@ export async function ownAction(id: string, userId: string, accountId: string): 
  */
 export async function claimProposal(id: string, userId: string, seenHash: string): Promise<Action | null> {
   return queryOne<Action>(
-    `UPDATE copilot_actions SET status = 'executing', confirmed_at = now(), updated_at = now()
+    `UPDATE copilot_actions SET status = 'executing', confirmed_at = now(), updated_at = now(), lease_until = now() + make_interval(secs => $4)
       WHERE id = $1 AND user_id = $2 AND status = 'proposed' AND expires_at > now() AND args_hash = $3 RETURNING *`,
-    [id, userId, seenHash],
+    [id, userId, seenHash, LEASE_SECONDS],
   );
 }
 
 /** Toma una acción hecha para deshacerla (una sola vez a la vez). */
 export async function claimUndo(id: string, userId: string): Promise<Action | null> {
   return queryOne<Action>(
-    `UPDATE copilot_actions SET status = 'undoing', updated_at = now()
+    `UPDATE copilot_actions SET status = 'undoing', updated_at = now(), lease_until = now() + make_interval(secs => $3)
       WHERE id = $1 AND user_id = $2 AND status = 'done' AND undo IS NOT NULL AND undo_until > now() RETURNING *`,
-    [id, userId],
+    [id, userId, LEASE_SECONDS],
   );
+}
+
+/** Renueva el plazo de una acción que sigue corriendo (no mueve `rev`: no es novedad para el panel). */
+export async function renewLease(id: string) {
+  await query(
+    `UPDATE copilot_actions SET lease_until = now() + make_interval(secs => $2) WHERE id = $1 AND status IN ('executing', 'undoing')`,
+    [id, LEASE_SECONDS],
+  );
+}
+
+/**
+ * Corre `fn` renovando el plazo de la acción cada 30 s: así una herramienta que tarda (con IA por dentro) no pasa a «no
+ * sabemos si se aplicó» mientras sigue trabajando. Si el proceso se cae, el plazo vence y la limpieza la marca.
+ */
+export async function withLease<T>(id: string, fn: () => Promise<T>): Promise<T> {
+  const timer = setInterval(() => { void renewLease(id).catch(() => undefined); }, LEASE_RENEW_MS);
+  timer.unref?.();
+  try {
+    return await fn();
+  } finally {
+    clearInterval(timer);
+  }
 }
 
 export async function turnActions(turnId: string): Promise<Action[]> {
@@ -306,7 +377,8 @@ export async function sweepStale(threadId?: string) {
   const scope = threadId ? ' AND thread_id = $1' : '';
   const params = threadId ? [threadId] : [];
   await query(`UPDATE copilot_turns SET status = 'interrupted', step_label = '', finished_at = now(), error = 'Se interrumpió antes de terminar.' WHERE status = 'running' AND heartbeat_at < now() - make_interval(secs => ${STALE_TURN_SECONDS})${scope}`, params);
-  await query(`UPDATE copilot_actions SET status = 'unknown', updated_at = now(), error = 'Se interrumpió a la mitad: revisa si se aplicó.' WHERE status IN ('executing', 'undoing') AND updated_at < now() - interval '2 minutes'${scope}`, params);
+  // Solo cuando venció su plazo (nadie la está renovando): una acción larga que sigue corriendo no se toca.
+  await query(`UPDATE copilot_actions SET status = 'unknown', updated_at = now(), error = 'Se interrumpió a la mitad: revisa si se aplicó.' WHERE status IN ('executing', 'undoing') AND coalesce(lease_until, updated_at + interval '2 minutes') < now()${scope}`, params);
   await query(`UPDATE copilot_actions SET status = 'expired', updated_at = now() WHERE status = 'proposed' AND expires_at < now()${scope}`, params);
 }
 
@@ -340,7 +412,13 @@ export async function redactContact(db: Db, contactId: string) {
   const turns = (await db.query(`SELECT id, thread_id FROM copilot_turns WHERE $1 = ANY(contact_ids)`, [contactId])).rows as { id: string; thread_id: string }[];
   const turnIds = turns.map((t) => t.id);
   if (turnIds.length) {
-    await db.query(`UPDATE copilot_messages SET content = '', tool_calls = NULL, redacted = true WHERE turn_id = ANY($1::uuid[])`, [turnIds]);
+    // Lo que se adjuntó en esos pedidos (una foto o un documento del cliente) se borra también.
+    const files = (await db.query(
+      `DELETE FROM copilot_files WHERE id IN (SELECT unnest(files) FROM copilot_messages WHERE turn_id = ANY($1::uuid[])) RETURNING file_path`,
+      [turnIds],
+    )).rows as { file_path: string }[];
+    await Promise.all(files.map((f) => removeAttachmentFile(f.file_path)));
+    await db.query(`UPDATE copilot_messages SET content = '', tool_calls = NULL, redacted = true, files = '{}' WHERE turn_id = ANY($1::uuid[])`, [turnIds]);
     await db.query(`UPDATE copilot_threads SET title = '' WHERE id = ANY($1::uuid[])`, [[...new Set(turns.map((t) => t.thread_id))]]);
   }
   const actions = (await db.query(

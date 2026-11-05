@@ -1,11 +1,57 @@
-/** Herramientas del Copiloto sobre la cuenta en general: lo básico y las etiquetas en uso. */
+/** Herramientas del Copiloto sobre la cuenta en general: lo básico, las etiquetas en uso y cargar herramientas de otra área. */
 import { z } from 'zod';
-import { defineTool } from '../registry.js';
+import { defineTool, PACK_IDS, type Pack } from '../registry.js';
 import { accountSnapshot } from '../prompt.js';
+
+const AREAS = PACK_IDS.filter((p) => p !== 'base') as [Pack, ...Pack[]];
+
+/** Carga paquetes de herramientas en este pedido: las de esas áreas quedan disponibles desde el siguiente paso. */
+export const usarHerramientas = defineTool({
+  name: 'usar_herramientas',
+  area: 'cuenta',
+  pack: 'base',
+  meta: true,
+  roles: ['admin', 'agent'],
+  description: 'Carga las herramientas de otras áreas (ver «Herramientas por área» en tus instrucciones) para usarlas en los siguientes pasos.',
+  schema: z.object({ areas: z.array(z.enum(AREAS)).min(1).max(4) }),
+  label: () => 'Preparando herramientas…',
+  risk: () => 'read',
+  async execute(a, ctx) {
+    const names = ctx.loadPacks?.(a.areas) ?? [];
+    return {
+      title: `Cargué herramientas de ${a.areas.join(', ')}`,
+      data: names.length ? { cargadas: a.areas, herramientas: names } : { cargadas: [], nota: 'Tu usuario no tiene herramientas en esas áreas.' },
+    };
+  },
+});
+
+/**
+ * «Confirmar y seguir»: cuando un pedido de varios pasos queda esperando una confirmación, anota lo que falta; al
+ * confirmarse, el Copiloto sigue solo con eso (con el resultado de lo confirmado a la vista).
+ */
+export const seguirAlConfirmar = defineTool({
+  name: 'seguir_al_confirmar',
+  area: 'cuenta',
+  pack: 'base',
+  meta: true,
+  roles: ['admin', 'agent'],
+  description: 'Si dejaste algo por confirmar y el pedido tiene más pasos, anota lo que falta: al confirmarse, sigues solo con eso.',
+  schema: z.object({ faltan: z.string().trim().min(3).max(300) }),
+  label: () => 'Anotando lo que sigue…',
+  risk: () => 'read',
+  async execute(a, ctx) {
+    const ok = (await ctx.planContinuation?.(a.faltan)) ?? false;
+    return {
+      title: 'Anoté lo que sigue',
+      data: ok ? { estado: 'anotado', nota: 'Al confirmarse lo pendiente, sigo con esto.' } : { estado: 'sin_pendientes', nota: 'Primero deja la propuesta por confirmar; después anota lo que falta.' },
+    };
+  },
+});
 
 export const contextoCuenta = defineTool({
   name: 'contexto_cuenta',
   area: 'cuenta',
+  pack: 'base',
   roles: ['admin', 'agent'],
   description: 'Lo básico de la cuenta, al día: agentes, embudos con sus etapas, servicios de la agenda, datos de clientes, secuencias y equipo (con sus ids).',
   schema: z.object({}),
@@ -19,6 +65,7 @@ export const contextoCuenta = defineTool({
 export const contarEtiquetas = defineTool({
   name: 'contar_etiquetas',
   area: 'contactos',
+  pack: 'base',
   roles: ['admin', 'agent'],
   description: 'Etiquetas en uso en los contactos y cuántos contactos tiene cada una.',
   schema: z.object({}),
@@ -30,4 +77,4 @@ export const contarEtiquetas = defineTool({
   },
 });
 
-export const ACCOUNT_TOOLS = [contextoCuenta, contarEtiquetas];
+export const ACCOUNT_TOOLS = [contextoCuenta, contarEtiquetas, usarHerramientas, seguirAlConfirmar];

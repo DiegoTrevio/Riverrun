@@ -152,7 +152,8 @@ export const config = {
   },
   /**
    * Copiloto: el ayudante con IA del panel que hace cambios por quien se lo pide (docs/copiloto.md). Además de este
-   * interruptor general, cada cuenta lo enciende en Cuentas (`accounts.copilot_enabled`).
+   * interruptor general, cada cuenta lo tiene encendido por omisión y se puede apagar en Cuentas
+   * (`accounts.copilot_enabled`, migración 114).
    */
   copilot: {
     enabled: env('COPILOT_ENABLED', 'true') === 'true',
@@ -160,12 +161,22 @@ export const config = {
     model: env('OPENROUTER_COPILOT_MODEL', useOpenRouter ? 'deepseek/deepseek-v4.1-flash-1017' : 'gpt-4.1'),
     /** Respaldos del Copiloto (deben saber usar herramientas); vacío o "none" = ninguno. */
     fallbackModels: env('OPENROUTER_COPILOT_FALLBACK_MODELS', '').split(',').map((m) => m.trim()).filter((m) => m && m !== 'none'),
-    maxSteps: Number(env('COPILOT_MAX_STEPS', '8')),
-    maxToolCalls: Number(env('COPILOT_MAX_TOOL_CALLS', '20')),
-    maxChanges: Number(env('COPILOT_MAX_CHANGES', '15')),
-    maxProposals: Number(env('COPILOT_MAX_PROPOSALS', '5')),
-    turnSeconds: Number(env('COPILOT_TURN_SECONDS', '180')),
-    turnMaxUsd: Number(env('COPILOT_TURN_MAX_USD', '0.5')),
+    // Topes por pedido: alcanzan para armar un agente completo (crearlo, sus preguntas, su flujo) en un solo pedido.
+    maxSteps: Number(env('COPILOT_MAX_STEPS', '16')),
+    maxToolCalls: Number(env('COPILOT_MAX_TOOL_CALLS', '40')),
+    maxChanges: Number(env('COPILOT_MAX_CHANGES', '30')),
+    maxProposals: Number(env('COPILOT_MAX_PROPOSALS', '8')),
+    turnSeconds: Number(env('COPILOT_TURN_SECONDS', '300')),
+    turnMaxUsd: Number(env('COPILOT_TURN_MAX_USD', '1')),
+    /** Herramientas por paquetes (núcleo + los que hacen falta); false = todas en cada paso, como antes. */
+    toolPacks: env('COPILOT_TOOL_PACKS', 'true') !== 'false',
+    /** Horas que vive un archivo adjunto al Copiloto (foto, PDF, CSV). */
+    fileHours: Math.max(1, Number(env('COPILOT_FILE_HOURS', '24')) || 24),
+    /** Acciones delicadas que se confirman con el código escrito en la tarjeta; false = el Copiloto no las propone. */
+    // Sin verificación en dos pasos no hay código que escribir: el Copiloto no propone esas acciones.
+    codeActions: env('COPILOT_CODE_ACTIONS', 'true') !== 'false' && env('MFA_REQUIRED', 'false') === 'true',
+    /** «Confirmar y seguir»: cuántas continuaciones seguidas puede encadenar un pedido (0 = nunca sigue solo). */
+    maxContinuations: Math.max(0, Number(env('COPILOT_MAX_CONTINUATIONS', '4')) || 0),
     turnsPerHour: Number(env('COPILOT_TURNS_PER_HOUR', '30')),
     /** Pedidos al Copiloto en curso a la vez por cuenta (AI-16). 0 = sin tope; un valor inválido usa 3 (y se avisa). */
     concurrentPerAccount: capValue('COPILOT_CONCURRENT_PER_ACCOUNT', env('COPILOT_CONCURRENT_PER_ACCOUNT')),
@@ -215,6 +226,13 @@ export const config = {
     resendApiKey: env('RESEND_API_KEY', ''),
     provider: (env('SMTP_URL', '') ? 'smtp' : env('RESEND_API_KEY', '') ? 'resend' : '') as 'smtp' | 'resend' | '',
     from: env('MAIL_FROM', 'Chatbots <no-responder@localhost>'),
+  },
+  /**
+   * Verificación en dos pasos (código de una app de autenticación). Apagada (por defecto): se entra solo con correo y
+   * contraseña (o Google), y las acciones delicadas no piden código. MFA_REQUIRED=true la vuelve obligatoria.
+   */
+  mfa: {
+    required: env('MFA_REQUIRED', 'false') === 'true',
   },
   /** Autoregistro de empresas. */
   signup: {

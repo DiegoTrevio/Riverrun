@@ -365,6 +365,70 @@ code { background: var(--raised); color: var(--text); padding: 1px 6px; border-r
 /* Las regiones de aviso siempre existen (el lector las conoce); vacías no se ven ni estorban. */
 .toast:empty { opacity: 0; pointer-events: none; padding: 0; box-shadow: none; }
 .login { max-width: 380px; margin: 12vh auto; }
+
+/* ---------- Pantallas públicas (entrar, registro, recuperar, verificación en dos pasos) ----------
+   Dos mitades: un campo plano del color de la marca, con qué hace el producto y una conversación de ejemplo, y el
+   formulario sobre la superficie. Con marca blanca el campo toma su color y su tinta (brand.js). En el teléfono el campo
+   es una franja arriba, sin la conversación. Sin degradados ni sombras: el campo y sus tonos separan las superficies. */
+.auth {
+  --auth-field: var(--brand-accent, #0f6b7a);
+  --auth-ink: var(--brand-foreground, #ffffff);
+  display: grid; grid-template-columns: minmax(440px, 46%) 1fr; min-height: 100vh; min-height: 100dvh; background: var(--surface);
+}
+.auth-brand {
+  position: sticky; top: 0; height: 100vh; height: 100dvh; overflow: hidden;
+  display: flex; flex-direction: column; gap: 40px; padding: clamp(32px, 4vw, 64px);
+  background: var(--auth-field); color: var(--auth-ink);
+}
+.auth-wordmark { display: flex; align-items: center; gap: 12px; font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
+.auth-wordmark .brand-mark { width: 36px; height: 36px; color: color-mix(in srgb, var(--auth-field) 55%, #000); }
+.auth-logo { display: inline-flex; padding: 8px 12px; border-radius: 8px; background: #ffffff; }
+.auth-pitch { max-width: 34em; margin-top: auto; }
+.auth-statement { margin: 0; font-size: clamp(26px, 2.5vw, 36px); line-height: 1.12; font-weight: 650; letter-spacing: -0.025em; text-wrap: balance; }
+.auth-lede { margin: 16px 0 0; font-size: 17px; line-height: 1.55; max-width: 32em; }
+.auth-chat {
+  margin-bottom: auto; width: min(100%, 440px); padding: 16px; border-radius: 16px;
+  background: color-mix(in srgb, var(--auth-field) 78%, #000); color: #131416;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.auth-chat-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 0 4px 6px; color: var(--auth-ink); font-size: 14px; }
+.auth-chat-head span { font-size: 13px; opacity: .85; }
+.auth-bubble { margin: 0; max-width: 84%; padding: 9px 12px 7px; border-radius: 12px; font-size: 14px; line-height: 1.45; background: #ffffff; animation: auth-bubble .45s cubic-bezier(.2, .7, .2, 1) both; animation-delay: calc(var(--i) * 700ms + 400ms); }
+.auth-bubble.in { align-self: flex-start; border-bottom-left-radius: 4px; }
+.auth-bubble.out { align-self: flex-end; border-bottom-right-radius: 4px; background: color-mix(in srgb, var(--auth-field) 16%, #ffffff); }
+.auth-bubble time { display: block; margin-top: 2px; text-align: right; font-size: 11px; color: #4b4f55; }
+@keyframes auth-bubble { from { opacity: 0; transform: translateY(12px); } }
+.auth-chat.played .auth-bubble { animation: none; }
+@media (prefers-reduced-motion: reduce) { .auth-bubble { animation: none; } }
+
+.auth-pane { display: grid; place-items: center; padding: 56px clamp(24px, 5vw, 72px); }
+.auth .card.login { width: 100%; max-width: 420px; margin: 0; padding: 0; border: 0; background: transparent; }
+.auth .card.login h1 { margin: 0 0 6px; font-size: 30px; line-height: 1.15; font-weight: 650; letter-spacing: -0.02em; }
+/* El foco se pone en el título para los lectores de pantalla; el título no es un control, no lleva el anillo. */
+.auth h1[tabindex="-1"]:focus { outline: none; }
+.auth-sub { margin: 0 0 28px; color: var(--muted); font-size: 15px; }
+.auth .field > span { font-size: 14px; }
+.auth input:not([type=checkbox]):not([type=radio]), .auth select { min-height: 46px; font-size: 16px; border-radius: 8px; }
+.auth-forgot { margin: -6px 0 20px; text-align: right; font-size: 14px; }
+.auth .card.login button.primary { margin-bottom: 16px; }
+.auth button.wide, .auth .btn.wide, .auth .card.login button.primary { display: flex; width: 100%; min-height: 48px; justify-content: center; align-items: center; font-size: 16px; font-weight: 600; border-radius: 8px; }
+.auth-or { margin: 16px 0 12px; text-align: center; color: var(--muted); font-size: 14px; }
+.auth-signup { margin: 28px 0 0; padding: 16px 18px; border-radius: 8px; background: var(--accent-soft); color: var(--text); font-size: 15px; }
+.auth-signup:empty { display: none; }
+.auth-signup a { font-weight: 600; }
+
+@media (max-width: 900px) {
+  .auth { grid-template-columns: 1fr; align-content: start; }
+  .auth-brand { position: static; height: auto; gap: 20px; padding: 20px 20px 28px; }
+  .auth-wordmark { font-size: 18px; }
+  .auth-wordmark .brand-mark { width: 30px; height: 30px; }
+  .auth-statement { font-size: 24px; }
+  .auth-lede { margin-top: 10px; font-size: 15px; }
+  .auth-pitch { margin-top: 0; }
+  .auth-chat { display: none; }
+  .auth-pane { place-items: start center; padding: 32px 20px 48px; }
+  .auth .card.login h1 { font-size: 26px; }
+}
 .qr { max-width: 280px; background: #fff; padding: 12px; border-radius: var(--radius-card); border: 1px solid var(--line); }
 .log-error td { color: var(--negative); }
 .log-warn td { color: var(--warning); }

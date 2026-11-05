@@ -13,3 +13,6 @@ id_ed25519*
 *.dump
 node_modules/
 .DS_Store
+
+# Capturas e informes del inspector de diseño (skill design-taste-frontend): se generan, no se guardan.
+.taste-skill/

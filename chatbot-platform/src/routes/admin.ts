@@ -149,7 +149,7 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     const owner = account ? await accountOwner(account.id) : null;
     // Esperando tarjeta: el aviso de arriba dice qué falta (correo, tarjeta, prueba ya usada).
     const cardCheck = account?.status === 'paused' && account.pause_reason === 'card' ? await cardCheckState(account.id) : null;
-    return { user: req.user, account: account && { ...store.publicAccount(account, req.user), payment_due: due, ...(req.user.role === 'agent' ? {} : { deletion_date: deletionDate(account) }) }, owner: owner && { id: owner.id, name: owner.name || owner.email }, copilot, card_check: cardCheck };
+    return { user: req.user, account: account && { ...store.publicAccount(account, req.user), payment_due: due, ...(req.user.role === 'agent' ? {} : { deletion_date: deletionDate(account) }) }, owner: owner && { id: owner.id, name: owner.name || owner.email }, copilot, card_check: cardCheck, mfa_required: config.mfa.required };
   });
 
   api.put('/api/me', async (req) => {
@@ -384,6 +384,14 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
 
   /** Precios por modelo para estimar el costo cuando el proveedor no lo reporta (solo superadmin). */
   api.get('/api/ai-prices', { preHandler: requireRole('superadmin') }, async () => query(`SELECT * FROM ai_prices ORDER BY model`));
+
+  /**
+   * Los modelos que un agente puede usar: los que tienen precio en la plataforma (uno sin precio falla al contestar).
+   * Solo los nombres, sin precios: para el selector del agente y para el Copiloto.
+   */
+  api.get('/api/ai-models', { preHandler: requireRole('admin') }, async () => ({
+    models: (await query<{ model: string }>(`SELECT model FROM ai_prices ORDER BY model`)).map((r) => r.model),
+  }));
 
   api.put('/api/ai-prices/:model', { preHandler: requireRole('superadmin'), ...stepUp }, async (req: any) => {
     const n = z.number().min(0).max(10000);

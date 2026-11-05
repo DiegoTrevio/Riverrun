@@ -11,14 +11,13 @@ import { mailBrand } from '../brands.js';
 import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { logEvent } from '../logs.js';
-import { sendMail } from '../mailer.js';
 import { decryptSecret, encryptSecret, hmac, safeEqual } from '../secret.js';
 import * as store from '../store/index.js';
 import type { Role, User } from '../types.js';
 import { browserOf, noteDevice, trustDevice, trustedDeviceFor } from './devices.js';
 import { notifyUser } from './notices.js';
 import { qrDataUri } from './qr.js';
-import { countHit, hitsFor, LIMITS, releaseHit } from './rate-limit.js';
+import { countHit, LIMITS, releaseHit } from './rate-limit.js';
 import { isRecoveryCodeShape, useRecoveryCode } from './recovery-codes.js';
 import { matchTotp, newTotpSecret, otpauthUri } from './totp.js';
 
@@ -26,16 +25,17 @@ const CHALLENGE_MS = 15 * 60_000;
 
 export type ChallengePurpose = 'verify' | 'enroll';
 /**
- * `ev`: el correo de la cuenta ya se comprobó en este reto (registro, invitación, Google o el enlace de enrolamiento): deja
- * configurar la app sin el enlace. `ec`: el correo de la cuenta está comprobado de verdad; un registro con el correo sin
- * verificar tiene `ev` pero no `ec`, porque quien se registra puede no ser el dueño del correo (ID-18).
+ * `ev`: el reto viene de una puerta que comprueba el correo (registro, invitación o Google). `ec`: el correo de la cuenta
+ * está comprobado de verdad; un registro con el correo sin verificar tiene `ev` pero no `ec`, porque quien se registra
+ * puede no ser el dueño del correo (ID-18). La app configurada con `ec` queda «confirmada por correo».
  */
 export interface Challenge { uid: string; pv: string; via: SessionVia; purpose: ChallengePurpose; cid: string; exp: number; ev?: boolean; ec?: boolean }
 
-/** Puertas que ya prueban que el correo es de quien entra: su primer enrolamiento no pide el enlace (ID-16). */
+/**
+ * Puertas que ya prueban que el correo es de quien entra. La app que se configura desde ellas queda «confirmada por
+ * correo»; la que se configura solo con la contraseña no, y restablecer la contraseña por correo la quita (ID-16).
+ */
 const EMAIL_PROVEN: SessionVia[] = ['signup', 'invite', 'google'];
-/** Vigencia del enlace para configurar la app. */
-const ENROLL_LINK_MS = 60 * 60_000;
 
 /** El usuario del reto con lo que hace falta para verificar (nunca sale en una respuesta). */
 export type ChallengeUser = User & {
@@ -92,6 +92,15 @@ export async function beginLogin(reply: FastifyReply, user: SessionUser & { totp
     await openSession(reply, user, via, null);
     return { ok: true };
   }
+  // Sin verificación en dos pasos (MFA_REQUIRED apagado): la contraseña (o Google) abre la sesión. El dispositivo se
+  // anota igual que al terminar el segundo paso, para el aviso de inicio de sesión desde un dispositivo nuevo.
+  if (!config.mfa.required) {
+    const device = await noteDevice(reply.request, reply, user.id);
+    const who = device.isNew && !device.first ? await store.getUser(user.id).catch(() => null) : null;
+    if (who) void notifyUser(who, 'new_device', { device: browserOf(String(reply.request.headers['user-agent'] ?? '')), ip: reply.request.ip });
+    await openSession(reply, user, via, new Date());
+    return { ok: true };
+  }
   const purpose: ChallengePurpose = user.totp_enabled_at ? 'verify' : 'enroll';
   const c: Challenge = { uid: user.id, pv: passwordVersion(user.password_hash), via, purpose, cid: crypto.randomBytes(12).toString('base64url'), exp: Date.now() + CHALLENGE_MS,
     ...(EMAIL_PROVEN.includes(via) ? { ev: true, ec: via !== 'signup' || !!o.emailVerified } : {}) };
@@ -102,53 +111,6 @@ export async function beginLogin(reply: FastifyReply, user: SessionUser & { totp
 function setChallenge(reply: FastifyReply, c: Challenge) {
   const payload = Buffer.from(JSON.stringify(c)).toString('base64url');
   reply.setCookie(cookieName('cp_mfa'), `${payload}.${hmac(`mfa-challenge:${payload}`)}`, cookieOpts(CHALLENGE_MS));
-}
-
-const sha256 = (v: string) => crypto.createHash('sha256').update(v).digest('hex');
-
-/**
- * Enrolar con solo la contraseña pide el enlace al correo (ID-16). Sin `resend` solo sale si no hay uno vigente (recargar
- * la pantalla no manda otro ni invalida el que ya llegó); con `resend` («Mandar otro enlace») uno nuevo reemplaza al
- * anterior, a lo más cada 2 minutos. 5 correos por hora por persona; solo cuentan los que salen. Devuelve si salió.
- */
-export async function sendEnrollLink(user: ChallengeUser, o: { resend?: boolean } = {}): Promise<boolean> {
-  const budget = `mfa-enroll-mail:${user.id}`;
-  if ((await hitsFor(budget)) >= 5) return false;
-  const token = crypto.randomBytes(32).toString('base64url');
-  const set = await queryOne(
-    `UPDATE users SET mfa_enroll_token_hash = $2, mfa_enroll_sent_at = now() WHERE id = $1
-       AND (mfa_enroll_token_hash IS NULL OR mfa_enroll_sent_at IS NULL OR mfa_enroll_sent_at < now() - make_interval(secs => $3)
-            OR ($4::boolean AND mfa_enroll_sent_at < now() - interval '2 minutes')) RETURNING id`,
-    [user.id, sha256(token), ENROLL_LINK_MS / 1000, !!o.resend],
-  );
-  if (!set) return false;
-  await countHit(budget, 60 * 60_000);
-  const mb = await mailBrand(user.account_id);
-  await sendMail({
-    fromName: mb.fromName,
-    to: user.email,
-    subject: 'Configura tu verificación en dos pasos',
-    text: `Hola ${user.name || ''},\n\nPara activar la verificación en dos pasos de tu cuenta, abre este enlace en el mismo navegador donde escribiste tu contraseña:\n\n${mb.base}/#/login/configurar?correo=${token}\n\nEl enlace vence en una hora y sirve una sola vez. Si no estabas entrando a tu cuenta, no lo abras y cambia tu contraseña: alguien la conoce.`,
-  });
-  await logEvent({ level: 'info', source: 'system', message: `Enlace para configurar la verificación en dos pasos enviado a ${user.email}`, accountId: user.account_id ?? undefined });
-  return true;
-}
-
-/**
- * El enlace del correo: si es el vigente de la persona del reto, el reto queda con el correo comprobado (y 15 minutos más),
- * el correo queda verificado en su cuenta y el enlace ya no sirve. Solo funciona en el navegador que tiene el reto: abrir un enlace que pidió otro no le abre nada.
- */
-export async function useEnrollLink(reply: FastifyReply, c: Challenge, token: string): Promise<boolean> {
-  const used = await queryOne(
-    `UPDATE users SET mfa_enroll_token_hash = NULL WHERE id = $1 AND mfa_enroll_token_hash = $2 AND mfa_enroll_sent_at > now() - make_interval(secs => $3) RETURNING id`,
-    [c.uid, sha256(token), ENROLL_LINK_MS / 1000],
-  );
-  if (!used) return false;
-  // El enlace llegó al correo de la cuenta: abrirlo prueba el buzón, así que el correo también queda verificado (ID-18).
-  // El correo solo cambia con la confirmación del correo nuevo, que ya lo deja verificado: el enlace no puede probar otro.
-  await store.markEmailVerified(c.uid);
-  setChallenge(reply, { ...c, ev: true, ec: true, exp: Date.now() + CHALLENGE_MS });
-  return true;
 }
 
 /** El reto vigente y su usuario: activo, con la cuenta activa y con la misma contraseña que cuando empezó. */
@@ -214,6 +176,21 @@ export async function verifyUserCode(user: ChallengeUser, code: string): Promise
     }
   }
   return wrongCode(user, hits);
+}
+
+/**
+ * El código escrito con la sesión abierta (verificación reciente y confirmar con código en el Copiloto): 5 por sesión en
+ * 15 minutos, contados antes de revisarlos (ID-15), además del tope por persona. Ambos caminos comparten contadores y
+ * bloqueo: confirmar en el Copiloto no da intentos de más.
+ */
+export async function verifySessionCode(userId: string, sessionId: string, code: string): Promise<{ result: 'ok' | 'bad' | 'locked' | 'too_many' | 'no_user'; recoveryRemaining?: number }> {
+  const user = await loadMfaUser(userId);
+  if (!user) return { result: 'no_user' };
+  const key = `mfa-session:${sessionId}`;
+  if ((await countHit(key, LIMITS.codePerSession.windowMs)) > LIMITS.codePerSession.max) return { result: 'too_many' };
+  const check = await verifyUserCode(user, code);
+  if (check.result === 'ok') await releaseHit(key);
+  return check;
 }
 
 /** Códigos revisados de verdad (las pruebas comprueban que los topes se aplican antes de revisar). */
