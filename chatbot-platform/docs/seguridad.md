@@ -8,6 +8,13 @@ alto se comprobó en el código; el de la conversión de HTML, además, midiendo
 tarjetas que nunca pasan por el servidor, firmas de los avisos de pago, CSP estricta del panel, SSRF, archivos por su
 contenido) se dejó igual.
 
+> **Noviembre: la verificación en dos pasos está apagada por ahora** (`MFA_REQUIRED=false`, el valor por defecto). Se
+> entra solo con correo y contraseña (o Google); las acciones delicadas no piden código y el Copiloto no propone las que
+> se confirman con código. Lo que dicen las etapas 2a y 2c sobre el segundo paso, la verificación reciente y el enlace al
+> correo aplica solo con `MFA_REQUIRED=true`, que la vuelve obligatoria otra vez para todos sin cambiar código (quien ya
+> había configurado su app la sigue usando; los demás la configuran al entrar). Con la verificación apagada, una
+> contraseña filtrada basta para entrar: conviene encenderla antes de abrir el registro al público.
+
 ## Etapas
 
 Cada etapa es un PR con pruebas que fallan con el código anterior y pasan con el nuevo, de lo más grave a lo menos grave.

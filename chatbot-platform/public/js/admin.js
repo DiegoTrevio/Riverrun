@@ -128,8 +128,8 @@ export async function viewUsers(root) {
             isSuper() ? h('td', { class: 'small' }, u.role === 'superadmin' ? 'Todos los perfiles' : u.is_owner ? (state.accounts.find((a) => a.id === u.account_id)?.name || '—') : h('select', { 'aria-label': `Perfil de ${u.email}`, onchange: async (e) => { if (await run(() => api('PUT', `/api/users/${u.id}`, { account_id: e.target.value }), 'Perfil asignado')) render(); else e.target.value = u.account_id; } }, state.accounts.map((a) => h('option', { value: a.id, selected: u.account_id === a.id }, a.name)))) : null,
             h('td', { class: 'small muted' }, u.last_login_at ? fmtDate(u.last_login_at) : 'nunca'),
             h('td', {}, self ? h('span', { class: 'muted small' }, 'tú') : locked ? h('span', { class: 'muted small' }, ownerOnlyText()) : h('div', { class: 'row' },
-              // Transferir la cuenta: a un administrador activo con su correo verificado y su 2FA.
-              isOwner() && u.role === 'admin' && !u.is_owner && u.active && u.mfa_enabled && u.email_verified_at ? h('button', { class: 'small', onclick: async () => {
+              // Transferir la cuenta: a un administrador activo con su correo verificado (y su 2FA, si es obligatoria).
+              isOwner() && u.role === 'admin' && !u.is_owner && u.active && (u.mfa_enabled || !state.me.mfa_required) && u.email_verified_at ? h('button', { class: 'small', onclick: async () => {
                 const name = u.name || u.email;
                 if (!(await dialog(`Transferir la cuenta a ${name}`, h('p', {}, 'Será el único que maneja el plan, los pagos y a los administradores. Tú quedas como administrador.'), 'Transferir'))) return;
                 if (await run(() => api('POST', withAcct('/api/account/transfer'), { user_id: u.id }), `Listo: ${name} es el dueño de la cuenta`)) { state.me = null; render(); }
@@ -142,7 +142,7 @@ export async function viewUsers(root) {
                 if (gone && !(await confirmAction(`¿Desactivar a ${u.name || u.email}? ${gone}`, 'Desactivar'))) return;
                 if (await run(() => api('PUT', `/api/users/${u.id}`, { active: !u.active }), u.active ? 'Desactivado' : 'Activado')) render();
               } }, u.active ? 'Desactivar' : 'Activar'),
-              u.mfa_enabled ? h('button', { class: 'small', 'aria-label': `Restablecer 2FA de ${u.email}`, onclick: async () => {
+              u.mfa_enabled && state.me.mfa_required ? h('button', { class: 'small', 'aria-label': `Restablecer 2FA de ${u.email}`, onclick: async () => {
                 if (!(await dialog(`Restablecer 2FA de ${u.name || u.email}`, h('p', {}, 'Su verificación en dos pasos se borra, se cierran sus sesiones y la configura otra vez al entrar.'), 'Restablecer 2FA'))) return;
                 if (await run(() => api('POST', `/api/users/${u.id}/2fa/reset`), 'Verificación en dos pasos restablecida')) render();
               } }, 'Restablecer 2FA') : null,
@@ -347,7 +347,7 @@ export async function viewPassword(root) {
     groups ? settingsSection('Mis avisos', 'Elige por dónde te llega cada aviso. Para recibirlos por WhatsApp, activa «Recibir las alertas del equipo por WhatsApp» arriba.',
       alertPrefsTable(groups, prefs, { noPhone: !(state.me.user.phone && state.me.user.notify_whatsapp) }),
       h('div', { class: 'settings-actions' }, h('button', { onclick: async () => { const u = await run(() => api('PUT', '/api/me', { alert_prefs: prefs }), 'Avisos guardados'); if (u) state.me.user = { ...state.me.user, ...u }; } }, 'Guardar avisos'))) : null,
-    settingsSection('Verificación en dos pasos', 'Además de tu contraseña, para entrar usas el código de tu app de autenticación. Si pierdes tu teléfono, entra con un código de recuperación.', mfaSecurityCard()),
+    state.me.mfa_required === false ? null : settingsSection('Verificación en dos pasos', 'Además de tu contraseña, para entrar usas el código de tu app de autenticación. Si pierdes tu teléfono, entra con un código de recuperación.', mfaSecurityCard()),
     settingsSection('Sesiones abiertas', 'Dónde está abierta tu cuenta. Si no reconoces una, ciérrala y cambia tu contraseña.', sessionsCard()),
     settingsSection('Cambiar contraseña', 'La que usas para entrar al panel con tu correo.',
       field('Contraseña actual', text(f, 'current', { type: 'password' })),

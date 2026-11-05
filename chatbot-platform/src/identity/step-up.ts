@@ -5,6 +5,7 @@
  */
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { HttpError } from '../access.js';
+import { config } from '../config.js';
 import { copilotGranted } from './copilot-grant.js';
 
 export const STEP_UP_MS = 15 * 60_000;
@@ -21,6 +22,8 @@ declare module 'fastify' {
 export const stepUp = { config: { stepUp: true } };
 
 export function hasRecentMfa(req: FastifyRequest): boolean {
+  // Sin verificación en dos pasos (MFA_REQUIRED apagado) no hay código que pedir: la sesión basta.
+  if (!config.mfa.required) return true;
   return !!req.mfaAt && Date.now() - new Date(req.mfaAt).getTime() < STEP_UP_MS;
 }
 

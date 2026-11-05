@@ -395,6 +395,8 @@ process.env.PUBLIC_BASE_URL = 'https://bot.test';
 process.env.WEBHOOK_BASE_URL = 'http://backend:3000';
 process.env.ALLOW_PRIVATE_WEBHOOKS = 'true';
 
+// Las pruebas cubren la verificación en dos pasos obligatoria; mfa-off.test.ts prueba la plataforma sin ella.
+process.env.MFA_REQUIRED ??= 'true';
 process.env.DATABASE_URL = process.env.TEST_DATABASE_URL || 'postgres://chatbot:chatbot@localhost:5432/chatbot_test';
 process.env.UPLOADS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'cp-uploads-'));
 process.env.ADMIN_USER = 'admin@test.mx';
