@@ -1,15 +1,29 @@
-# INF-15: reglas de gitleaks de siempre, sin las pruebas. Las pruebas usan contraseñas y llaves inventadas a propósito
-# («sk_live_prod…», «humo-…», «prueba…»); lo que cuenta es que nada real llegue al código de la plataforma ni a su
-# configuración. Revisado el 4 de noviembre de 2026: los 59 hallazgos del historial eran todos de pruebas.
+# INF-15 / INF-20: reglas de gitleaks de siempre. Las pruebas usan contraseñas y llaves inventadas a propósito, pero el
+# allowlist ya no se salta carpetas enteras (test/, evals/, scripts/test-*): una llave real pegada ahí por error se
+# detectaría igual. Lo que se permite es la FORMA de los valores inventados, que van en español y con una palabra que los
+# delata («clave-…», «humo-…», «prueba-…», «sk_live_produccion»…). Una llave real es aleatoria y no la contiene.
+# Revisado el 5 de noviembre de 2026: los 159 hallazgos de este tipo en el historial quedan cubiertos por estas reglas;
+# si una prueba nueva necesita otro valor, ponle un prefijo inventado (p. ej. «prueba-») en vez de ampliar las reglas.
 title = "Riverrun"
 
 [extend]
 useDefault = true
 
 [allowlist]
-description = "Datos inventados de las pruebas"
-paths = [
-  '''^chatbot-platform/test/''',
-  '''^chatbot-platform/evals/''',
-  '''^chatbot-platform/scripts/(test-|eval-)[^/]+$''',
+description = "Datos inventados de las pruebas y SESSION_SECRET de prueba del CI"
+# Se compara contra el texto completo del hallazgo («password: 'clave-duena-123'»), no contra el archivo.
+regexTarget = "match"
+regexes = [
+  # SESSION_SECRET de las pruebas del CI (0123456789…): no es de ningún servidor.
+  '''SESSION_SECRET:\s*0123456789abcdef0123456789abcdef''',
+  # Valores que empiezan con una palabra inventada: clave-…, humo-…, prueba-…, llave-…
+  '''(?i)['"=](?:clave|humo|prueba|llave)-[a-z0-9-]+['"]?$''',
+  # Valores con «prueba», «perfil», etc. en medio: diego-prueba-123, mp-prueba-secreto-123, TEST-prueba-123, other-pass-123…
+  '''(?i)['"=](?:diego-prueba|mp-prueba-secreto|test-prueba|usuario-perfil|vector-perfil|other-pass|cal-secreto|enlace-que-no-existe|equivocada)-\d+['"]?$''',
+  # Con guion bajo: whsec_prueba_123456, whsec_produccion_1, mp_clave_secreta_de_prueba_123, zk_de_otra_cuenta_5678
+  '''(?i)['"=](?:whsec_(?:prueba|produccion)|mp_clave_secreta_de_prueba|zk_de_otra_cuenta)_\d+['"]?$''',
+  # Llaves de Stripe de mentira: sk_live_produccion, sk_live_SECRETOSTRIPE123 (las reales llevan 24+ caracteres al azar)
+  '''sk_live_(?:produccion|SECRETOSTRIPE123)\b''',
+  # Contraseñas sueltas de las pruebas
+  '''(?:['"=])(?:ULTRASECRETO784|qwertyuiop12)['"]?$''',
 ]
