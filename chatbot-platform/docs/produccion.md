@@ -100,13 +100,21 @@ Hace, en orden: revisar cambios locales, descargar, construir **sin arrancar**, 
 
    Cada persona que publique firma sus commits con su llave SSH: `git config gpg.format ssh`, `git config user.signingkey ~/.ssh/id_ed25519.pub` y `git config commit.gpgsign true`. Puedes comprobar uno con `git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=/etc/riverrun/allowed_signers verify-commit <commit>`.
 
-2. **Actívala en el `.env`** del servidor: `UPDATE_ALLOWED_SIGNERS=/etc/riverrun/allowed_signers`. Si el archivo no existe, `update` se niega a aplicar nada. Con la firma activa, el commit que se va a desplegar (el más reciente de `main`) debe estar firmado: si el último lo hiciste desde la web de GitHub o sin firmar, `update` no lo aplica.
+2. **Actívala en el `.env`** del servidor: `UPDATE_ALLOWED_SIGNERS=/etc/riverrun/allowed_signers`. Si el archivo no existe, `update` se niega a aplicar nada. Con la firma activa, el commit que se va a desplegar (el más reciente de `main`) debe estar firmado por alguien de la lista: un commit sin firmar, o mezclado con el botón de GitHub, `update` no lo aplica (ver el paso 3).
 
-3. **Protege `main` en GitHub** (Settings, Branches, regla para `main`), porque la firma no sustituye esto:
-   - Exigir pull request antes de mezclar.
-   - Exigir que el CI esté en verde antes de mezclar.
-   - Prohibir el force push y el borrado de la rama.
-   - Exigir verificación en dos pasos (2FA) a quien tenga permiso de escritura (Settings de la organización, Authentication security). Sin 2FA, una cuenta robada puede publicar.
+3. **Protege `main` en GitHub** (Settings, Branches o Rulesets, regla para `main`), y decide cómo publicas. **La firma y el botón de mezclar de GitHub chocan**: un merge, squash o rebase hecho desde la web crea un commit firmado por GitHub, no por tu llave SSH, así que `verify-commit` falla y `update` rechaza esa versión. Hay dos caminos que sí funcionan:
+
+   - **Camino A (recomendado si quieres firma).** En la regla de `main`: exigir pull request y CI en verde para todos, prohibir el force push y el borrado de la rama, y poner a la persona dueña en la lista de excepciones (en una regla clásica, «Allow specified actors to bypass required pull requests»; en un ruleset, *Bypass list*). Ella publica una versión mezclando en local con un merge firmado, no con el botón de GitHub:
+
+     ```bash
+     git fetch origin
+     git switch main && git merge --ff-only origin/main
+     git merge -S --no-ff origin/<rama>
+     git push origin main
+     ```
+
+     Los demás siguen pasando por pull request. Exige además verificación en dos pasos (2FA) a quien tenga permiso de escritura (Settings de la organización, Authentication security): sin 2FA, una cuenta robada puede publicar.
+   - **Camino B (si prefieres el botón de GitHub).** Deja `UPDATE_ALLOWED_SIGNERS` sin definir. `update` sigue exigiendo el CI en verde sobre el commit exacto, pero ya no la firma. Protege `main` igual (pull request, CI en verde, sin force push, 2FA). `./riverrun preflight` seguirá mostrando el aviso de que no se exige firma: es lo esperado con este camino.
 
 Estos ajustes de GitHub los haces tú; Riverrun solo los recomienda y avisa en `preflight`.
 
