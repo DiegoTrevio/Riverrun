@@ -131,7 +131,8 @@ export async function suggestReply(ai: AiProvider, accountId: string, kind: Kind
   const st = await getSettings(accountId);
   const hours = Object.values(st.business_hours).some((w) => w.length > 0) ? hoursText({ timezone: st.timezone, hours: st.business_hours, holidays: st.holidays, openNow: false }) : '';
   const where = networkOf(row.platform)?.label ?? row.platform;
-  const author = String(row.author?.name || row.author?.username || 'cliente').replace(/[<>"]/g, '');
+  // Una línea y corto: un nombre con saltos de línea o muy largo serviría para meter instrucciones fuera del comentario.
+  const author = inert(String(row.author?.name || row.author?.username || 'cliente').replace(/\s+/g, ' ').trim(), 80).replace(/"/g, '') || 'cliente';
   const user = kind === 'comment'
     ? `${row.post_caption ? `Publicación: <publicacion>${inert(row.post_caption, 600)}</publicacion>\n` : ''}<comentario autor="${author}">${inert(text, 2000)}</comentario>`
     : `<reseña autor="${author}" estrellas="${row.rating ?? 'sin calificación'}">${inert(text, 3000) || '(sin texto)'}</reseña>`;
