@@ -144,7 +144,7 @@ export const INIT_SCRIPT = String.raw`(() => {
   audit.startClick = () => {
     audit.mutations = 0; audit.clipboard = []; audit.opened = []; audit.printed = 0; audit.observing = true;
     const t = document.querySelector('[data-audit-target]');
-    audit.before = { focus: document.activeElement, scroll: scrollY, dialogs: document.querySelectorAll('dialog[open]').length, checked: t?.checked, value: t?.value, open: t?.closest('details')?.open, look: lookOf(t), errors: errorTexts() };
+    audit.before = { focus: document.activeElement, focusValue: document.activeElement?.value, scroll: scrollY, dialogs: document.querySelectorAll('dialog[open]').length, checked: t?.checked, value: t?.value, open: t?.closest('details')?.open, look: lookOf(t), errors: errorTexts() };
   };
   const errorTexts = () => [...document.querySelectorAll('.form-error, .field-error, [aria-invalid=true], .main [role=alert], dialog[open] [role=alert], .banner.danger')]
     .filter((e) => visible(e) && e.id !== 'toast-alert').map((e) => clean(e.textContent) || '(campo marcado: ' + (e.getAttribute('name') || e.id) + ')');
@@ -164,6 +164,8 @@ export const INIT_SCRIPT = String.raw`(() => {
     return {
       // Presionar un botón le da el foco: solo cuenta si el foco se fue a otro lado (un campo, un diálogo, un título).
       mutations: audit.mutations, focusMoved: document.activeElement !== audit.before.focus && document.activeElement !== t && document.activeElement !== document.body, scrolled: Math.abs(scrollY - audit.before.scroll) > 4,
+      // Llenó el campo que ya tenía el foco (p. ej. un ejemplo que escribe en el cuadro): cambiar .value no toca el DOM.
+      fieldFilled: document.activeElement === audit.before.focus && document.activeElement !== t && /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName || '') && document.activeElement.value !== audit.before.focusValue,
       stateChanged: !!t && (t.checked !== audit.before.checked || t.value !== audit.before.value || t.closest('details')?.open !== audit.before.open || lookOf(t) !== audit.before.look),
       alreadyActive: !!t && lookOf(t) === audit.before.look && isActive(t),
       dialogOpened: dialogs.length > audit.before.dialogs, dialogTitle: dialogs.at(-1)?.querySelector('h1,h2')?.textContent?.trim() || '',
