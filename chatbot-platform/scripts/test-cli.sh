@@ -395,6 +395,8 @@ echo "== preflight: todo en orden aprueba lo revisado y deja sin verificar lo qu
 cp .env .env.keep
 # «Todo en orden» incluye las alertas fuera del panel (correo y latido); sin ellas el preflight avisa, como debe.
 printf 'DOMAIN=pms.ejemplo.mx\nEVOLUTION_IMAGE=evoapicloud/evolution-api:v2.3.7@sha256:abc\nSMTP_URL=smtp://avisos:clave@smtp.ejemplo.mx:587\nSUPERADMIN_EMAIL=dueno@ejemplo.mx\nHEARTBEAT_URL=https://hc-ping.com/0000\n' >> .env; chmod 600 .env
+# INF-21: «todo en orden» incluye exigir la firma del commit en update.
+: > "$work/firmantes"; printf 'UPDATE_ALLOWED_SIGNERS=%s\n' "$work/firmantes" >> .env
 grep -Eq "^HEALTH_TOKEN=.{16,}$" .env || { echo "ERROR: el .env de prueba no tiene HEALTH_TOKEN"; exit 1; }
 export RIVERRUN_PREFLIGHT_MEM_KB=2097152 RIVERRUN_PREFLIGHT_DISK_KB=20971520 RIVERRUN_PREFLIGHT_CPUS=2
 # Sin ./riverrun harden, preflight lo avisa; con su marca, no.
@@ -406,6 +408,18 @@ set +e; ./riverrun preflight --offline > "$work/out" 2>&1; rc=$?; set -e
 [[ "$rc" == 0 ]] && grep -q "SIN BLOQUEOS EN LO REVISADO" "$work/out" && grep -q "No verificado: último respaldo" "$work/out" && grep -q "Envíos reales habilitados" "$work/out" || { cat "$work/out"; echo "ERROR: con todo en orden debía pasar sin bloqueos"; exit 1; }
 ! grep -q "APROBADO\." "$work/out" || { echo "ERROR: no debe afirmar aprobación completa con comprobaciones sin verificar"; exit 1; }
 grep -q "El panel solo escucha en el propio servidor" "$work/out" || { cat "$work/out"; echo "ERROR: no revisó PANEL_BIND"; exit 1; }
+
+echo "== preflight: Redis sin contraseña y update sin firma avisan (INF-19, INF-21)"
+cp .env .env.redis
+printf 'REDIS_PASSWORD=\nUPDATE_ALLOWED_SIGNERS=\n' >> .env
+set +e; ./riverrun preflight --offline > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" == 0 ]] && grep -q "Redis sin contraseña (REDIS_PASSWORD vacío)" "$work/out" && grep -q "./riverrun update genera REDIS_PASSWORD" "$work/out" \
+  && grep -q "update no exige firma (UPDATE_ALLOWED_SIGNERS)" "$work/out" && grep -q "«Firma de las actualizaciones»" "$work/out" && grep -q "APROBADO CON ADVERTENCIAS" "$work/out" || { cat "$work/out"; echo "ERROR: Redis sin contraseña y update sin firma debían avisar"; exit 1; }
+: > "$work/firmantes"
+printf 'REDIS_PASSWORD=x\nUPDATE_ALLOWED_SIGNERS=%s\n' "$work/firmantes" >> .env
+set +e; ./riverrun preflight --offline > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" == 0 ]] && ! grep -q "Redis sin contraseña" "$work/out" && ! grep -q "update no exige firma" "$work/out" && grep -q "SIN BLOQUEOS EN LO REVISADO" "$work/out" || { cat "$work/out"; echo "ERROR: con contraseña y firmantes no debía avisar"; exit 1; }
+mv -f .env.redis .env
 
 echo "== preflight: PANEL_BIND=0.0.0.0 avisa que Docker salta el firewall (INF-10)"
 cp .env .env.bind; printf 'PANEL_BIND=0.0.0.0\n' >> .env

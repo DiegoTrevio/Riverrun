@@ -1281,6 +1281,15 @@ cmd_preflight() {
   if [[ -n "$pb" ]]; then pf_warn "$pb"; else pf_ok "El panel solo escucha en el propio servidor (PANEL_BIND)"; fi
   if [[ -f "${RIVERRUN_PREFLIGHT_ETC:-/etc}/riverrun-harden" ]]; then pf_ok "Servidor endurecido (./riverrun harden)"
   else pf_warn "El servidor no se ha endurecido: sudo ./riverrun harden (firewall, SSH solo con llave, fail2ban, actualizaciones)."; fi
+  # INF-19: sin contraseña, cualquier contenedor de la red interna lee y escribe en Redis.
+  if [[ -n "$(env_get REDIS_PASSWORD)" ]]; then pf_ok "Redis con contraseña (REDIS_PASSWORD)"
+  else pf_warn "Redis sin contraseña (REDIS_PASSWORD vacío). Corrígelo con: ./riverrun update genera REDIS_PASSWORD"; fi
+  # INF-21: sin firma, quien pueda escribir en main despliega lo que quiera. Solo se avisa; la protección de rama y el 2FA
+  # se activan en GitHub.
+  local signers; signers="$(env_get UPDATE_ALLOWED_SIGNERS)"
+  if [[ -n "$signers" && -f "$signers" ]]; then pf_ok "update exige la firma del commit (UPDATE_ALLOWED_SIGNERS)"
+  elif [[ -n "$signers" ]]; then pf_warn "UPDATE_ALLOWED_SIGNERS apunta a $signers, que no existe: update se negará a aplicar nada. Ver docs/produccion.md, «Firma de las actualizaciones»."
+  else pf_warn "update no exige firma (UPDATE_ALLOWED_SIGNERS). Ver docs/produccion.md, «Firma de las actualizaciones»."; fi
   if [[ -n "$(env_get HEALTH_TOKEN)" ]]; then pf_ok "HEALTH_TOKEN definido (/health/functional y /metrics activos)"
   else pf_warn "HEALTH_TOKEN vacío: /health/functional y /metrics no existen. Lo genera ./riverrun update."; fi
 

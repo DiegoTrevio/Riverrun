@@ -86,6 +86,30 @@ Hace, en orden: revisar cambios locales, descargar, construir **sin arrancar**, 
 
 **Ventana de observación.** Después de levantar la versión nueva, `./riverrun update` la observa durante `RIVERRUN_OBSERVE_SECONDS` (120 por defecto; `0` la apaga), midiendo la salud funcional cada `RIVERRUN_OBSERVE_POLL` segundos (15 por defecto). Un fallo aislado no revierte: hacen falta dos comprobaciones seguidas malas, como en las alertas. Una falla sostenida vuelve a la versión anterior, igual que una falla al levantar. La ventana añade ese tiempo a cada actualización; si necesitas actualizar más rápido, bájala con cuidado. Lo verifica `scripts/test-cli.sh` (un fallo aislado no revierte; una falla sostenida sí; un valor inválido se rechaza antes de descargar). **Limitación:** la ventana observa la salud funcional, no el tráfico real: un fallo que solo aparece con mensajes reales no se detecta aquí.
 
+## Firma de las actualizaciones
+
+`./riverrun update` ya comprueba que el commit pasó el CI en GitHub. Pero quien pueda escribir en `main` despliega lo que quiera en todos los servidores, a menudo como root. La firma lo cierra: `update` solo aplica un commit firmado por alguien de tu lista. Viene apagada, y `./riverrun preflight` avisa mientras lo esté (`update no exige firma (UPDATE_ALLOWED_SIGNERS)`). Activarla son tres pasos.
+
+1. **Crea el archivo de firmantes fuera del repositorio**, para que quien cambie el repositorio no pueda cambiarlo. Una línea por persona, en el formato *allowed signers* de `ssh-keygen`: correo, tipo de llave y llave pública.
+
+   ```bash
+   sudo mkdir -p /etc/riverrun
+   echo "tu@correo.mx $(cat ~/.ssh/id_ed25519.pub)" | sudo tee /etc/riverrun/allowed_signers
+   sudo chmod 644 /etc/riverrun/allowed_signers
+   ```
+
+   Cada persona que publique firma sus commits con su llave SSH: `git config gpg.format ssh`, `git config user.signingkey ~/.ssh/id_ed25519.pub` y `git config commit.gpgsign true`. Puedes comprobar uno con `git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=/etc/riverrun/allowed_signers verify-commit <commit>`.
+
+2. **Actívala en el `.env`** del servidor: `UPDATE_ALLOWED_SIGNERS=/etc/riverrun/allowed_signers`. Si el archivo no existe, `update` se niega a aplicar nada. Con la firma activa, el commit que se va a desplegar (el más reciente de `main`) debe estar firmado: si el último lo hiciste desde la web de GitHub o sin firmar, `update` no lo aplica.
+
+3. **Protege `main` en GitHub** (Settings, Branches, regla para `main`), porque la firma no sustituye esto:
+   - Exigir pull request antes de mezclar.
+   - Exigir que el CI esté en verde antes de mezclar.
+   - Prohibir el force push y el borrado de la rama.
+   - Exigir verificación en dos pasos (2FA) a quien tenga permiso de escritura (Settings de la organización, Authentication security). Sin 2FA, una cuenta robada puede publicar.
+
+Estos ajustes de GitHub los haces tú; Riverrun solo los recomienda y avisa en `preflight`.
+
 ## Contenedor, encabezados y apagado
 
 - **Variables:** `docker-compose.yml` le pasa al backend todas las variables que lee la app (vacía = el valor por defecto; ver `.env.example`). `test/compose-env.test.ts` falla si se agrega una a la app y no a compose o a `.env.example`.
