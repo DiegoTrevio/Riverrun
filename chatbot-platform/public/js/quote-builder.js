@@ -36,6 +36,8 @@ export function quoteBuilderCard(bot, { calculator = null, onApplied } = {}) {
   const say = (text, kind = '') => { status.textContent = text; status.className = `ai-status small${kind ? ` ${kind}` : ''}`; };
   // Plantillas por giro: un texto de ejemplo para empezar (se cambian precios y reglas por los propios).
   const templatesRow = h('div', { class: 'row qb-templates' }, h('span', { class: 'small muted' }, 'Empezar con un ejemplo:'));
+  /** Qué ejemplo quedó en el cuadro (para no olvidar cambiar sus precios por los propios). */
+  const templateNote = h('p', { class: 'small muted qb-template-note' });
   api('GET', '/api/quote-calculators/text-templates').then((list) => {
     templatesRow.append(...list.map((t) => h('button', { type: 'button', class: 'small', onclick: () => useTemplate(t) }, t.label)));
   }).catch(() => templatesRow.remove());
@@ -43,6 +45,8 @@ export function quoteBuilderCard(bot, { calculator = null, onApplied } = {}) {
     if (busy) return;
     if (ta.value.trim() && ta.value.trim() !== t.text.trim() && !(await confirmAction('El ejemplo reemplaza lo que escribiste en el cuadro. ¿Continuar?', 'Reemplazar'))) return;
     ta.value = t.text;
+    ta.dataset.template = t.key;
+    templateNote.textContent = `Usando el ejemplo «${t.label}»: sus precios son de muestra.`;
     built = null; result.replaceChildren();
     say(`Ejemplo de «${t.label}»: cambia los precios y las reglas por los tuyos y luego arma el cotizador.`);
     ta.focus();
@@ -53,6 +57,7 @@ export function quoteBuilderCard(bot, { calculator = null, onApplied } = {}) {
       'Escribe tus productos con su precio y las reglas para calcular (qué datos pedir, cómo sacar las cantidades, escalones, extras y cuándo lo atiende un asesor). ',
       'El sistema lo entiende una vez y te muestra cotizaciones de ejemplo; al activarlo, el agente cotiza solo con tus reglas y precios: la IA nunca hace las cuentas.'),
     templatesRow,
+    templateNote,
     h('label', { for: id, class: 'sr-only' }, 'Productos, precios y reglas'),
     ta,
     h('div', { class: 'row ai-actions' }, aiLock(go)),
