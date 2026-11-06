@@ -18,7 +18,7 @@ const List = (max: number, len = 200) => z.array(Text(len)).max(max);
  * Aplica cambios por ruta («rules.activation», «data_fields») sobre lo que el agente usa hoy: solo lo que de verdad
  * cambia, con la foto de antes y la de después para deshacer. `extra` va en el mismo parche (p. ej. `flow_step_map`).
  */
-async function applyChanges(ctx: Ctx, agenteId: string, tool: string, compute: (live: any) => Record<string, unknown>, label: Record<string, string>, extra?: (live: any) => Record<string, unknown>): Promise<ExecResult> {
+export async function applyChanges(ctx: Ctx, agenteId: string, tool: string, compute: (live: any) => Record<string, unknown>, label: Record<string, string>, extra?: (live: any) => Record<string, unknown>): Promise<ExecResult> {
   const bot = await botOf(ctx, agenteId);
   const v = await versions(ctx, bot.id);
   noPending(v);
@@ -266,14 +266,17 @@ export const cotizacionesDelAgente = defineTool({
   name: 'cotizaciones_del_agente',
   area: 'agente',
   roles: ['admin'],
-  description: 'Activa o desactiva que el agente haga cotizaciones en PDF, elige el formato, si el cliente puede pedir una final y qué datos pide antes de cotizar.',
+  description: 'Enciende o apaga las cotizaciones del agente; formato del PDF, finales, datos previos y si manda desglose y/o PDF. Conserva su cotizador (precios y reglas: armar_cotizador).',
   schema: z.object({
     agente_id: Id,
     activar: z.boolean().optional(),
     formato_id: z.string().max(40).optional().describe('Id del formato de cotización ("" = el más reciente)'),
     permitir_final: z.boolean().optional(),
     datos_antes_de_cotizar: z.array(z.string().regex(/^[a-z0-9_]{1,40}$/)).max(20).optional().describe('Claves de las preguntas del agente'),
-  }).refine((a) => [a.activar, a.formato_id, a.permitir_final, a.datos_antes_de_cotizar].some((x) => x !== undefined), 'Indica qué cambiar'),
+    enviar_desglose: z.boolean().optional().describe('Con calculadora: mandar el desglose (conceptos, IVA y total) en el chat'),
+    enviar_pdf: z.boolean().optional().describe('Mandar el PDF con el formato del negocio'),
+  }).refine((a) => [a.activar, a.formato_id, a.permitir_final, a.datos_antes_de_cotizar, a.enviar_desglose, a.enviar_pdf].some((x) => x !== undefined), 'Indica qué cambiar')
+    .refine((a) => !(a.enviar_desglose === false && a.enviar_pdf === false), 'Deja al menos una forma de enviar la cotización: el desglose o el PDF'),
   label: () => 'Cambiando las cotizaciones del agente…',
   risk: () => 'reversible',
   targets: (a) => [{ kind: 'bot', id: a.agente_id }],
@@ -294,6 +297,8 @@ export const cotizacionesDelAgente = defineTool({
         'ai.quotes': {
           enabled: a.activar ?? q.enabled ?? false, template_id: a.formato_id ?? q.template_id ?? '',
           allow_final: a.permitir_final ?? q.allow_final ?? true, required_fields: a.datos_antes_de_cotizar ?? q.required_fields ?? [],
+          // La calculadora y cómo se envía se conservan (si no, el agente volvería a la lista simple sin que nadie lo pida).
+          calculator_id: q.calculator_id ?? '', send_summary: a.enviar_desglose ?? q.send_summary ?? true, send_pdf: a.enviar_pdf ?? q.send_pdf ?? true,
         },
       };
     }, { 'ai.quotes': 'cotizaciones' });

@@ -291,6 +291,8 @@ texto de clientes, todo cambio de configuración (agente, automatizaciones, hora
 | `ver_cotizaciones` | admin | R |
 | `editar_cotizacion` (renglones y notas, antes de enviarla), `editar_lista_de_precios` | admin | V |
 | `decidir_cotizacion` (aprobar y enviar, rechazar, marcar aceptada) | admin | C |
+| `probar_cotizador` (calcula con el cotizador del agente y los datos que se den; no guarda ni envía; paquete `cotizaciones`) | admin | R |
+| `armar_cotizador` (desde productos, precios y reglas en palabras, o con el texto que ya tiene el agente; la tarjeta muestra lo que entendió y ejemplos calculados por el sistema, y al confirmar se activa ese mismo borrador; Deshacer regresa la configuración del agente) | admin | C |
 | `estadisticas` (periodo y el anterior, equipo, canales, gasto de IA) | admin | R |
 
 Las herramientas de cobros solo existen si `RECEIVABLES_ENABLED` está encendido.
@@ -334,7 +336,7 @@ volver a proponerla.
 
 | Archivo | Herramientas | Riesgo |
 |---|---|---|
-| `agente-config.ts` (paquete `agente`) | `cambiar_preguntas` (lista completa en orden; conserva caminos y lo demás de las que ya existían), `cambiar_objetivo` (objetivo, etapas con `flow_step_map`, saludo y qué pasa al cumplirlo), `ajustes_avanzados_del_agente`, `mensajes_guardados`, `cotizaciones_del_agente` (manda el objeto `ai.quotes` completo y revisa formato y campos) | V |
+| `agente-config.ts` (paquete `agente`) | `cambiar_preguntas` (lista completa en orden; conserva caminos y lo demás de las que ya existían), `cambiar_objetivo` (objetivo, etapas con `flow_step_map`, saludo y qué pasa al cumplirlo), `ajustes_avanzados_del_agente`, `mensajes_guardados`, `cotizaciones_del_agente` (manda el objeto `ai.quotes` completo y revisa formato y campos; conserva la calculadora y elige si se manda el desglose y/o el PDF) | V |
 | | `cambiar_activacion` (cuándo responde), `modelo_del_agente` (solo modelos con precio: `GET /api/ai-models`) | C |
 | `agente-vida.ts` (paquete `agentes`) | `crear_agente` (asistente de creación con el `request_id` de la vista previa; nace apagado), `duplicar_agente`, `borrar_agente`, `reiniciar_conversaciones_del_agente`, `restaurar_version` | C |
 | | `ver_versiones`, `probar_agente` (simulador; lo que contesta va en `datos_del_cliente`), `probar_palabras`, `ver_pruebas`, `correr_pruebas`, `ver_resultado_pruebas` | R |

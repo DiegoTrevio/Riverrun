@@ -27,7 +27,7 @@ export const PACKS = [
   { id: 'agenda', resumen: 'Agenda: horarios libres y citas (crear, mover, cancelar)' },
   { id: 'oportunidades', resumen: 'Embudos de oportunidades: ver y mover tarjetas' },
   { id: 'cobros', resumen: 'Cobros a clientes: crear, editar, marcar pagados, recordar' },
-  { id: 'cotizaciones', resumen: 'Cotizaciones y lista de precios' },
+  { id: 'cotizaciones', resumen: 'Cotizaciones y lista de precios; armar el cotizador de un agente desde sus productos, precios y reglas, y probarlo' },
   { id: 'agente', resumen: 'Configurar un agente: instrucciones, trato y reglas, preguntas en orden, objetivo y etapas, cuándo responde, mensajes fijos y guardados, cotizaciones, modelo, encender o apagar' },
   { id: 'agentes', resumen: 'Crear, duplicar o borrar agentes; versiones; probarlo como cliente; pruebas automáticas' },
   { id: 'conocimiento', resumen: 'Lo que sabe el agente: conocimiento, importar de una página o un archivo, fotos y archivos que manda' },
