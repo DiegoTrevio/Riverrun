@@ -610,6 +610,8 @@ function calculatorSection(q: QuoteCatalog, contact?: Contact): string {
       : 'texto corto';
     s.push(`- \`${d.key}\` | ${d.label}${d.required ? '' : ' (opcional: solo si el cliente lo menciona)'} | ${how}${d.help ? ` | ${d.help}` : ''}`);
   }
+  const advisor = [...calc.definition.values.flatMap((v) => (v.tiers?.otherwise.stop ? [v.tiers.otherwise.stop] : [])), ...calc.definition.stops.map((x) => x.message)];
+  if (advisor.length) s.push(`Casos que atiende un asesor (el sistema lo decide con los datos): ${advisor.map((m) => `«${m}»`).join(' ')}`);
   if (q.requiredFields.length) {
     const have = contact?.data ?? {};
     const missing = q.requiredFields.filter((f) => !have[f.key] && !(f.type === 'name' && contact?.name));
@@ -627,7 +629,8 @@ function calculatorSection(q: QuoteCatalog, contact?: Contact): string {
       '- Cuando el cliente pida cotización, precio o presupuesto, pide los datos que falten de la lista, UNO A LA VEZ y en ese orden. No preguntes por los opcionales; úsalos solo si el cliente los menciona.',
       '- Con todos los datos obligatorios, usa quote.action = "calculate" y en quote.inputs pon cada dato que dio el cliente: key exacta, value (el número como lo dijo, el valor exacto de la opción o "sí"/"no") y quote (sus palabras exactas). Puede ser en el mismo turno en que da el último dato.',
       '- NUNCA escribas precios, importes, sumas, IVA ni totales, ni montos tapados como «$XX,XXX» o «[precio]»: el sistema envía la cotización. En tu mensaje solo di, en una frase, que le compartes su cotización.',
-      '- Si el cliente da un dato que no está entre las opciones, dile cuáles hay y pregúntale de nuevo.',
+      '- Si lo que ya dijo el cliente cae en uno de los casos que atiende un asesor (p. ej. más metros que el límite), no pidas más datos: usa "calculate" con los datos que tengas y el sistema lo pasa con el asesor.',
+      '- Si el cliente da un valor que corresponde claramente a una opción (p. ej. «2m» para «2.00 m», «la clásica» para «MetroMalla Clásica»), usa esa opción sin volver a preguntar. Si no está entre las opciones, dile cuáles hay y pregúntale de nuevo.',
       '- La cotización sale APROXIMADA: no la llames final.',
     ].join('\n'),
   );

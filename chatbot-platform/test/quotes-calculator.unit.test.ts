@@ -159,3 +159,14 @@ test('calculadora: los errores de configuración dicen dónde están', () => {
 test('calculadora: mismo dato, mismo resultado (determinista)', () => {
   assert.deepEqual(quote(base), quote(base));
 });
+
+test('calculadora: si con los datos que ya hay una regla manda con un asesor, no se piden más', () => {
+  const r = quote({ metros: 150 });
+  assert.ok(!r.ok && r.reason === 'stop' && /130 metros/.test(r.message), JSON.stringify(r));
+  // La regla de instalación solo usa metros e instalación: también se decide sin producto, altura ni fijación.
+  const inst = quote({ metros: 60, instalacion: true });
+  assert.ok(!inst.ok && inst.reason === 'stop' && /instalación/.test(inst.message), JSON.stringify(inst));
+  // Sin una regla que aplique, se piden los datos que faltan.
+  const missing = quote({ metros: 40, instalacion: true });
+  assert.ok(!missing.ok && missing.reason === 'missing');
+});

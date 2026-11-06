@@ -93,7 +93,7 @@ export const CalculatorDefinition = z.object({
 export type CalculatorDefinition = z.infer<typeof CalculatorDefinition>;
 export type InputDef = z.infer<typeof InputDef>;
 
-const RESERVED = new Set(['si', 'y', 'o', 'no', 'verdadero', 'falso', 'true', 'false', 'redondear', 'redondear_arriba', 'redondear_abajo', 'min', 'max', 'abs']);
+const RESERVED = new Set(['si', 'y', 'o', 'no', 'and', 'or', 'not', 'verdadero', 'falso', 'true', 'false', 'redondear', 'redondear_arriba', 'redondear_abajo', 'min', 'max', 'abs']);
 
 interface CompiledCalculator {
   def: CalculatorDefinition;
@@ -334,6 +334,10 @@ export function evaluateCalculator(
     return { ok: false, reason: 'invalid', invalid: check.invalid, message: `${first.label}: ${first.message}` };
   }
   if (check.missing.length) {
+    // Con lo que ya dijo el cliente quizá basta para saber que lo atiende un asesor (p. ej. 150 metros cuando el
+    // límite es 100): no tiene caso seguir pidiendo datos.
+    const early = earlyStop(calc, check.values);
+    if (early) return { ok: false, reason: 'stop', message: early, scope: check.values };
     return {
       ok: false,
       reason: 'missing',
@@ -407,6 +411,37 @@ export function evaluateCalculator(
     if (e instanceof CalculatorError) return fail(e.message);
     throw e;
   }
+}
+
+/**
+ * Las reglas para pasar con un asesor que ya se pueden decidir con datos incompletos: solo los cálculos y reglas cuyas
+ * fórmulas usan datos que ya se tienen. El mensaje de la primera que aplique, o `null`.
+ */
+function earlyStop(calc: CompiledCalculator, known: Record<string, Value>): string | null {
+  const scope: Record<string, Value> = { ...known };
+  const ready = (f: Compiled) => f.refs.every((r) => r in scope);
+  try {
+    for (const v of calc.values) {
+      if (v.formula) {
+        if (ready(v.formula)) scope[v.key] = evaluate(v.formula.ast, scope);
+        continue;
+      }
+      const t = v.tiers!;
+      if (!ready(t.of)) continue;
+      const n = numericValue(evaluate(t.of.ast, scope));
+      if (n === null) continue;
+      const step = t.steps.find((s) => n < s.below - 1e-9);
+      if (step) scope[v.key] = step.value;
+      else if (t.otherwise.stop) return t.otherwise.stop;
+      else scope[v.key] = t.otherwise.value!;
+    }
+    for (const s of calc.stops) {
+      if (ready(s.when) && evaluate(s.when.ast, scope) === true) return s.message;
+    }
+  } catch {
+    // Una fórmula que no se puede evaluar aún: se piden los datos que faltan.
+  }
+  return null;
 }
 
 function evalAt(place: string, f: Compiled, scope: Record<string, Value>): Value {

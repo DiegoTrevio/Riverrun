@@ -6,7 +6,7 @@ import { unsupportedClaims } from './claims.js';
 import type { LeakDetector } from './leak.js';
 import { asksQuestion, contactNameKey, declines, isAnswered, questionList, questionProgress, repeatsQuestion, type QuestionProgress } from './questions.js';
 import { cardNumbersIn, isSensitiveField } from './safety.js';
-import { checkInputs, parseHumanNumber, type CalculatorDefinition } from '../quotes/calculator.js';
+import { checkInputs, evaluateCalculator, parseHumanNumber, type CalculatorDefinition } from '../quotes/calculator.js';
 import { countEmojis, deepClean, FactCorpus, limitEmojis, MASKED_MONEY_RE, normalize, stripEmojis, toWhatsappFormat, truncateChars } from './text.js';
 
 /** Plan final ya validado que el backend ejecutará. */
@@ -1027,7 +1027,10 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       }
       const check = checkInputs(calc, raw);
       for (const x of check.invalid) problems.push(`«${x.label}»: ${x.message}. Vuelve a preguntárselo al cliente.`);
-      if (check.missing.length) problems.push(`Para cotizar falta: ${check.missing.map((m) => m.label).join(', ')}. Pregunta uno a la vez y no uses "calculate" todavía.`);
+      // Si con lo que ya dijo el cliente una regla del negocio lo manda con un asesor, no hace falta pedir lo demás.
+      const early = check.missing.length && !check.invalid.length ? evaluateCalculator(calc, raw, [], { iva_rate: 0 }) : null;
+      const stopsEarly = !!early && !early.ok && early.reason === 'stop';
+      if (check.missing.length && !stopsEarly) problems.push(`Para cotizar falta: ${check.missing.map((m) => m.label).join(', ')}. Pregunta uno a la vez y no uses "calculate" todavía.`);
       const have = { ...(input.knownData ?? {}), ...saveData };
       const missingFields = qv.requiredFields.filter((f) => !have[f.key] && !(f.key === nameKey && (contactName || input.knownName)));
       if (missingFields.length) problems.push(`Antes de cotizar falta: ${missingFields.map((f) => f.label || f.key).join(', ')}. Pídeselo al cliente.`);

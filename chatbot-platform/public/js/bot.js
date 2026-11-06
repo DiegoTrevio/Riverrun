@@ -11,6 +11,7 @@ import { importCard, importPreview } from './importer.js';
 import { render } from './main.js';
 import { tabPlayground } from './playground.js';
 import { promptAssistant } from './prompt-assistant.js';
+import { quoteBuilderCard } from './quote-builder.js';
 import { accountName, isSuper, aiLock } from './session.js';
 
 /* ------------------------------ Chatbot ------------------------------ */
@@ -663,8 +664,18 @@ async function tabQuotes(root, bot) {
   const m = { enabled: false, template_id: '', allow_final: true, required_fields: [], calculator_id: '', send_summary: true, send_pdf: true, ...(bot.ai.quotes || {}) };
   const active = templates.filter((t) => t.status === 'active');
   const calcs = calculators.filter((c) => c.active || c.id === m.calculator_id);
+  const current = calculators.find((c) => c.id === m.calculator_id) || null;
   root.append(
+    // Lo principal: escribir productos, precios y reglas; el sistema arma la calculadora y la lista de precios.
+    quoteBuilderCard(bot, {
+      calculator: current,
+      onApplied: async (calc) => {
+        const saved = await saveBot(bot, { ai: { quotes: { ...m, enabled: true, calculator_id: calc.id, send_summary: m.send_summary || !m.send_pdf } } });
+        if (saved) render();
+      },
+    }),
     h('div', { class: 'card' },
+      h('h3', {}, 'Cómo se envía'),
       check(m, 'enabled', 'Preparar y enviar cotizaciones en PDF'),
       h('p', { class: 'small muted' },
         'Cuando el cliente pide una cotización, el agente elige los conceptos de tu lista de precios y las cantidades que dio el cliente; el sistema calcula los montos, llena tu formato y envía el PDF. ',
