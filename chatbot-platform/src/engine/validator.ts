@@ -462,6 +462,8 @@ function dropSentences(messages: string[], test: (sentenceNorm: string, sentence
  *  - Precios, números, links, correos y teléfonos deben existir en el contexto.
  *  - Frases prohibidas, emojis, formato y longitud según configuración.
  */
+const NO_QUOTE_TOOL = 'Este agente no envía cotizaciones del sistema (no uses quote.action): si el cliente ya dio los datos, escribe tú la cotización en el mensaje con los precios y reglas de la información del negocio, con cada operación y sus números (p. ej. «Paneles: 40 ÷ 2.50 = 16 paneles × $1,000 = $16,000», luego subtotal, IVA y total). El sistema revisa las cuentas.';
+
 export function validateDecision(input: ValidationInput): ValidationResult {
   const { bot } = input;
   const rules = bot.rules;
@@ -943,7 +945,11 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   const q = d.quote;
   if (q.action === 'prepare') {
     const qv = input.quotes;
-    if (!qv) fixes.push('Cotización ignorada: este asistente no cotiza o no hay conceptos activos');
+    if (!qv) {
+      fixes.push('Cotización ignorada: este asistente no cotiza o no hay conceptos activos');
+      // La IA esperaba que el sistema mandara la cotización: sin montos en su mensaje, el cliente se quedaría sin precio.
+      if (!messages.some((m) => /\$\s?\d/.test(m)) && action !== 'handoff' && action !== 'no_reply') retryable.push(NO_QUOTE_TOOL);
+    }
     else if (action === 'handoff' || action === 'no_reply') fixes.push('Cotización ignorada: la respuesta no llega al cliente');
     else {
       const problems: string[] = [];
@@ -1006,7 +1012,10 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   if (q.action === 'calculate') {
     const qv = input.quotes;
     const calc = qv?.calculator;
-    if (!qv || !calc) fixes.push('Cotización ignorada: este asistente no tiene calculadora de cotización');
+    if (!qv || !calc) {
+      fixes.push('Cotización ignorada: este asistente no tiene calculadora de cotización');
+      if (!qv && !messages.some((m) => /\$\s?\d/.test(m)) && action !== 'handoff' && action !== 'no_reply') retryable.push(NO_QUOTE_TOOL);
+    }
     else if (action === 'handoff' || action === 'no_reply') fixes.push('Cotización ignorada: la respuesta no llega al cliente');
     else {
       const problems: string[] = [];

@@ -124,15 +124,26 @@ export function fixArithmetic(messages: string[], trusted: FactCorpus, customer?
   let items: number[] = [];
   let subtotal: number | null = null;
   let iva: number | null = null;
+  /**
+   * Hubo un monto fuera de las operaciones y de los renglones de subtotal/IVA/total (instalación, flete, descuento,
+   * anticipo): el sistema ya no sabe de qué sale el total, así que no lo rehace (lo revisa la verificación normal).
+   */
+  let loose = false;
+  const reset = () => { items = []; subtotal = null; iva = null; loose = false; };
 
   const known = (t: Tok, ops: (Op | null)[], j: number, hasMoney: boolean) => {
-    if (t.derived) return true;
+    // Un resultado ya revisado en esta respuesta, aunque se use en otro renglón («16 paneles» y luego «16 × $1,000»).
+    if (t.derived || (!t.percent && derived.has(canon(t.value)))) return true;
     const c = canonicalNumber(t.raw.replace(/^(US\$|\$)\s?/, '').replace(/\s?%$/, ''));
     if (t.money) return trusted.hasMoney(c);
     if (t.percent) return trusted.hasPercent(c);
     if (!hasMoney) return c.length === 1 || trusted.hasNumber(c) || !!customer?.hasNumber(c);
-    // Con dinero, un número sin $ solo puede ser una cantidad del cliente que multiplica.
-    return !!customer?.hasNumber(c) && [ops[j], ops[j + 1]].every((o) => !o || o === '×' || o === '=');
+    // «× 0.16» o «× 1.16»: el IVA (u otro porcentaje del negocio) escrito como decimal.
+    const mult = [ops[j], ops[j + 1]].every((o) => !o || o === '×' || o === '=');
+    if (mult && !Number.isInteger(t.value) && (trusted.hasPercent(canon(t.value * 100)) || trusted.hasPercent(canon((t.value - 1) * 100)))) return true;
+    // Con dinero, un número sin $ solo puede ser una cantidad entera del cliente que multiplica: «0.5» o «0.9» serían un
+    // descuento dictado por el cliente.
+    return Number.isInteger(t.value) && t.value > 0 && !!customer?.hasNumber(c) && [ops[j], ops[j + 1]].every((o) => !o || o === '×' || o === '=');
   };
 
   const line = (text: string): string => {
@@ -160,8 +171,11 @@ export function fixArithmetic(messages: string[], trusted: FactCorpus, customer?
       if (expr.length < 2) continue;
       const hasMoney = expr.some((t) => t.money) || res.money;
       if (!expr.every((t, j) => known(t, exprOps, j, hasMoney))) continue;
+      // «$1,000 - 10%» se lee de varias formas: solo se revisan porcentajes que multiplican («$22,800 × 16%»).
+      if (expr.some((t, j) => t.percent && [exprOps[j], exprOps[j + 1]].some((o) => o === '+' || o === '-' || o === '÷'))) continue;
       const value = evaluate(expr.map((t) => t.value), exprOps.slice(1, -1) as Op[]);
-      if (!Number.isFinite(value) || res.percent) continue;
+      // Un resultado negativo no es una cuenta de cotización (p. ej. un rango «$20 - $30»).
+      if (!Number.isFinite(value) || value < 0 || res.percent) continue;
       const division = exprOps.includes('÷');
       // Una división puede redondearse a entero (p. ej. «paneles = metros ÷ 2.50 hacia arriba»).
       const rounded = division && (res.value === Math.ceil(value - 1e-9) || res.value === Math.floor(value + 1e-9));
@@ -171,28 +185,48 @@ export function fixArithmetic(messages: string[], trusted: FactCorpus, customer?
       }
       res.derived = true;
       derived.add(canon(res.value));
-      if (hasMoney) chainMoney = res.value;
+      for (const t of expr) if (!t.percent) derived.add(canon(t.value));
+      if (hasMoney) {
+        // Una suma de importes ya contados («$16,000 + $7,650 = $23,650») los reemplaza: no se cuentan dos veces.
+        if (exprOps.slice(1, -1).every((o) => o === '+')) {
+          for (const t of expr) {
+            const k = items.findIndex((x) => same(x, t.value));
+            if (k >= 0) items.splice(k, 1);
+          }
+        }
+        chainMoney = res.value;
+      }
     }
 
     // Subtotal, IVA y total sin operación escrita: el sistema los calcula con los importes de los renglones de arriba.
     const money = toks.filter((t) => t.money);
-    if (!usedChain && money.length === 1 && items.length) {
+    if (!usedChain && money.length) {
       const f = fold(text);
-      const t = money[0];
-      const sum = items.reduce((a, b) => a + b, 0);
-      let expected: number | null = null;
-      const isTotal = TOTAL_RE.test(f) && !SUBTOTAL_RE.test(f);
-      if (SUBTOTAL_RE.test(f)) expected = subtotal = round2(sum);
-      else if (IVA_RE.test(f)) {
-        const pct = toks.find((x) => x.percent && trusted.hasPercent(canon(x.value * 100)));
-        const rate = pct ? pct.value : trusted.ivaRate();
-        if (rate !== null) expected = iva = round2((subtotal ?? sum) * rate);
-      } else if (isTotal) expected = round2((subtotal ?? sum) + (iva ?? 0));
-      if (expected !== null) {
-        if (!same(t.value, expected)) rewrite(t, expected, corrections);
-        derived.add(canon(expected));
-        if (isTotal) { items = []; subtotal = null; iva = null; }
+      const isSubtotal = SUBTOTAL_RE.test(f);
+      const isTotal = TOTAL_RE.test(f) && !isSubtotal;
+      const isIva = IVA_RE.test(f) && !isSubtotal && !isTotal;
+      if (!isSubtotal && !isTotal && !isIva) {
+        if (items.length) loose = true;
+      } else if (money.length === 1 && items.length && !loose) {
+        const t = money[0];
+        const sum = items.reduce((a, b) => a + b, 0);
+        let expected: number | null = null;
+        if (isSubtotal) expected = subtotal = round2(sum);
+        else if (isIva) {
+          const pcts = toks.filter((x) => x.percent);
+          // El porcentaje del renglón debe ser del negocio; si no dice cuál, el de la información.
+          const rate = pcts.length === 1 && trusted.hasPercent(canon(pcts[0].value * 100)) ? pcts[0].value : pcts.length ? null : trusted.ivaRate();
+          if (rate !== null) expected = iva = round2((subtotal ?? sum) * rate);
+        } else if (iva !== null || !IVA_RE.test(f)) {
+          // «Total con IVA» sin el renglón del IVA: no se sabe si los precios ya lo incluyen; no se rehace.
+          expected = round2((subtotal ?? sum) + (iva ?? 0));
+        }
+        if (expected !== null) {
+          if (!same(t.value, expected)) rewrite(t, expected, corrections);
+          derived.add(canon(expected));
+        }
       }
+      if (isTotal) reset();
     }
 
     let out = text;
