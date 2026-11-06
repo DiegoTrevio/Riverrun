@@ -157,3 +157,18 @@ test('validador: sin cotizador, si la IA deja la cotización al sistema y no esc
   } as any);
   assert.match(r.retryable.join(' '), /escribe tú la cotización/);
 });
+
+test('validador: el aviso de «escribe tú la cotización» nunca deja al cliente sin respuesta', async () => {
+  const { validateDecision } = await import('../src/engine/validator.js');
+  const { hydrateChatbot } = await import('../src/types.js');
+  const b = hydrateChatbot({ id: 'b1', account_id: 'a1', name: 'Salón', active: true, personality: {}, rules: {}, data_fields: [], flow: {}, ai: {}, created_at: new Date(), updated_at: new Date() } as any);
+  const run = (grounding: string[], final: boolean) => validateDecision({
+    raw: { thinking: '', action: 'reply', messages: ['Con gusto te ayudo.'], image_ids: [], save_data: [], remember: [], handoff_reason: '', info_not_found: false, quote: { action: 'prepare', items: [{ item_code: 'SALON', qty: 1, qty_quote: '' }], notes: '', wants_final: false } },
+    bot: b, images: [], sentImageIds: [], customerText: '¿Me cotizas el salón?', groundingSources: grounding, claimSources: grounding, customerSources: ['¿Me cotizas el salón?'], final,
+  } as any);
+  // Sin precios en la información no hay nada que cotizar: se responde normal.
+  assert.deepEqual(run(['Salón para eventos en Monterrey.'], false).retryable, []);
+  // En el último intento, la respuesta sale aunque la IA siga sin escribir precios.
+  assert.deepEqual(run(INFO, true).retryable, []);
+  assert.match(run(INFO, false).retryable.join(' '), /escribe tú la cotización/);
+});

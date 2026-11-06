@@ -943,12 +943,19 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   // ---------- Cotización: conceptos de la lista y cantidades que dio el cliente ----------
   let quote: ExecutionPlan['quote'] = null;
   const q = d.quote;
+  /**
+   * La IA dejó la cotización al sistema, pero este agente no tiene cotizador: si la información trae precios y la IA no
+   * escribió ninguno, se le pide escribirla. Nunca en el último intento: el cliente no se queda sin respuesta.
+   */
+  const shouldWriteQuote = () =>
+    !input.final && action !== 'handoff' && action !== 'no_reply' &&
+    !messages.some((m) => /\$\s?\d/.test(m)) && input.groundingSources.some((g) => /\$\s?\d/.test(g));
   if (q.action === 'prepare') {
     const qv = input.quotes;
     if (!qv) {
       fixes.push('Cotización ignorada: este asistente no cotiza o no hay conceptos activos');
       // La IA esperaba que el sistema mandara la cotización: sin montos en su mensaje, el cliente se quedaría sin precio.
-      if (!messages.some((m) => /\$\s?\d/.test(m)) && action !== 'handoff' && action !== 'no_reply') retryable.push(NO_QUOTE_TOOL);
+      if (shouldWriteQuote()) retryable.push(NO_QUOTE_TOOL);
     }
     else if (action === 'handoff' || action === 'no_reply') fixes.push('Cotización ignorada: la respuesta no llega al cliente');
     else {
@@ -1014,7 +1021,7 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     const calc = qv?.calculator;
     if (!qv || !calc) {
       fixes.push('Cotización ignorada: este asistente no tiene calculadora de cotización');
-      if (!qv && !messages.some((m) => /\$\s?\d/.test(m)) && action !== 'handoff' && action !== 'no_reply') retryable.push(NO_QUOTE_TOOL);
+      if (!qv && shouldWriteQuote()) retryable.push(NO_QUOTE_TOOL);
     }
     else if (action === 'handoff' || action === 'no_reply') fixes.push('Cotización ignorada: la respuesta no llega al cliente');
     else {
