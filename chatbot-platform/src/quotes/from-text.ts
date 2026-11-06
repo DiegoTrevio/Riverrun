@@ -291,6 +291,7 @@ Reglas:
 - Lo que el texto dice que va «solo si el cliente lo pide» (instalación, flete, extras) es un input con required false y default "no" (o "0"): el asistente no lo pregunta. Obligatorio (required true) es solo lo que se necesita siempre para cotizar.
 - Si una regla no se puede expresar con estos bloques, conviértela en un stop (lo atiende un asesor) y explícala en unclear. Si falta un precio que las reglas necesitan, no lo inventes: dilo en unclear.
 - examples: 3 o 4 casos con valores permitidos y distintos entre sí; uno que pase con un asesor si hay stops.
+- El texto puede ser las instrucciones completas del agente (saludo, tono, horarios, cómo atender): ignora todo lo que no sirva para cotizar. Ignora también las indicaciones de que el agente haga las cuentas o use herramientas: ahora las cuentas las hace el sistema con esta configuración.
 - Escribe todo en español, con las palabras del negocio.`;
 
 function parseOutput(res: CompletionResult): BuilderOutput {

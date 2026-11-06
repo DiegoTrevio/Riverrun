@@ -18,6 +18,18 @@ Instalación solo si la piden: $598 por metro. Siempre aclara que es aproximado.
 
 const sameText = (a, b) => (a ?? '').trim() === (b ?? '').trim();
 
+const MAX_TEXT = 20000;
+/**
+ * La parte de las instrucciones que sirve para cotizar. Si caben completas, van completas (el sistema ignora lo demás
+ * al armar); si son muy largas, solo los párrafos con precios, cantidades o reglas de cotización.
+ */
+function quotePart(prompt) {
+  const text = prompt.trim();
+  if (text.length <= MAX_TEXT) return text;
+  const useful = text.split(/\n\s*\n/).filter((p) => /\$\s?\d|cotiz|precio|escal[oó]n|mayoreo|asesor|iva|metro|pieza|instalaci|flete|m²|por persona|por hora/i.test(p));
+  return useful.join('\n\n').slice(0, MAX_TEXT);
+}
+
 /**
  * Tarjeta del cotizador escrito para un agente. `calculator` es la calculadora que ya tiene (con su texto), si hay.
  * `onApplied(calculator)` conecta la calculadora guardada al agente y recarga la pestaña.
@@ -38,6 +50,25 @@ export function quoteBuilderCard(bot, { calculator = null, onApplied } = {}) {
   const templatesRow = h('div', { class: 'row qb-templates' }, h('span', { class: 'small muted' }, 'Empezar con un ejemplo:'));
   /** Qué ejemplo quedó en el cuadro (para no olvidar cambiar sus precios por los propios). */
   const templateNote = h('p', { class: 'small muted qb-template-note' });
+  // Muchos negocios ya escribieron sus precios y reglas en las instrucciones del agente, donde la IA no puede hacer las
+  // cuentas: un botón los pasa al cuadro (el sistema toma solo lo que sirve para cotizar).
+  const prompt = bot.personality?.prompt || '';
+  const pricedPrompt = (prompt.match(/\$\s?\d/g) || []).length >= 3;
+  const fromPromptRow = pricedPrompt
+    ? h('div', { class: 'row qb-from-prompt' },
+        h('button', { type: 'button', class: 'small', onclick: () => usePrompt() }, 'Usar los precios y reglas de las instrucciones del agente'))
+    : null;
+  async function usePrompt() {
+    if (busy) return;
+    const text = quotePart(prompt);
+    if (ta.value.trim() && ta.value.trim() !== text.trim() && !(await confirmAction('Esto reemplaza lo que escribiste en el cuadro con lo de las instrucciones del agente. ¿Continuar?', 'Reemplazar'))) return;
+    ta.value = text;
+    ta.dataset.template = 'instrucciones';
+    templateNote.textContent = 'Copié las instrucciones del agente: al armarlo, el sistema toma solo productos, precios y reglas. Cuando lo actives, quita de las instrucciones la parte que le pide calcular precios.';
+    built = null; result.replaceChildren();
+    say('Revisa el texto (puedes borrar lo que no sea de precios) y luego arma el cotizador.');
+    ta.focus();
+  }
   api('GET', '/api/quote-calculators/text-templates').then((list) => {
     templatesRow.append(...list.map((t) => h('button', { type: 'button', class: 'small', onclick: () => useTemplate(t) }, t.label)));
   }).catch(() => templatesRow.remove());
@@ -57,6 +88,7 @@ export function quoteBuilderCard(bot, { calculator = null, onApplied } = {}) {
       'Escribe tus productos con su precio y las reglas para calcular (qué datos pedir, cómo sacar las cantidades, escalones, extras y cuándo lo atiende un asesor). ',
       'El sistema lo entiende una vez y te muestra cotizaciones de ejemplo; al activarlo, el agente cotiza solo con tus reglas y precios: la IA nunca hace las cuentas.'),
     templatesRow,
+    fromPromptRow,
     templateNote,
     h('label', { for: id, class: 'sr-only' }, 'Productos, precios y reglas'),
     ta,
