@@ -69,7 +69,7 @@ test('cada indicación aparece una sola vez', () => {
     ['trato', /Trato: de/],
     ['cero invenciones', /^## Cero invenciones$/m],
     ['info_not_found', /info_not_found = true/],
-    ['cálculos simples con precios', /cálculos simples/],
+    ['cálculos y cotizaciones con precios', /Sí puedes hacer cálculos y cotizar/],
     ['negritas de WhatsApp', /\*texto\*/],
     ['no presentarse de nuevo', /no vuelvas a presentarte/],
     ['abierto o cerrado', /En este momento el negocio está/],

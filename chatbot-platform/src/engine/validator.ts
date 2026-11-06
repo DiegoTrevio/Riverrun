@@ -8,6 +8,7 @@ import { asksQuestion, contactNameKey, declines, isAnswered, questionList, quest
 import { cardNumbersIn, isSensitiveField } from './safety.js';
 import { checkInputs, evaluateCalculator, parseHumanNumber, type CalculatorDefinition } from '../quotes/calculator.js';
 import { countEmojis, deepClean, FactCorpus, limitEmojis, MASKED_MONEY_RE, normalize, stripEmojis, toWhatsappFormat, truncateChars } from './text.js';
+import { fixArithmetic } from './arithmetic.js';
 
 /** Plan final ya validado que el backend ejecutará. */
 export interface ExecutionPlan {
@@ -672,12 +673,21 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   const trusted = new FactCorpus(input.groundingSources);
   const all = new FactCorpus([...input.groundingSources, ...(input.customerSources ?? [])]);
   const customerCorpus = new FactCorpus(input.customerSources ?? []);
+  // Cotizar con las instrucciones: el sistema rehace las sumas y multiplicaciones que escribió la IA (con precios del
+  // negocio y cantidades del cliente) y corrige las que salieron mal antes de revisar los datos.
+  if (rules.verify_facts && messages.length) {
+    const arith = fixArithmetic(messages, trusted, customerCorpus);
+    if (arith.corrections.length) {
+      messages = arith.messages;
+      fixes.push(`Cuentas corregidas por el sistema: ${arith.corrections.join('; ')}`);
+    }
+  }
   if (rules.verify_facts && messages.length) {
     const unverified = all.unverified(messages.join('\n'), trusted, customerCorpus);
     if (unverified.length) {
       factIssues = true;
       retryable.push(
-        `Mencionaste datos que no están en la información del negocio ni en la conversación: ${unverified.join(', ')}. Elimina o corrige esos datos; si no los tienes, dilo con naturalidad. Precios, descuentos, promociones, horarios y enlaces solo pueden salir de la información del negocio; si calculas un total, escribe también el precio unitario (por ejemplo: 2 noches × $1,650 = $3,300) y usa solo cantidades que dijo el cliente.`,
+        `Mencionaste datos que no están en la información del negocio ni en la conversación: ${unverified.join(', ')}. Elimina o corrige esos datos; si no los tienes, dilo con naturalidad. Precios, descuentos, promociones, horarios y enlaces solo pueden salir de la información del negocio; si calculas, escribe cada operación con sus números (por ejemplo: 40 ÷ 2.50 = 16 paneles × $1,000 = $16,000) usando solo precios del negocio y cantidades que dijo el cliente.`,
       );
     }
   }

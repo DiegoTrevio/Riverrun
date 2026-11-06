@@ -1,0 +1,205 @@
+/**
+ * Cuentas que escribe la IA al cotizar con las instrucciones del agente (sin calculadora armada): «40 ÷ 2.50 = 16 paneles
+ * × $1,000 = $16,000», «Subtotal», «IVA (16%)» y «Total». El sistema revisa cada operación y corrige el resultado si la IA
+ * se equivocó, así la suma y la multiplicación salen bien aunque la IA no las haga bien.
+ *
+ * Una operación cuenta solo si cada número sale de un lugar confiable:
+ * - un precio ($) del negocio o un resultado ya revisado de la misma respuesta;
+ * - un porcentaje del negocio (el IVA);
+ * - una cantidad que dijo el cliente, solo multiplicando (el cliente no dicta precios, descuentos ni divisores);
+ * - en cuentas de cantidades sin dinero («16 + 1 = 17 postes»), también los números de las reglas del negocio.
+ * Si un número no cumple, la operación no se toma en cuenta y el monto pasa por la verificación normal (cero invenciones).
+ */
+import { canonicalNumber, type FactCorpus } from './text.js';
+
+type Op = '×' | '÷' | '+' | '-' | '=';
+type Tok = {
+  start: number;
+  end: number;
+  raw: string;
+  value: number;
+  money: boolean;
+  percent: boolean;
+  commas: boolean;
+  decimals: boolean;
+  /** Resultado de una operación revisada en esta respuesta. */
+  derived: boolean;
+  /** El sistema cambió la cifra: se reescribe en el texto. */
+  rewritten: boolean;
+};
+
+export type ArithmeticResult = {
+  /** Los mensajes con las cuentas corregidas. */
+  messages: string[];
+  /** Qué se corrigió («$6,900 → $6,800»), para la bitácora. */
+  corrections: string[];
+  /** Resultados revisados (cifra canónica, p. ej. "16000", "3830.4"): ya no cuentan como inventados. */
+  derived: Set<string>;
+};
+
+const TOKEN_RE = /(US\$|\$)?\s?(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(\s?%)?/g;
+const MONEY_AFTER_RE = /^\s?(?:mxn|pesos|m\.?n\.?|usd)(?![\p{L}])/iu;
+/** Entre dos números: lo que corta una operación (fin de oración, dos puntos, paréntesis, coma con espacio). */
+const BREAK_RE = /[.;:!?()\n[\]]|,\s/;
+const SUBTOTAL_RE = /sub\s?-?total/;
+const IVA_RE = /(^|[^\p{L}])iva([^\p{L}]|$)/u;
+const TOTAL_RE = /(^|[^\p{L}])total([^\p{L}]|$)/u;
+const fold = (s: string) => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+const round2 = (n: number) => Math.round(n * 100) / 100;
+const same = (a: number, b: number) => Math.abs(a - b) < 0.011;
+const canon = (n: number) => String(round2(n));
+
+function opIn(gap: string): Op | null {
+  if (gap.length > 40 || BREAK_RE.test(gap)) return null;
+  const g = gap.trim().toLowerCase();
+  if (g === '-' || g === '−' || g === '–') return '-';
+  if (g === '/') return '÷';
+  const found: Op[] = [];
+  for (const ch of g) {
+    if (ch === '×' || ch === '*' || ch === '·') found.push('×');
+    else if (ch === '÷') found.push('÷');
+    else if (ch === '+') found.push('+');
+    else if (ch === '=') found.push('=');
+  }
+  if (/(^|\s)x(\s|$)/.test(g)) found.push('×');
+  return found.length === 1 ? found[0] : null;
+}
+
+function tokensOf(line: string): Tok[] {
+  const out: Tok[] = [];
+  for (const m of line.matchAll(TOKEN_RE)) {
+    const num = m[2];
+    const start = m.index! + (m[0].length - m[0].trimStart().length);
+    const end = m.index! + m[0].length;
+    const money = !!m[1] || MONEY_AFTER_RE.test(line.slice(end));
+    const percent = !!m[3] && !money;
+    const v = Number(num.replace(/,/g, ''));
+    if (!Number.isFinite(v)) continue;
+    out.push({ start, end, raw: m[0].trim(), value: percent ? v / 100 : v, money, percent, commas: num.includes(','), decimals: /\.\d+$/.test(num), derived: false, rewritten: false });
+  }
+  return out;
+}
+
+function format(t: Tok, v: number): string {
+  const r = round2(v);
+  let s = t.decimals || !Number.isInteger(r) ? r.toFixed(2) : String(r);
+  if (t.commas || (t.money && Math.abs(r) >= 1000)) {
+    const [i, d] = s.split('.');
+    s = i.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (d ? `.${d}` : '');
+  }
+  const prefix = /^US\$/.test(t.raw) ? 'US$' : t.raw.startsWith('$') ? '$' : '';
+  return prefix + s;
+}
+
+function rewrite(t: Tok, v: number, corrections: string[], why = '') {
+  const to = format(t, v);
+  corrections.push(`${t.raw} → ${to}${why}`);
+  t.raw = to;
+  t.value = round2(v);
+  t.decimals = t.decimals || !Number.isInteger(t.value);
+  t.rewritten = true;
+}
+
+/** Evalúa con × y ÷ antes que + y −. */
+function evaluate(vals: number[], ops: Op[]): number {
+  const terms = [vals[0]];
+  const signs: Op[] = [];
+  for (let i = 0; i < ops.length; i++) {
+    const x = vals[i + 1];
+    if (ops[i] === '×') terms[terms.length - 1] *= x;
+    else if (ops[i] === '÷') terms[terms.length - 1] /= x;
+    else { signs.push(ops[i]); terms.push(x); }
+  }
+  return terms.slice(1).reduce((acc, x, i) => (signs[i] === '+' ? acc + x : acc - x), terms[0]);
+}
+
+/**
+ * Revisa y corrige las cuentas de la respuesta. `trusted` = información del negocio; `customer` = lo que dijo el cliente.
+ * Los mensajes se revisan en orden y comparten lo calculado (una cotización puede venir en varias burbujas).
+ */
+export function fixArithmetic(messages: string[], trusted: FactCorpus, customer?: FactCorpus): ArithmeticResult {
+  const corrections: string[] = [];
+  const derived = new Set<string>();
+  /** Importe de cada renglón (el último monto de cada cadena de operaciones), para el subtotal. */
+  let items: number[] = [];
+  let subtotal: number | null = null;
+  let iva: number | null = null;
+
+  const known = (t: Tok, ops: (Op | null)[], j: number, hasMoney: boolean) => {
+    if (t.derived) return true;
+    const c = canonicalNumber(t.raw.replace(/^(US\$|\$)\s?/, '').replace(/\s?%$/, ''));
+    if (t.money) return trusted.hasMoney(c);
+    if (t.percent) return trusted.hasPercent(c);
+    if (!hasMoney) return c.length === 1 || trusted.hasNumber(c) || !!customer?.hasNumber(c);
+    // Con dinero, un número sin $ solo puede ser una cantidad del cliente que multiplica.
+    return !!customer?.hasNumber(c) && [ops[j], ops[j + 1]].every((o) => !o || o === '×' || o === '=');
+  };
+
+  const line = (text: string): string => {
+    const toks = tokensOf(text);
+    if (!toks.length) return text;
+    const ops: (Op | null)[] = toks.map((t, i) => (i ? opIn(text.slice(toks[i - 1].end, t.start)) : null));
+    let chainMoney: number | null = null;
+    let usedChain = false;
+    let segStart = 0;
+    // Cadenas: números unidos por operaciones; cada "=" cierra una operación y su resultado abre la siguiente.
+    for (let i = 1; i <= toks.length; i++) {
+      const op = i < toks.length ? ops[i] : null;
+      if (op === null) {
+        if (chainMoney !== null) items.push(chainMoney);
+        chainMoney = null;
+        segStart = i;
+        continue;
+      }
+      if (op !== '=') continue;
+      usedChain = true;
+      const expr = toks.slice(segStart, i);
+      const exprOps: (Op | null)[] = [null, ...ops.slice(segStart + 1, i), '='];
+      const res = toks[i];
+      segStart = i;
+      if (expr.length < 2) continue;
+      const hasMoney = expr.some((t) => t.money) || res.money;
+      if (!expr.every((t, j) => known(t, exprOps, j, hasMoney))) continue;
+      const value = evaluate(expr.map((t) => t.value), exprOps.slice(1, -1) as Op[]);
+      if (!Number.isFinite(value) || res.percent) continue;
+      const division = exprOps.includes('÷');
+      // Una división puede redondearse a entero (p. ej. «paneles = metros ÷ 2.50 hacia arriba»).
+      const rounded = division && (res.value === Math.ceil(value - 1e-9) || res.value === Math.floor(value + 1e-9));
+      if (!same(res.value, value) && !rounded) {
+        const to = division && !hasMoney && !Number.isInteger(round2(value)) ? Math.ceil(value) : value;
+        rewrite(res, to, corrections, ` (${expr.map((t) => t.raw).join(' · ')})`);
+      }
+      res.derived = true;
+      derived.add(canon(res.value));
+      if (hasMoney) chainMoney = res.value;
+    }
+
+    // Subtotal, IVA y total sin operación escrita: el sistema los calcula con los importes de los renglones de arriba.
+    const money = toks.filter((t) => t.money);
+    if (!usedChain && money.length === 1 && items.length) {
+      const f = fold(text);
+      const t = money[0];
+      const sum = items.reduce((a, b) => a + b, 0);
+      let expected: number | null = null;
+      const isTotal = TOTAL_RE.test(f) && !SUBTOTAL_RE.test(f);
+      if (SUBTOTAL_RE.test(f)) expected = subtotal = round2(sum);
+      else if (IVA_RE.test(f)) {
+        const pct = toks.find((x) => x.percent && trusted.hasPercent(canon(x.value * 100)));
+        const rate = pct ? pct.value : trusted.ivaRate();
+        if (rate !== null) expected = iva = round2((subtotal ?? sum) * rate);
+      } else if (isTotal) expected = round2((subtotal ?? sum) + (iva ?? 0));
+      if (expected !== null) {
+        if (!same(t.value, expected)) rewrite(t, expected, corrections);
+        derived.add(canon(expected));
+        if (isTotal) { items = []; subtotal = null; iva = null; }
+      }
+    }
+
+    let out = text;
+    for (const t of [...toks].reverse()) if (t.rewritten) out = out.slice(0, t.start) + t.raw + out.slice(t.end);
+    return out;
+  };
+
+  const fixed = messages.map((m) => m.split('\n').map(line).join('\n'));
+  return { messages: fixed, corrections, derived };
+}

@@ -1,4 +1,5 @@
 /** Utilidades de texto: normalización, extracción de datos verificables, formato WhatsApp. */
+import { fixArithmetic } from './arithmetic.js';
 
 export function normalize(s: string): string {
   return (s || '')
@@ -420,6 +421,18 @@ export class FactCorpus {
     return false;
   }
 
+  /** ¿El negocio menciona este porcentaje ("16" = 16 %) como algo que ofrece o cobra? */
+  hasPercent(p: string) {
+    return this.percents.has(p);
+  }
+
+  /** Tasa de IVA que dice la información ("IVA 16%", "16% de IVA"), o 16 % si solo dice "más IVA". `null` = no habla de IVA. */
+  ivaRate(): number | null {
+    const m = /iva[^%\n]{0,30}?(\d{1,2}(?:[.,]\d+)?)\s?%|(\d{1,2}(?:[.,]\d+)?)\s?%\s?(?:de\s)?iva/.exec(this.folded);
+    if (m) return Number(canonicalNumber(m[1] ?? m[2])) / 100;
+    return /(^|[^\p{L}])iva([^\p{L}]|$)/u.test(this.folded) ? 0.16 : null;
+  }
+
   hasPhone(p: string) {
     if (this.numbers.has(p)) return true;
     // Sin la lada de México (52, o 521 en celulares) es el mismo número; con otra lada ("+1") ya es otro.
@@ -488,11 +501,14 @@ export class FactCorpus {
     const bad: string[] = [];
     const computed = new Set<string>();
     if (trusted) {
+      // Cuentas escritas con números del negocio y del cliente (40 ÷ 2.50 = 16, 16 × $1,000 = $16,000, subtotal, IVA,
+      // total): sus resultados correctos no son inventos. Las incorrectas las corrige el validador antes de llegar aquí.
+      for (const d of fixArithmetic([reply], trusted, customer).derived) computed.add(d);
       const money = extractMoney(reply);
       // Precios del negocio que la respuesta muestra: los únicos que sirven de base para una cotización.
       const shown = new Set(money.filter((m) => trusted.hasMoney(m)));
       for (const m of money) {
-        if (trusted.hasMoney(m)) {
+        if (trusted.hasMoney(m) || computed.has(m)) {
           computed.add(m);
           continue;
         }
