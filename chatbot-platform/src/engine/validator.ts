@@ -8,6 +8,7 @@ import { asksQuestion, contactNameKey, declines, isAnswered, questionList, quest
 import { cardNumbersIn, isSensitiveField } from './safety.js';
 import { checkInputs, evaluateCalculator, parseHumanNumber, type CalculatorDefinition } from '../quotes/calculator.js';
 import { countEmojis, deepClean, FactCorpus, limitEmojis, MASKED_MONEY_RE, normalize, stripEmojis, toWhatsappFormat, truncateChars } from './text.js';
+import { fixArithmetic } from './arithmetic.js';
 
 /** Plan final ya validado que el backend ejecutará. */
 export interface ExecutionPlan {
@@ -461,6 +462,8 @@ function dropSentences(messages: string[], test: (sentenceNorm: string, sentence
  *  - Precios, números, links, correos y teléfonos deben existir en el contexto.
  *  - Frases prohibidas, emojis, formato y longitud según configuración.
  */
+const NO_QUOTE_TOOL = 'Este agente no envía cotizaciones del sistema (no uses quote.action): si el cliente ya dio los datos, escribe tú la cotización en el mensaje con los precios y reglas de la información del negocio, con cada operación y sus números (p. ej. «Paneles: 40 ÷ 2.50 = 16 paneles × $1,000 = $16,000», luego subtotal, IVA y total). El sistema revisa las cuentas.';
+
 export function validateDecision(input: ValidationInput): ValidationResult {
   const { bot } = input;
   const rules = bot.rules;
@@ -672,12 +675,21 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   const trusted = new FactCorpus(input.groundingSources);
   const all = new FactCorpus([...input.groundingSources, ...(input.customerSources ?? [])]);
   const customerCorpus = new FactCorpus(input.customerSources ?? []);
+  // Cotizar con las instrucciones: el sistema rehace las sumas y multiplicaciones que escribió la IA (con precios del
+  // negocio y cantidades del cliente) y corrige las que salieron mal antes de revisar los datos.
+  if (rules.verify_facts && messages.length) {
+    const arith = fixArithmetic(messages, trusted, customerCorpus);
+    if (arith.corrections.length) {
+      messages = arith.messages;
+      fixes.push(`Cuentas corregidas por el sistema: ${arith.corrections.join('; ')}`);
+    }
+  }
   if (rules.verify_facts && messages.length) {
     const unverified = all.unverified(messages.join('\n'), trusted, customerCorpus);
     if (unverified.length) {
       factIssues = true;
       retryable.push(
-        `Mencionaste datos que no están en la información del negocio ni en la conversación: ${unverified.join(', ')}. Elimina o corrige esos datos; si no los tienes, dilo con naturalidad. Precios, descuentos, promociones, horarios y enlaces solo pueden salir de la información del negocio; si calculas un total, escribe también el precio unitario (por ejemplo: 2 noches × $1,650 = $3,300) y usa solo cantidades que dijo el cliente.`,
+        `Mencionaste datos que no están en la información del negocio ni en la conversación: ${unverified.join(', ')}. Elimina o corrige esos datos; si no los tienes, dilo con naturalidad. Precios, descuentos, promociones, horarios y enlaces solo pueden salir de la información del negocio; si calculas, escribe cada operación con sus números (por ejemplo: 40 ÷ 2.50 = 16 paneles × $1,000 = $16,000) usando solo precios del negocio y cantidades que dijo el cliente.`,
       );
     }
   }
@@ -931,9 +943,20 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   // ---------- Cotización: conceptos de la lista y cantidades que dio el cliente ----------
   let quote: ExecutionPlan['quote'] = null;
   const q = d.quote;
+  /**
+   * La IA dejó la cotización al sistema, pero este agente no tiene cotizador: si la información trae precios y la IA no
+   * escribió ninguno, se le pide escribirla. Nunca en el último intento: el cliente no se queda sin respuesta.
+   */
+  const shouldWriteQuote = () =>
+    !input.final && action !== 'handoff' && action !== 'no_reply' &&
+    !messages.some((m) => /\$\s?\d/.test(m)) && input.groundingSources.some((g) => /\$\s?\d/.test(g));
   if (q.action === 'prepare') {
     const qv = input.quotes;
-    if (!qv) fixes.push('Cotización ignorada: este asistente no cotiza o no hay conceptos activos');
+    if (!qv) {
+      fixes.push('Cotización ignorada: este asistente no cotiza o no hay conceptos activos');
+      // La IA esperaba que el sistema mandara la cotización: sin montos en su mensaje, el cliente se quedaría sin precio.
+      if (shouldWriteQuote()) retryable.push(NO_QUOTE_TOOL);
+    }
     else if (action === 'handoff' || action === 'no_reply') fixes.push('Cotización ignorada: la respuesta no llega al cliente');
     else {
       const problems: string[] = [];
@@ -996,7 +1019,10 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   if (q.action === 'calculate') {
     const qv = input.quotes;
     const calc = qv?.calculator;
-    if (!qv || !calc) fixes.push('Cotización ignorada: este asistente no tiene calculadora de cotización');
+    if (!qv || !calc) {
+      fixes.push('Cotización ignorada: este asistente no tiene calculadora de cotización');
+      if (!qv && shouldWriteQuote()) retryable.push(NO_QUOTE_TOOL);
+    }
     else if (action === 'handoff' || action === 'no_reply') fixes.push('Cotización ignorada: la respuesta no llega al cliente');
     else {
       const problems: string[] = [];

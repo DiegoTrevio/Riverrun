@@ -37,6 +37,27 @@ El cliente recibe un PDF. Tanto el archivo como el mensaje del chat dicen si es 
    - permitir o no las finales;
    - elegir los datos que se piden antes de cotizar (por ejemplo, la fecha del evento).
 
+## Cotizar directo desde las instrucciones del agente
+
+Sin armar nada: si tus precios y reglas están en las **instrucciones** o en la **información** del agente, el agente puede cotizar en el chat. Escribe cada operación con sus números, un renglón por concepto, y luego el subtotal, el IVA y el total:
+
+```
+Paneles: 40 ÷ 2.50 = 16 paneles × $1,000 = $16,000
+Postes: 16 + 1 = 17 postes × $400 = $6,800
+Subtotal: $22,800
+IVA (16%): $3,648
+Total: $26,448
+```
+
+**El sistema rehace cada cuenta** antes de enviar (`src/engine/arithmetic.ts`). Si la IA se equivocó en una multiplicación, una suma, el IVA o el total, el sistema la corrige, y también todo lo que depende de ella. Una división puede redondearse a entero («hacia arriba»). Una cuenta solo vale si cada número sale de un lugar confiable:
+
+- un precio del negocio;
+- un porcentaje del negocio (el IVA);
+- un resultado anterior de la misma respuesta;
+- una cantidad que dijo el cliente, que solo puede multiplicar: el cliente no dicta precios ni descuentos.
+
+Un precio inventado, o un importe sin la operación de la que sale, sigue sin enviarse. Para PDF, folios y aprobación usa el cotizador escrito o la lista de precios (abajo).
+
 ## Cotizador escrito: cotizar con tus reglas
 
 Úsalo cuando el precio **depende de los datos del cliente**: medidas (metros, m²), opciones (modelo, altura, acabado), escalones por cantidad, extras que solo van si los pide o casos que debe ver un asesor. Con la lista simple de arriba la IA solo elige conceptos y cantidades; con el cotizador **el sistema hace todas las cuentas** con tus reglas.
