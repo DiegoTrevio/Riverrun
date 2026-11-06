@@ -1,11 +1,11 @@
 import { needAccount } from './admin.js';
 import { api, area, check, confirmAction, dialog, field, fill, fmtDate, h, run, select, settingsSection, text, toast, named } from './core.js';
 import { render } from './main.js';
-import { isAdmin, withAcct } from './session.js';
+import { isAdmin, isSuper, withAcct } from './session.js';
 
 /* ============================== Cotizaciones ============================== */
 
-const TABS = [['precios', 'Lista de precios'], ['formatos', 'Formatos'], ['historial', 'Cotizaciones'], ['ajustes', 'Ajustes']];
+const TABS = [['precios', 'Lista de precios'], ['calculadoras', 'Calculadoras'], ['formatos', 'Formatos'], ['historial', 'Cotizaciones'], ['ajustes', 'Ajustes']];
 
 export const PRICE_MODE = { exact: 'Precio exacto', from: 'Desde (precio mínimo)', range: 'Rango (mínimo a máximo)', tbd: 'Por confirmar (sin precio)' };
 const IVA_MODE = { plus: 'Se suma el IVA', included: 'El precio ya incluye IVA', exempt: 'Exento de IVA' };
@@ -58,6 +58,7 @@ export async function viewQuotes(root, tab = 'precios', params = new URLSearchPa
   root.append(body);
   if (tab === 'ajustes') return viewSettings(body);
   if (tab === 'formatos') return viewTemplates(body);
+  if (tab === 'calculadoras') return params.get('id') ? viewCalculator(body, params.get('id')) : viewCalculators(body);
   if (tab === 'historial') return params.get('id') ? viewQuote(body, params.get('id')) : listQuotes(body, params);
   return viewPrices(body, params.get('id'));
 }
@@ -70,22 +71,29 @@ async function viewPrices(root, editId) {
     h('p', { class: 'muted' },
       'Lo que el asistente puede cotizar. Usa precio exacto si lo sabes; «desde», rango o «por confirmar» si depende de los detalles (sale como APROXIMADA). ',
       'Los totales salen siempre de esta lista.'),
-    h('a', { class: 'btn primary', href: '#/cotizaciones/precios?id=new' }, '+ Nuevo concepto')));
+    h('div', { class: 'row' },
+      h('a', { class: 'btn primary', href: '#/cotizaciones/precios?id=new' }, '+ Nuevo concepto'),
+      h('a', { class: 'btn', href: withAcct('/api/price-items/export.csv'), download: 'lista-de-precios.csv' }, 'Bajar CSV'),
+      csvUpload(root))));
   if (editId) {
     const existing = editId === 'new' ? null : items.find((i) => i.id === editId);
     if (editId !== 'new' && !existing) throw new Error('Concepto no encontrado');
     root.append(priceForm(existing, settings));
   }
   const open = (i) => (location.hash = `#/cotizaciones/precios?id=${i.id}`);
+  // Los precios del cotizador se distinguen por familia y atributos (producto, altura, escalón…).
+  const forWhat = (i) => [i.family, ...Object.entries(i.attributes || {}).map(([k, v]) => `${k}: ${v}`)].filter(Boolean).join(' · ');
+  const withAttrs = items.some((i) => forWhat(i));
   root.append(h('div', { class: 'card' }, items.length
-    ? h('table', {},
-        h('thead', {}, h('tr', {}, h('th', {}, 'Concepto'), h('th', {}, 'Clave'), h('th', {}, 'Precio'), h('th', {}, 'IVA'), h('th', {}, 'Estado'))),
+    ? h('div', { class: 'table-wrap' }, h('table', {},
+        h('thead', {}, h('tr', {}, h('th', {}, 'Concepto'), withAttrs ? h('th', {}, 'Para') : null, h('th', {}, 'Clave'), h('th', {}, 'Precio'), h('th', {}, 'IVA'), h('th', {}, 'Estado'))),
         h('tbody', {}, items.map((i) => h('tr', { class: 'click', tabindex: '0', onclick: () => open(i), onkeydown: (e) => { if (e.key === 'Enter') open(i); } },
-          h('td', {}, h('strong', {}, i.name), i.description ? h('div', { class: 'small muted' }, i.description) : null),
+          h('td', {}, h('strong', {}, i.name), i.description ? h('div', { class: 'small muted' }, i.description) : null, i.calculator_id ? h('div', { class: 'small muted' }, 'Del cotizador') : null),
+          withAttrs ? h('td', { class: 'small muted' }, forWhat(i) || '—') : null,
           h('td', { class: 'small' }, i.code),
           h('td', {}, unitPrice(i, settings.currency), h('span', { class: 'small muted' }, ` / ${i.unit}`)),
           h('td', { class: 'small' }, IVA_MODE[i.iva_mode]),
-          h('td', {}, i.active ? badge(['green', 'Activo']) : badge(['', 'Inactivo']))))))
+          h('td', {}, i.active ? badge(['green', 'Activo']) : badge(['', 'Inactivo'])))))))
     // Sin conceptos: la lista vacía enseña cómo se ve cada tipo de precio (ejemplos, en gris y marcados como tales).
     : [h('p', { style: 'margin-top:0' }, h('strong', {}, 'Aún no hay conceptos. '), 'Agrega los servicios o productos que cotizas; así se verá tu lista:'),
       h('table', { class: 'example-table' },
@@ -144,6 +152,145 @@ function priceForm(existing, settings) {
 }
 
 const slug = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'CONCEPTO';
+
+/**
+ * Subir la lista de precios en CSV (de Excel): primero se revisa y se muestra qué pasaría (nuevos, actualizados o los
+ * errores por fila); nada se guarda hasta «Confirmar».
+ */
+function csvUpload(root) {
+  const id = `csv-${Math.random().toString(36).slice(2, 7)}`;
+  const out = h('div', { 'aria-live': 'polite' });
+  const input = h('input', { id, type: 'file', accept: '.csv,text/csv', hidden: true, onchange: async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    const csv = await file.text();
+    try {
+      const r = await api('POST', withAcct('/api/price-items/import'), { csv, dry_run: true });
+      if (!r.ok) {
+        out.replaceChildren(h('div', { class: 'banner err', role: 'alert' }, h('strong', {}, `«${file.name}» tiene errores; no se guardó nada:`),
+          h('ul', {}, r.errors.map((x) => h('li', {}, `Fila ${x.row}: ${x.message}`)))));
+        return;
+      }
+      out.replaceChildren(h('div', { class: 'banner', role: 'status' },
+        `«${file.name}»: ${r.create} ${r.create === 1 ? 'concepto nuevo' : 'conceptos nuevos'} y ${r.update} ${r.update === 1 ? 'actualizado' : 'actualizados'} (por su clave). `,
+        h('button', { type: 'button', class: 'primary small', onclick: () => run(async () => { await api('POST', withAcct('/api/price-items/import'), { csv }); render(); }, 'Lista de precios actualizada') }, 'Confirmar importación'),
+        ' ', h('button', { type: 'button', class: 'small', onclick: () => out.replaceChildren() }, 'Cancelar')));
+    } catch (err) { out.replaceChildren(h('p', { class: 'small err' }, err.message)); }
+  } });
+  root.append(out);
+  // El campo de archivo va oculto (hidden): su etiqueta es el botón, también con el teclado.
+  return h('span', {}, h('label', { for: id, class: 'btn', tabindex: '0', onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); } } }, 'Subir CSV'), input);
+}
+
+/* ------------------------------ Calculadoras ------------------------------ */
+
+const usedBy = (bots, c) => bots.filter((b) => b.ai?.quotes?.calculator_id === c.id);
+
+async function viewCalculators(root) {
+  const [calcs, bots, items] = await Promise.all([
+    api('GET', withAcct('/api/quote-calculators')), api('GET', withAcct('/api/chatbots')).catch(() => []), api('GET', withAcct('/api/price-items')).catch(() => []),
+  ]);
+  const fileId = 'calc-import';
+  const importInput = h('input', { id: fileId, type: 'file', accept: '.json,application/json', hidden: true, onchange: async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    let data;
+    try { data = JSON.parse(await file.text()); } catch { toast('Ese archivo no es una calculadora exportada', true); return; }
+    await run(async () => { const c = await api('POST', withAcct('/api/quote-calculators/import'), data); location.hash = `#/cotizaciones/calculadoras?id=${c.id}`; }, 'Calculadora importada (apagada: revísala y actívala)');
+  } });
+  root.append(h('div', { class: 'page-intro' },
+    h('p', { class: 'muted' },
+      'Las calculadoras hacen las cuentas de cada cotización con tus reglas y precios. Se arman desde el texto de «Productos, precios y reglas» en la pestaña Cotizaciones de cada agente. ',
+      'Aquí ves cuáles hay, quién las usa, y puedes probarlas, exportarlas o importar una.'),
+    h('div', { class: 'row' },
+      h('span', {}, h('label', { for: fileId, class: 'btn', tabindex: '0', onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); importInput.click(); } } }, 'Importar calculadora'), importInput))));
+  const open = (c) => (location.hash = `#/cotizaciones/calculadoras?id=${c.id}`);
+  root.append(h('div', { class: 'card' }, calcs.length
+    ? h('div', { class: 'table-wrap' }, h('table', {},
+        h('thead', {}, h('tr', {}, h('th', {}, 'Calculadora'), h('th', {}, 'La usa'), h('th', {}, 'Precios'), h('th', {}, 'Versión'), h('th', {}, 'Estado'))),
+        h('tbody', {}, calcs.map((c) => {
+          const agents = usedBy(bots, c);
+          return h('tr', { class: 'click', tabindex: '0', onclick: () => open(c), onkeydown: (e) => { if (e.key === 'Enter') open(c); } },
+            h('td', {}, h('strong', {}, c.name), h('div', { class: 'small muted' }, c.template_key === 'texto' ? 'Armada desde texto' : 'Configurada o importada')),
+            h('td', { class: 'small' }, agents.length ? agents.map((b) => b.name).join(', ') : h('span', { class: 'muted' }, 'Ningún agente')),
+            h('td', { class: 'small' }, String(items.filter((i) => i.calculator_id === c.id && i.active).length)),
+            h('td', { class: 'small' }, String(c.version)),
+            h('td', {}, c.active ? badge(['green', 'Activa']) : badge(['', 'Apagada'])));
+        }))))
+    : h('p', { style: 'margin:0' }, h('strong', {}, 'Aún no hay calculadoras. '), 'Ve a un agente → Cotizaciones y escribe tus productos, precios y reglas (o empieza con un ejemplo de tu giro).')));
+}
+
+async function viewCalculator(root, id) {
+  const [c, bots, settings] = await Promise.all([api('GET', `/api/quote-calculators/${id}`), api('GET', withAcct('/api/chatbots')).catch(() => []), api('GET', withAcct('/api/quote-settings'))]);
+  const def = c.definition;
+  const agents = usedBy(bots, c);
+  const advisor = [...(def.values || []).flatMap((v) => (v.tiers?.otherwise?.stop ? [v.tiers.otherwise.stop] : [])), ...(def.stops || []).map((x) => x.message)];
+  const reload = () => render();
+  const toggle = () => run(async () => { await api('PUT', `/api/quote-calculators/${c.id}`, { active: !c.active }); reload(); }, c.active ? 'Calculadora apagada' : 'Calculadora encendida');
+  const remove = async () => {
+    const warn = agents.length ? ` ${agents.map((b) => b.name).join(', ')} ${agents.length === 1 ? 'la usa' : 'la usan'}: ${agents.length === 1 ? 'cotizará' : 'cotizarán'} con la lista simple.` : '';
+    if (!(await confirmAction(`¿Eliminar la calculadora «${c.name}»? Las cotizaciones ya hechas no cambian.${warn}`, 'Eliminar'))) return;
+    await run(async () => { await api('DELETE', `/api/quote-calculators/${c.id}`); location.hash = '#/cotizaciones/calculadoras'; }, 'Calculadora eliminada');
+  };
+  root.append(
+    h('p', {}, h('a', { href: '#/cotizaciones/calculadoras' }, '← Todas las calculadoras')),
+    h('div', { class: 'card' },
+      h('h2', { style: 'margin-top:0' }, c.name, ' ', c.active ? badge(['green', 'Activa']) : badge(['', 'Apagada'])),
+      h('p', { class: 'small muted' }, `Versión ${c.version}. `, agents.length ? ['La usa: ', ...agents.flatMap((b, i) => [i ? ', ' : '', h('a', { href: `#/bot/${b.id}/cotizaciones` }, b.name)])] : 'Ningún agente la usa todavía.'),
+      h('h3', {}, 'Lo que pide al cliente'),
+      h('ol', {}, def.inputs.map((d) => h('li', {}, d.label, d.type === 'option' ? `: ${d.options.map((o) => o.label).join(', ')}` : d.type === 'boolean' ? ' (sí o no)' : d.unit ? ` (${d.unit})` : '', d.required === false ? ' — solo si lo menciona' : ''))),
+      advisor.length ? [h('h3', {}, 'Lo atiende un asesor'), h('ul', {}, advisor.map((m) => h('li', {}, m)))] : null,
+      def.legend ? h('p', { class: 'small' }, h('strong', {}, 'Leyenda: '), def.legend) : null,
+      c.source_text ? h('details', {}, h('summary', {}, 'Texto del que salió'), h('pre', { class: 'calc-source', style: 'white-space:pre-wrap;overflow-wrap:anywhere' }, c.source_text),
+        h('p', { class: 'small muted' }, 'Para cambiarla, edita este texto en ', agents[0] ? h('a', { href: `#/bot/${agents[0].id}/cotizaciones` }, `${agents[0].name} → Cotizaciones`) : 'el agente → Cotizaciones', ' y vuelve a armarla.')) : null,
+      calcTry(c, def, settings.currency),
+      h('div', { class: 'row' },
+        h('a', { class: 'btn', href: `/api/quote-calculators/${c.id}/export`, download: `calculadora-${c.name}.json` }, 'Exportar'),
+        h('button', { type: 'button', onclick: toggle }, c.active ? 'Apagar' : 'Encender'),
+        isSuper() ? h('button', { type: 'button', onclick: () => copyDialog(c) }, 'Copiar a otra cuenta') : null,
+        h('button', { type: 'button', class: 'danger', onclick: remove }, 'Eliminar'))));
+}
+
+/** Probar la calculadora guardada con datos (el sistema cotiza con la lista de precios actual). */
+function calcTry(c, def, currency) {
+  const values = {};
+  const out = h('div', { 'aria-live': 'polite' });
+  const fields = def.inputs.map((d) => {
+    const fid = `ct-${c.id.slice(0, 8)}-${d.key}`;
+    const control = d.type === 'option' ? h('select', { id: fid, onchange: (e) => { values[d.key] = e.target.value; } }, h('option', { value: '' }, '—'), d.options.map((o) => h('option', { value: o.value }, o.label)))
+      : d.type === 'boolean' ? h('input', { id: fid, type: 'checkbox', onchange: (e) => { values[d.key] = e.target.checked; } })
+      : h('input', { id: fid, type: d.type === 'number' ? 'number' : 'text', step: 'any', inputmode: d.type === 'number' ? 'decimal' : 'text', oninput: (e) => { values[d.key] = e.target.value; } });
+    return h('div', { class: 'field' }, h('label', { for: fid }, d.label, d.unit ? ` (${d.unit})` : ''), control);
+  });
+  const go = h('button', { type: 'button', onclick: async () => {
+    go.disabled = true;
+    try {
+      const r = await api('POST', `/api/quote-calculators/${c.id}/preview`, { inputs: values });
+      out.replaceChildren(r.ok
+        ? h('div', { class: 'table-wrap' }, h('table', { class: 'small' },
+            h('tbody', {}, r.priced.lines.map((l) => h('tr', {}, h('td', {}, `${l.qty} ×`), h('td', {}, l.name), h('td', {}, unitPrice(l, currency)), h('td', { class: 'num' }, lineAmount(l, currency))))),
+            h('tfoot', {}, h('tr', {}, h('td', { colspan: 3 }, 'Subtotal'), h('td', { class: 'num' }, r.totals.subtotal)), h('tr', {}, h('td', { colspan: 3 }, 'IVA'), h('td', { class: 'num' }, r.totals.iva)),
+              h('tr', {}, h('td', { colspan: 3 }, h('strong', {}, 'Total')), h('td', { class: 'num' }, h('strong', {}, r.totals.total))))))
+        : h('p', { class: 'small' }, '→ ', r.message, r.detail ? h('span', { class: 'muted' }, ` (${r.detail})`) : null));
+    } catch (e) { out.replaceChildren(h('p', { class: 'small err' }, e.message)); } finally { go.disabled = false; }
+  } }, 'Calcular');
+  return h('details', {}, h('summary', {}, 'Probar con datos'), h('div', { class: 'grid2' }, fields), go, out);
+}
+
+/** Superadministración: copiar la calculadora (y, si se quiere, sus precios) a otra cuenta; llega apagada. */
+async function copyDialog(c) {
+  const accounts = (await api('GET', '/api/accounts').catch(() => [])).filter((a) => a.id !== c.account_id);
+  if (!accounts.length) { toast('No hay otra cuenta a dónde copiarla', true); return; }
+  const m = { account_id: accounts[0].id, with_prices: true };
+  const body = h('div', {},
+    h('p', { class: 'small muted' }, 'La copia llega apagada, con su texto, para que esa cuenta la revise y la active en su agente.'),
+    field('Cuenta', select(m, 'account_id', accounts.map((a) => [a.id, a.name]))),
+    check(m, 'with_prices', 'Copiar también sus precios'));
+  if (!(await dialog(`Copiar «${c.name}» a otra cuenta`, body, 'Copiar'))) return;
+  await run(() => api('POST', `/api/quote-calculators/${c.id}/copy`, m), `Copiada a «${accounts.find((a) => a.id === m.account_id)?.name}» (apagada)`);
+}
 
 /* ------------------------------ Formatos (Word) ------------------------------ */
 

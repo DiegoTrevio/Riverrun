@@ -596,7 +596,10 @@
     "billing.js|button|Reenviar|click|0",
     "billing.js|button||click|1",
     "shell.js|button|Reenviar|click|0",
-    "security-log.js|button|Desbloquear|click|0"
+    "security-log.js|button|Desbloquear|click|0",
+    "quotes.js|tr||click|2",
+    "quotes.js|button||click|1",
+    "quotes.js|input||change|2"
   ],
   "sin_presionar": {
     "admin.js|button|Reenviar|click|0": "Otra prueba: test:billing:ux lo presiona",
@@ -832,13 +835,13 @@
     "quotes.js|button|Guardar concepto|click|0": "Otra prueba: test:quotes:ux lo presiona",
     "quotes.js|button|Eliminar|click|0": "Estado no alcanzado: button «Eliminar» solo aparece en un estado que el recorrido no prepara",
     "quotes.js|button|Archivar|click|0": "Estado no alcanzado: button «Archivar» solo aparece en un estado que el recorrido no prepara",
-    "quotes.js|tr||click|1": "Estado no alcanzado: tr solo aparece en un estado que el recorrido no prepara",
+    "quotes.js|tr||click|2": "Estado no alcanzado: tr solo aparece en un estado que el recorrido no prepara",
     "quotes.js|button|El cliente aceptó|click|0": "Estado no alcanzado: button «El cliente aceptó» solo aparece en un estado que el recorrido no prepara",
     "quotes.js|button|El cliente aceptó|click|1": "Otra prueba: test:quotes:ux lo presiona",
     "quotes.js|button|Quitar|click|0": "Estado no alcanzado: button «Quitar» solo aparece en un estado que el recorrido no prepara",
     "quotes.js|button|+ Concepto|click|0": "Estado no alcanzado: button «+ Concepto» solo aparece en un estado que el recorrido no prepara",
     "quotes.js|button|Guardar cambios|click|0": "Estado no alcanzado: button «Guardar cambios» solo aparece en un estado que el recorrido no prepara",
-    "quotes.js|button||click|0": "Otra prueba: test:quotes:ux lo presiona",
+    "quotes.js|button||click|1": "Otra prueba: test:quotes:ux lo presiona",
     "quotes.js|button|Rechazar|click|0": "Estado no alcanzado: button «Rechazar» solo aparece en un estado que el recorrido no prepara",
     "receipt-recovery.js|button||click|0": "Estado no alcanzado: button solo aparece en un estado que el recorrido no prepara",
     "receivables.js|button|……|click|0": "Otra prueba: test:ux lo presiona",
