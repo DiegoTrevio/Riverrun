@@ -37,7 +37,8 @@ export type Node =
   | { k: 'call'; fn: string; args: Node[]; pos: number };
 
 const OPS = ['==', '!=', '<=', '>=', '&&', '||', '<', '>', '+', '-', '*', '/', '(', ')', ',', '!', '?', ':'];
-const WORD_OPS: Record<string, string> = { y: '&&', o: '||', no: '!' };
+// En español y, por si alguien (o la IA que traduce las reglas) las escribe en inglés, también and / or / not.
+const WORD_OPS: Record<string, string> = { y: '&&', o: '||', no: '!', and: '&&', or: '||', not: '!' };
 const LITERALS: Record<string, boolean> = { verdadero: true, falso: false, true: true, false: false };
 const ID_START = /[A-Za-z_À-ɏ]/;
 const ID_PART = /[A-Za-z0-9_À-ɏ]/;

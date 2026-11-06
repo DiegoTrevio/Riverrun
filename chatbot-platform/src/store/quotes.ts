@@ -2,6 +2,7 @@
  * Cotizaciones: ajustes de la cuenta, lista de precios y las cotizaciones con sus renglones e historial. Todo se consulta
  * con la cuenta, para que un negocio nunca vea ni toque lo de otro.
  */
+import type { PoolClient } from 'pg';
 import { query, queryOne, withTransaction } from '../db.js';
 import { lineProblem, priceQuote, type IvaMode, type LineInput, type PriceMode, type PricedQuote } from '../quotes/pricing.js';
 
@@ -272,23 +273,40 @@ export async function deletePriceItem(accountId: string, id: string): Promise<bo
  * lo que no venga en el archivo. Cada concepto ya viene revisado por `priceItemProblem`.
  */
 export async function importPriceItems(accountId: string, items: PriceItemInput[]): Promise<{ created: number; updated: number }> {
-  return withTransaction(async (client) => {
-    let created = 0;
-    let updated = 0;
-    for (const item of items) {
-      const problem = priceItemProblem(item);
-      if (problem) throw new Error(`${item.code}: ${problem}`);
-      const { rows } = await client.query(
-        `INSERT INTO price_items (account_id, ${ITEM_FIELDS.join(', ')}) VALUES ($1, ${ITEM_FIELDS.map((_, i) => `$${i + 2}`).join(', ')})
-         ON CONFLICT (account_id, code) DO UPDATE SET ${ITEM_FIELDS.filter((k) => k !== 'code').map((k) => `${k} = EXCLUDED.${k}`).join(', ')}, updated_at = now()
-         RETURNING (xmax = 0) AS inserted`,
-        [accountId, ...itemValues(item)],
-      );
-      if (rows[0].inserted) created++;
-      else updated++;
-    }
-    return { created, updated };
-  });
+  return withTransaction((client) => upsertPriceItems(client, accountId, items));
+}
+
+/**
+ * Crea o actualiza precios por clave dentro de una transacción. Con `calculatorId` quedan marcados como de esa
+ * calculadora (el cotizador escrito): así se sabe cuáles apagar si se quitan del texto.
+ */
+export async function upsertPriceItems(client: PoolClient, accountId: string, items: PriceItemInput[], calculatorId: string | null = null): Promise<{ created: number; updated: number }> {
+  let created = 0;
+  let updated = 0;
+  for (const item of items) {
+    const problem = priceItemProblem(item);
+    if (problem) throw new Error(`${item.code}: ${problem}`);
+    const { rows } = await client.query(
+      `INSERT INTO price_items (account_id, ${ITEM_FIELDS.join(', ')}, calculator_id) VALUES ($1, ${ITEM_FIELDS.map((_, i) => `$${i + 2}`).join(', ')}, $${ITEM_FIELDS.length + 2})
+       ON CONFLICT (account_id, code) DO UPDATE SET ${ITEM_FIELDS.filter((k) => k !== 'code').map((k) => `${k} = EXCLUDED.${k}`).join(', ')},
+         calculator_id = COALESCE(EXCLUDED.calculator_id, price_items.calculator_id), updated_at = now()
+       RETURNING (xmax = 0) AS inserted`,
+      [accountId, ...itemValues(item), calculatorId],
+    );
+    if (rows[0].inserted) created++;
+    else updated++;
+  }
+  return { created, updated };
+}
+
+/** Apaga (no borra) los precios de una calculadora que ya no vienen en su texto. */
+export async function deactivateCalculatorItems(client: PoolClient, accountId: string, calculatorId: string, keepCodes: string[]): Promise<number> {
+  const { rowCount } = await client.query(
+    `UPDATE price_items SET active = false, updated_at = now()
+      WHERE account_id = $1 AND calculator_id = $2 AND active AND NOT (upper(code) = ANY($3::text[]))`,
+    [accountId, calculatorId, keepCodes.map((c) => c.toUpperCase())],
+  );
+  return rowCount ?? 0;
 }
 
 /* ------------------------------ Cotizaciones ------------------------------ */

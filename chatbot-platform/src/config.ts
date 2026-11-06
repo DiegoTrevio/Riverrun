@@ -155,6 +155,13 @@ export const config = {
    * interruptor general, cada cuenta lo tiene encendido por omisión y se puede apagar en Cuentas
    * (`accounts.copilot_enabled`, migración 114).
    */
+  /**
+   * Cotizador escrito: traduce una vez el texto de precios y reglas de un negocio a su calculadora. Es una traducción
+   * exigente y rara (al configurar), así que usa un modelo más capaz que el de las conversaciones.
+   */
+  quoteBuilder: {
+    model: env('OPENROUTER_QUOTE_BUILDER_MODEL', useOpenRouter ? 'google/gemini-3.8-flash' : 'gpt-4.1'),
+  },
   copilot: {
     enabled: env('COPILOT_ENABLED', 'true') === 'true',
     /** Un modelo capaz de encadenar herramientas; con límites de gasto necesita su precio en ai_prices. */

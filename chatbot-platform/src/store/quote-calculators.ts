@@ -2,6 +2,7 @@
  * Calculadoras de cotización de cada cuenta. La definición se revisa entera antes de guardarse (`calculatorProblem`) y su
  * versión sube con cada cambio: la cotización guarda con cuál salió. Todo se consulta con la cuenta.
  */
+import type { PoolClient } from 'pg';
 import { query, queryOne } from '../db.js';
 import { CalculatorDefinition, calculatorProblem } from '../quotes/calculator.js';
 
@@ -14,6 +15,8 @@ export interface QuoteCalculator {
   definition: CalculatorDefinition;
   version: number;
   active: boolean;
+  /** Texto de productos, precios y reglas del que salió (cotizador escrito); vacío si se armó a mano. */
+  source_text: string;
   created_at: Date;
   updated_at: Date;
 }
@@ -79,6 +82,35 @@ export async function updateCalculator(accountId: string, id: string, input: Cal
       WHERE account_id = $1 AND id = $2 RETURNING *`,
     [accountId, id, input.name.trim(), input.description?.trim() ?? '', input.active ?? true, JSON.stringify(normalized(input.definition))],
   );
+}
+
+/**
+ * Guarda el cotizador escrito dentro de una transacción: actualiza la calculadora del agente si salió de un texto (una
+ * armada a mano no se pisa) o crea una nueva, con el texto del que salió. La versión sube solo si cambió la definición.
+ */
+export async function saveFromText(client: PoolClient, accountId: string, o: { calculatorId: string | null; name: string; text: string; definition: unknown }): Promise<QuoteCalculator> {
+  const problem = calculatorProblem(o.definition);
+  if (problem) throw new Error(problem);
+  const definition = JSON.stringify(normalized(o.definition));
+  if (o.calculatorId && UUID.test(o.calculatorId)) {
+    const { rows } = await client.query<QuoteCalculator>(
+      `UPDATE quote_calculators
+          SET source_text = $3, active = true,
+              version = version + CASE WHEN definition = $4::jsonb THEN 0 ELSE 1 END,
+              definition = $4::jsonb, updated_at = now()
+        WHERE account_id = $1 AND id = $2 AND template_key = 'texto' RETURNING *`,
+      [accountId, o.calculatorId, o.text, definition],
+    );
+    if (rows[0]) return rows[0];
+  }
+  const { rows: [{ n }] } = await client.query<{ n: number }>('SELECT count(*)::int AS n FROM quote_calculators WHERE account_id = $1', [accountId]);
+  if (n >= MAX_CALCULATORS_PER_ACCOUNT) throw new Error(`Una cuenta admite hasta ${MAX_CALCULATORS_PER_ACCOUNT} calculadoras`);
+  const { rows } = await client.query<QuoteCalculator>(
+    `INSERT INTO quote_calculators (account_id, name, description, template_key, definition, active, source_text)
+     VALUES ($1, $2, '', 'texto', $3, true, $4) RETURNING *`,
+    [accountId, o.name.trim().slice(0, 120), definition, o.text],
+  );
+  return rows[0];
 }
 
 /** Borrarla no altera las cotizaciones hechas: guardan sus conceptos y sus datos. */

@@ -6,11 +6,14 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { assertAccount, HttpError, notFound, requireRole, scopeAccount, targetAccount } from '../access.js';
+import { assertAccount, botFor, HttpError, notFound, requireRole, scopeAccount, targetAccount } from '../access.js';
+import { accountAi } from '../ai/budget.js';
+import { assertAiAllowed } from '../ai/gate.js';
+import { checkAiDesignRate } from '../automation/flow-ai.js';
 import { attachmentAbsolutePath } from '../attachments.js';
 import { countHit } from '../identity/rate-limit.js';
 import { safeFileName } from '../channels/media.js';
-import { pool } from '../db.js';
+import { pool, withTransaction } from '../db.js';
 import { logEvent } from '../logs.js';
 import { AcceptBody, acceptedTotal, planCharges } from '../quotes/accept.js';
 import { quoteEvent } from '../quotes/agent.js';
@@ -19,6 +22,7 @@ import { receivableOut } from './receivables.js';
 import { quoteMessage } from '../quotes/messages.js';
 import { evaluateCalculator } from '../quotes/calculator.js';
 import { formatTotals } from '../quotes/format.js';
+import { buildFromText, coverageCheck, draftItems, MAX_BUILT_ITEMS, SOURCE_TEXT_MAX, validateDraft, type QuoteDraft } from '../quotes/from-text.js';
 import { parsePriceCsv, priceItemsCsv } from '../quotes/price-csv.js';
 import { IVA_MODES, MAX_LINES, MAX_PRICE_CENTS, MAX_QTY, PRICE_MODES } from '../quotes/pricing.js';
 import { renderPdf, renderQuote, sampleData } from '../quotes/render.js';
@@ -112,6 +116,18 @@ async function friendly<T>(fn: () => Promise<T>): Promise<T> {
 const TEMPLATE_UPLOADS_PER_HOUR = 10;
 const TEMPLATE_WINDOW_MS = 60 * 60_000;
 
+/** Un precio del borrador tal como llega del panel: solo sus campos, con tipos de texto donde corresponde. */
+function pickItem(x: Record<string, unknown>): qstore.PriceItemInput {
+  const attrs = x.attributes && typeof x.attributes === 'object' && !Array.isArray(x.attributes) ? x.attributes as Record<string, unknown> : {};
+  const cents = (v: unknown) => (v === null || v === undefined ? null : (v as number));
+  return {
+    code: String(x.code ?? ''), name: String(x.name ?? ''), description: String(x.description ?? ''), unit: String(x.unit ?? '') || 'pieza',
+    family: String(x.family ?? ''), attributes: Object.fromEntries(Object.entries(attrs).map(([k, v]) => [k, String(v)])),
+    price_mode: x.price_mode as qstore.PriceItemInput['price_mode'], price_min: cents(x.price_min), price_max: cents(x.price_max),
+    iva_mode: x.iva_mode as qstore.PriceItemInput['iva_mode'], active: true, sort: Number.isInteger(x.sort) ? (x.sort as number) : 0,
+  };
+}
+
 export async function quoteRoutes(api: FastifyInstance, service: ChatService) {
   const admins = { preHandler: requireRole('admin') };
   const itemFor = async (user: any, id: string) => assertAccount(user, await qstore.findPriceItem(id), 'Concepto no encontrado');
@@ -188,8 +204,8 @@ export async function quoteRoutes(api: FastifyInstance, service: ChatService) {
   const PreviewBody = z.object({ inputs: z.record(z.string().max(40), z.union([z.string().max(200), z.number(), z.boolean(), z.null()])).default({}) });
 
   /** Prueba una definición con datos de ejemplo, como lo haría el asistente: conceptos, total, o por qué no cotiza. */
-  async function preview(accountId: string, definition: unknown, inputs: Record<string, unknown>) {
-    const [settings, items] = await Promise.all([qstore.getQuoteSettings(accountId), qstore.listPriceItems(accountId)]);
+  async function preview(accountId: string, definition: unknown, inputs: Record<string, unknown>, draft?: qstore.PriceItemInput[]) {
+    const [settings, items] = await Promise.all([qstore.getQuoteSettings(accountId), draft ? draftItems({ price_items: draft, definition }) : qstore.listPriceItems(accountId)]);
     const r = evaluateCalculator(definition, inputs, items, { iva_rate: settings.iva_rate });
     if (!r.ok) return r;
     return { ...r, totals: formatTotals(r.priced, settings.currency), currency: settings.currency };
@@ -232,8 +248,9 @@ export async function quoteRoutes(api: FastifyInstance, service: ChatService) {
   });
   api.post('/api/quote-calculators/preview', admins, async (req: any) => {
     const accountId = await targetAccount(req.user, req.query.account_id ?? req.body?.account_id);
-    const body = parse(PreviewBody.extend({ definition: z.record(z.string(), z.unknown()) }), req.body);
-    return preview(accountId, body.definition, body.inputs);
+    const body = parse(PreviewBody.extend({ definition: z.record(z.string(), z.unknown()), price_items: z.array(z.record(z.string(), z.unknown())).max(MAX_BUILT_ITEMS).optional() }), req.body);
+    // Con `price_items` se prueba un borrador del cotizador escrito, con sus precios aún sin guardar.
+    return preview(accountId, body.definition, body.inputs, body.price_items?.map(pickItem));
   });
 
   /** Exportar e importar (JSON): para respaldar o llevar la calculadora a otra cuenta o instalación. */
@@ -253,6 +270,57 @@ export async function quoteRoutes(api: FastifyInstance, service: ChatService) {
     const saved = await friendly(() => calcstore.createCalculator(accountId, { ...body, active: false }));
     await logEvent({ level: 'info', source: 'admin', message: `${req.user.email} importó la calculadora de cotización «${saved.name}»`, accountId });
     return saved;
+  });
+
+  /* ------------------------------ Cotizador escrito ------------------------------ */
+
+  /**
+   * El negocio escribe productos, precios y reglas; la IA lo traduce a precios y calculadora. No guarda nada: devuelve
+   * el borrador con lo que entendió, cotizaciones de ejemplo (calculadas por el sistema) y lo que falta o no quedó claro.
+   */
+  api.post('/api/quote-calculators/from-text', admins, async (req: any) => {
+    const body = parse(z.object({ text: z.string().max(SOURCE_TEXT_MAX + 1000), chatbot_id: z.string().max(40) }), req.body);
+    const bot = await botFor(req.user, body.chatbot_id);
+    await assertAiAllowed(bot.account_id);
+    await checkAiDesignRate(bot.account_id);
+    const settings = await qstore.getQuoteSettings(bot.account_id);
+    let result;
+    try {
+      result = await buildFromText(accountAi(service.aiProvider, bot.account_id, bot.id, 'quote_builder'), { text: body.text, settings });
+    } catch (e: any) {
+      await logEvent({ level: 'warn', source: 'ai', message: `No se pudo armar el cotizador escrito: ${e?.message ?? e}`, accountId: bot.account_id, chatbotId: bot.id });
+      throw e;
+    }
+    for (const run of result.runs) {
+      await store.insertAiRun({ account_id: bot.account_id, chatbot_id: bot.id, conversation_id: null, kind: 'quote_builder', model: run.model, input_tokens: run.usage.input_tokens, cached_tokens: run.usage.cached_tokens, output_tokens: run.usage.output_tokens, cost_usd: run.cost_usd, latency_ms: run.latency_ms });
+    }
+    return { ready: !result.problems.length, summary: result.summary, unclear: result.unclear, problems: result.problems, warnings: result.warnings, examples: result.examples, draft: result.draft, currency: settings.currency };
+  });
+
+  /**
+   * Guarda el borrador: la calculadora del agente (con su texto) y los precios, y apaga los que se quitaron del texto.
+   * Todo junto o nada; el servidor lo vuelve a revisar. Conectarla al agente es un cambio de configuración más (el panel
+   * lo guarda con el historial de versiones del agente, que revisa que la calculadora sea de la cuenta y esté activa).
+   */
+  api.post('/api/quote-calculators/from-text/apply', admins, async (req: any) => {
+    const body = parse(z.object({
+      text: z.string().trim().min(1, 'Escribe tus productos, precios y reglas').max(SOURCE_TEXT_MAX),
+      chatbot_id: z.string().max(40),
+      draft: z.object({ price_items: z.array(z.record(z.string(), z.unknown())).max(MAX_BUILT_ITEMS), definition: z.record(z.string(), z.unknown()) }),
+    }), req.body);
+    const bot = await botFor(req.user, body.chatbot_id);
+    const draft: QuoteDraft = { price_items: body.draft.price_items.map(pickItem), definition: body.draft.definition };
+    const problems = validateDraft(draft);
+    if (problems.length) throw new HttpError(400, `Antes de activarlo hay que corregir: ${problems.slice(0, 3).join(' · ')}`);
+    const done = await friendly(() => withTransaction(async (client) => {
+      const calc = await calcstore.saveFromText(client, bot.account_id, { calculatorId: bot.ai.quotes.calculator_id || null, name: `Cotizador de ${bot.name}`, text: body.text, definition: draft.definition });
+      const counts = await qstore.upsertPriceItems(client, bot.account_id, draft.price_items, calc.id);
+      const deactivated = await qstore.deactivateCalculatorItems(client, bot.account_id, calc.id, draft.price_items.map((i) => i.code));
+      return { calculator: calc, created: counts.created, updated: counts.updated, deactivated };
+    }));
+    await logEvent({ level: 'info', source: 'admin', message: `${req.user.email} guardó el cotizador escrito de «${bot.name}» (${draft.price_items.length} precios, versión ${done.calculator.version}; ${done.created} nuevos, ${done.updated} actualizados, ${done.deactivated} apagados)`, accountId: bot.account_id, chatbotId: bot.id });
+    const settings = await qstore.getQuoteSettings(bot.account_id);
+    return { ...done, warnings: coverageCheck(draft.definition, draftItems(draft), settings.iva_rate) };
   });
 
   api.get('/api/quotes', admins, async (req: any) => {
