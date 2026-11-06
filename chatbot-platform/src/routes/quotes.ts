@@ -23,6 +23,7 @@ import { quoteMessage } from '../quotes/messages.js';
 import { evaluateCalculator } from '../quotes/calculator.js';
 import { formatTotals } from '../quotes/format.js';
 import { buildFromText, coverageCheck, draftItems, MAX_BUILT_ITEMS, SOURCE_TEXT_MAX, validateDraft, type QuoteDraft } from '../quotes/from-text.js';
+import { QUOTE_TEXT_TEMPLATES } from '../quotes/text-templates.js';
 import { parsePriceCsv, priceItemsCsv } from '../quotes/price-csv.js';
 import { IVA_MODES, MAX_LINES, MAX_PRICE_CENTS, MAX_QTY, PRICE_MODES } from '../quotes/pricing.js';
 import { renderPdf, renderQuote, sampleData } from '../quotes/render.js';
@@ -256,20 +257,53 @@ export async function quoteRoutes(api: FastifyInstance, service: ChatService) {
   /** Exportar e importar (JSON): para respaldar o llevar la calculadora a otra cuenta o instalación. */
   api.get('/api/quote-calculators/:id/export', admins, async (req: any, reply) => {
     const calc = await calculatorFor(req.user, req.params.id);
-    return sendFile(reply, Buffer.from(JSON.stringify(calcstore.portable(calc), null, 2)), `calculadora-${calc.name}.json`, 'application/json');
+    const items = await calcstore.calculatorItems(calc.account_id, calc.id);
+    return sendFile(reply, Buffer.from(JSON.stringify(calcstore.portable(calc, items), null, 2)), `calculadora-${calc.name}.json`, 'application/json');
   });
+  /** Importa un archivo exportado (versión 1: solo la calculadora; 2: también su texto y sus precios). Llega apagada. */
   api.post('/api/quote-calculators/import', admins, async (req: any) => {
     const accountId = await targetAccount(req.user, req.query.account_id ?? req.body?.account_id);
     const body = parse(z.object({
       format: z.literal('riverrun.quote-calculator', { error: 'El archivo no es una calculadora de cotización exportada' }),
+      version: z.union([z.literal(1), z.literal(2)]).default(1),
       name: z.string().trim().min(1).max(120),
       description: z.string().trim().max(500).default(''),
       template_key: z.string().trim().max(60).default(''),
+      source_text: z.string().max(SOURCE_TEXT_MAX).default(''),
       definition: z.record(z.string(), z.unknown()),
+      price_items: z.array(z.record(z.string(), z.unknown())).max(MAX_BUILT_ITEMS).default([]),
     }), req.body);
-    const saved = await friendly(() => calcstore.createCalculator(accountId, { ...body, active: false }));
-    await logEvent({ level: 'info', source: 'admin', message: `${req.user.email} importó la calculadora de cotización «${saved.name}»`, accountId });
-    return saved;
+    const items = body.price_items.map(pickItem);
+    if (items.length) {
+      const problems = validateDraft({ price_items: items, definition: body.definition });
+      if (problems.length) throw new HttpError(400, `El archivo tiene problemas: ${problems.slice(0, 3).join(' · ')}`);
+    }
+    const done = await friendly(() => calcstore.insertCalculatorWithItems(accountId, { ...body, active: false }, items));
+    await logEvent({ level: 'info', source: 'admin', message: `${req.user.email} importó la calculadora de cotización «${done.calculator.name}»${items.length ? ` con ${items.length} precios` : ''}`, accountId });
+    return { ...done.calculator, created: done.created, updated: done.updated };
+  });
+
+  /** Plantillas por giro del cotizador escrito: textos de ejemplo para empezar. */
+  api.get('/api/quote-calculators/text-templates', admins, async () => QUOTE_TEXT_TEMPLATES);
+
+  /**
+   * Superadministración: copia una calculadora (con su texto y, si se pide, sus precios) a otra cuenta. La copia llega
+   * apagada, para que esa cuenta la revise y la active en su agente.
+   */
+  api.post('/api/quote-calculators/:id/copy', { preHandler: requireRole('superadmin') }, async (req: any) => {
+    const calc = await calcstore.findCalculator(req.params.id);
+    if (!calc) throw notFound('Calculadora no encontrada');
+    const body = parse(z.object({ account_id: z.string().uuid('Elige la cuenta'), with_prices: z.boolean().default(true) }), req.body);
+    const target = await store.getAccount(body.account_id);
+    if (!target) throw notFound('Cuenta no encontrada');
+    const items = body.with_prices ? await calcstore.calculatorItems(calc.account_id, calc.id) : [];
+    const done = await friendly(() => calcstore.insertCalculatorWithItems(target.id, {
+      name: calc.name, description: calc.description, template_key: calc.template_key, source_text: calc.source_text, definition: calc.definition, active: false,
+    }, items));
+    const what = `la calculadora «${calc.name}»${items.length ? ` con ${items.length} precios` : ''}`;
+    await logEvent({ level: 'info', source: 'admin', message: `${req.user.email} copió ${what} a la cuenta «${target.name}»`, accountId: calc.account_id });
+    await logEvent({ level: 'info', source: 'admin', message: `${req.user.email} copió aquí ${what} (llega apagada)`, accountId: target.id });
+    return { ...done.calculator, created: done.created, updated: done.updated };
   });
 
   /* ------------------------------ Cotizador escrito ------------------------------ */

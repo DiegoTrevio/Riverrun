@@ -195,7 +195,61 @@ try {
   assert.match(await page.getByLabel('Productos, precios y reglas', { exact: true }).inputValue(), /Pintura por m²/, 'el texto queda guardado para editarlo');
   checks.push('Cotizador escrito: armar desde texto con ejemplos calculados y activarlo en el agente');
 
-  for (const route of ['cotizaciones/precios', 'cotizaciones/precios?id=new', 'cotizaciones/formatos', 'cotizaciones/ajustes', 'cotizaciones/historial', `cotizaciones/historial?id=${q.id}`, `bot/${h.botId}/cotizaciones`]) {
+  // Plantilla por giro: llena el cuadro (pide confirmar porque ya había texto).
+  await page.locator('.qb-templates').getByRole('button', { name: 'Pintura por m²', exact: true }).click();
+  await page.locator('dialog').getByRole('button', { name: 'Reemplazar' }).click();
+  assert.match(await page.getByLabel('Productos, precios y reglas', { exact: true }).inputValue(), /impermeabilizante/i);
+  checks.push('Plantillas por giro: un ejemplo llena el cuadro (con confirmación si ya había texto)');
+
+  // Pestaña Calculadoras: la lista dice quién la usa; el detalle prueba, apaga y enciende.
+  await page.goto(`${base}/#/cotizaciones/calculadoras`);
+  const row = page.getByRole('row').filter({ hasText: 'Armada desde texto' }).first();
+  await row.getByRole('cell', { name: 'Hotel Palmas', exact: true }).waitFor();
+  await row.click();
+  await page.getByRole('heading', { name: 'Lo que pide al cliente' }).waitFor();
+  await page.getByText('Probar con datos', { exact: true }).click();
+  await page.getByLabel('Largo (m)', { exact: true }).fill('10');
+  await page.getByLabel('Ancho (m)', { exact: true }).fill('8');
+  await page.getByLabel('Acabado', { exact: true }).selectOption('satinado');
+  await page.getByRole('button', { name: 'Calcular', exact: true }).click();
+  await page.getByText('$881.60', { exact: true }).waitFor(); // 80 m² → mayoreo: 8 litros × $95 = $760 + IVA
+  const calcId = new URL(page.url().replace('#/', '')).searchParams.get('id')!;
+  await page.getByRole('button', { name: 'Apagar', exact: true }).click();
+  await page.getByRole('button', { name: 'Encender', exact: true }).waitFor();
+  assert.equal((await pool.query('SELECT active FROM quote_calculators WHERE id = $1', [calcId])).rows[0].active, false);
+  await page.getByRole('button', { name: 'Encender', exact: true }).click();
+  await page.getByRole('button', { name: 'Apagar', exact: true }).waitFor();
+  assert.equal(await page.getByRole('link', { name: 'Exportar' }).getAttribute('href'), `/api/quote-calculators/${calcId}/export`);
+
+  // Importar el archivo exportado: llega apagada; se puede eliminar.
+  const exported = (await h.authed('GET', `/api/quote-calculators/${calcId}/export`)).json();
+  await page.goto(`${base}/#/cotizaciones/calculadoras`);
+  await page.locator('#calc-import').setInputFiles({ name: 'calculadora.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ ...exported, name: 'Copia importada' })) });
+  await page.getByRole('heading', { name: /Copia importada/ }).waitFor();
+  await page.getByText('Apagada', { exact: true }).first().waitFor();
+  await page.getByRole('button', { name: 'Eliminar', exact: true }).click();
+  await page.locator('dialog').getByRole('button', { name: 'Eliminar' }).click();
+  // Tras eliminar vuelve a la lista: se espera a que termine de cargar antes de ir a otra pantalla.
+  await page.locator('label', { hasText: 'Importar calculadora' }).waitFor();
+  await page.waitForLoadState('networkidle');
+  assert.equal((await pool.query(`SELECT count(*)::int AS n FROM quote_calculators WHERE name = 'Copia importada'`)).rows[0].n, 0);
+  checks.push('Calculadoras: lista con quién la usa, probar con datos, apagar y encender, exportar, importar (llega apagada) y eliminar');
+
+  // Lista de precios en CSV: se revisa antes de guardar y luego se confirma.
+  await page.goto(`${base}/#/cotizaciones/precios`);
+  await page.getByRole('link', { name: 'Bajar CSV' }).waitFor();
+  await page.waitForLoadState('networkidle');
+  await page.locator('input[id^="csv-"]').setInputFiles({ name: 'precios.csv', mimeType: 'text/csv', buffer: Buffer.from('clave,nombre,precio,familia,material\nCSV-1,Lámina,250,lamina,acero\nCSV-2,Tornillo,"1.50",tornillo,acero\n') });
+  await page.getByText(/2 conceptos nuevos y 0 actualizados/).waitFor();
+  assert.equal((await pool.query(`SELECT count(*)::int AS n FROM price_items WHERE code LIKE 'CSV-%'`)).rows[0].n, 0, 'revisar no guarda');
+  await page.getByRole('button', { name: 'Confirmar importación' }).click();
+  await page.getByRole('cell', { name: 'CSV-1' }).waitFor();
+  await page.getByText('lamina · material: acero').waitFor();
+  await page.locator('input[id^="csv-"]').setInputFiles({ name: 'malo.csv', mimeType: 'text/csv', buffer: Buffer.from('clave,nombre,precio\nX-1,Algo,mucho\n') });
+  await page.getByText(/Fila 2: «mucho» no es un precio/).waitFor();
+  checks.push('Lista de precios: subir CSV (revisar y confirmar, con errores por fila) y ver familia y atributos');
+
+  for (const route of ['cotizaciones/precios', 'cotizaciones/precios?id=new', 'cotizaciones/formatos', 'cotizaciones/ajustes', 'cotizaciones/historial', `cotizaciones/historial?id=${q.id}`, `bot/${h.botId}/cotizaciones`, 'cotizaciones/calculadoras', `cotizaciones/calculadoras?id=${calcId}`]) {
     for (const width of [1366, 768, 390]) {
       await page.setViewportSize({ width, height: 1000 });
       await page.goto(`${base}/#/${route}`);

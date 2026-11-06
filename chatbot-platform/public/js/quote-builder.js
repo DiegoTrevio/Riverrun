@@ -2,7 +2,7 @@
  * Cotizador escrito: el negocio escribe sus productos, precios y reglas; el sistema lo entiende, muestra cotizaciones de
  * ejemplo calculadas con esas reglas y, al activarlo, el agente cotiza con eso. Nada se guarda hasta «Activar».
  */
-import { api, h, toast } from './core.js';
+import { api, confirmAction, h, toast } from './core.js';
 import { icon } from './icons.js';
 import { aiLock } from './session.js';
 
@@ -34,11 +34,25 @@ export function quoteBuilderCard(bot, { calculator = null, onApplied } = {}) {
   const status = h('p', { class: 'ai-status small', role: 'status', 'aria-live': 'polite' });
   const result = h('div', { class: 'ai-slot' });
   const say = (text, kind = '') => { status.textContent = text; status.className = `ai-status small${kind ? ` ${kind}` : ''}`; };
+  // Plantillas por giro: un texto de ejemplo para empezar (se cambian precios y reglas por los propios).
+  const templatesRow = h('div', { class: 'row qb-templates' }, h('span', { class: 'small muted' }, 'Empezar con un ejemplo:'));
+  api('GET', '/api/quote-calculators/text-templates').then((list) => {
+    templatesRow.append(...list.map((t) => h('button', { type: 'button', class: 'small', onclick: () => useTemplate(t) }, t.label)));
+  }).catch(() => templatesRow.remove());
+  async function useTemplate(t) {
+    if (busy) return;
+    if (ta.value.trim() && ta.value.trim() !== t.text.trim() && !(await confirmAction('El ejemplo reemplaza lo que escribiste en el cuadro. ¿Continuar?', 'Reemplazar'))) return;
+    ta.value = t.text;
+    built = null; result.replaceChildren();
+    say(`Ejemplo de «${t.label}»: cambia los precios y las reglas por los tuyos y luego arma el cotizador.`);
+    ta.focus();
+  }
   const box = h('div', { class: 'card quote-builder' },
     h('h3', {}, 'Productos, precios y reglas'),
     h('p', { class: 'small muted' },
       'Escribe tus productos con su precio y las reglas para calcular (qué datos pedir, cómo sacar las cantidades, escalones, extras y cuándo lo atiende un asesor). ',
       'El sistema lo entiende una vez y te muestra cotizaciones de ejemplo; al activarlo, el agente cotiza solo con tus reglas y precios: la IA nunca hace las cuentas.'),
+    templatesRow,
     h('label', { for: id, class: 'sr-only' }, 'Productos, precios y reglas'),
     ta,
     h('div', { class: 'row ai-actions' }, aiLock(go)),
