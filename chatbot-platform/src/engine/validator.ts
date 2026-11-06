@@ -8,7 +8,7 @@ import { asksQuestion, contactNameKey, declines, isAnswered, questionList, quest
 import { cardNumbersIn, isSensitiveField } from './safety.js';
 import { checkInputs, evaluateCalculator, parseHumanNumber, type CalculatorDefinition } from '../quotes/calculator.js';
 import { countEmojis, deepClean, FactCorpus, limitEmojis, MASKED_MONEY_RE, normalize, stripEmojis, toWhatsappFormat, truncateChars } from './text.js';
-import { fixArithmetic } from './arithmetic.js';
+import { fixArithmetic, fixHiddenArithmetic } from './arithmetic.js';
 
 /** Plan final ya validado que el backend ejecutará. */
 export interface ExecutionPlan {
@@ -250,8 +250,9 @@ const LENGTH_BUDGET: Record<string, number> = { muy_corta: 220, corta: 480, medi
 // Formas inequívocas de tuteo (verbos en 2ª persona y pronombres) y de "usted".
 // Límites de palabra con \p{L}: \b no reconoce letras acentuadas ("tú", "estás").
 const word = (alts: string) => new RegExp(`(?<![\\p{L}])(?:${alts})(?![\\p{L}])`, 'giu');
+// «estás» solo con acento: «estas» sin acento es «estas medidas», no tuteo.
 const TU_RE = word(
-  't[uú]|te|ti|contigo|tuy[oa]s?|tus|quieres|puedes|tienes|necesitas|prefieres|deseas|buscas|est[aá]s|eres|sabes|vienes|llegas|pagas|escr[ií]beme|av[ií]same|dime|cu[eé]ntame|conf[ií]rmame|mándame|mandame',
+  't[uú]|te|ti|contigo|tuy[oa]s?|tus|quieres|puedes|tienes|necesitas|prefieres|deseas|buscas|estás|eres|sabes|vienes|llegas|pagas|escr[ií]beme|av[ií]same|dime|cu[eé]ntame|conf[ií]rmame|mándame|mandame',
 );
 const USTED_RE = word('usted');
 
@@ -680,19 +681,28 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   const customerCorpus = new FactCorpus(input.customerSources ?? []);
   // Cotizar con las instrucciones: el sistema rehace las sumas y multiplicaciones que escribió la IA (con precios del
   // negocio y cantidades del cliente) y corrige las que salieron mal antes de revisar los datos.
+  let hiddenDerived = new Set<string>();
   if (rules.verify_facts && messages.length) {
+    // Solo el total en el mensaje (las instrucciones lo piden así): las cuentas van en el razonamiento interno y se revisan ahí.
     const arith = fixArithmetic(messages, trusted, customerCorpus);
     if (arith.corrections.length) {
       messages = arith.messages;
       fixes.push(`Cuentas corregidas por el sistema: ${arith.corrections.join('; ')}`);
     }
+    // Lo que el mensaje ya comprobó con sus propias operaciones no se toca con las cuentas internas.
+    const hidden = fixHiddenArithmetic(d.thinking ?? '', messages, trusted, customerCorpus, arith.derived);
+    hiddenDerived = hidden.derived;
+    if (hidden.corrections.length) {
+      messages = hidden.messages;
+      fixes.push(`Cuentas internas corregidas por el sistema: ${hidden.corrections.join('; ')}`);
+    }
   }
   if (rules.verify_facts && messages.length) {
-    const unverified = all.unverified(messages.join('\n'), trusted, customerCorpus);
+    const unverified = all.unverified(messages.join('\n'), trusted, customerCorpus, { derived: hiddenDerived });
     if (unverified.length) {
       factIssues = true;
       retryable.push(
-        `Mencionaste datos que no están en la información del negocio ni en la conversación: ${unverified.join(', ')}. Elimina o corrige esos datos; si no los tienes, dilo con naturalidad. Precios, descuentos, promociones, horarios y enlaces solo pueden salir de la información del negocio; si calculas, escribe cada operación con sus números (por ejemplo: 40 ÷ 2.50 = 16 paneles × $1,000 = $16,000) usando solo precios del negocio y cantidades que dijo el cliente.`,
+        `Mencionaste datos que no están en la información del negocio ni en la conversación: ${unverified.join(', ')}. Elimina o corrige esos datos; si no los tienes, dilo con naturalidad. Precios, descuentos, promociones, horarios y enlaces solo pueden salir de la información del negocio; si calculas, escribe cada operación con sus números (por ejemplo: 40 ÷ 2.50 = 16 paneles × $1,000 = $16,000) usando solo precios del negocio y cantidades que dijo el cliente; si al cliente solo le das el total, escribe esas operaciones en thinking.`,
       );
     }
   }

@@ -48,7 +48,7 @@ export const DECISION_JSON_SCHEMA = {
   properties: {
     thinking: {
       type: 'string',
-      description: 'Análisis interno breve (máx. 3 frases, no se envía al cliente): qué quiere el cliente, qué dato del negocio aplica, qué falta.',
+      description: 'Análisis interno breve (máx. 3 frases, no se envía al cliente): qué quiere el cliente, qué dato del negocio aplica, qué falta. Si das un precio calculado y en el mensaje no escribes las operaciones (solo el total), escribe aquí cada operación con sus números, un renglón por concepto (p. ej. «Paneles: 40 ÷ 2.50 = 16 × $1,000 = $16,000»), y luego subtotal, IVA y total.',
     },
     action: { type: 'string', enum: [...ACTIONS] },
     messages: {

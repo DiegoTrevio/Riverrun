@@ -35,6 +35,8 @@ export type ArithmeticResult = {
   corrections: string[];
   /** Resultados revisados (cifra canónica, p. ej. "16000", "3830.4"): ya no cuentan como inventados. */
   derived: Set<string>;
+  /** Cada cifra corregida: la que escribió la IA y la correcta. */
+  replaced: { from: number; to: number }[];
 };
 
 const TOKEN_RE = /(US\$|\$)?\s?(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(\s?%)?/g;
@@ -66,6 +68,51 @@ function opIn(gap: string): Op | null {
   return found.length === 1 ? found[0] : null;
 }
 
+/**
+ * Lo que hay entre dos números: la operación y los paréntesis que la rodean («) × 1.16», «+ (»). Un salto de renglón
+ * seguido de la operación («Paneles: 40» ⏎ «÷ 2.50 = 16») es la misma cuenta escrita en dos renglones.
+ */
+function gapInfo(gap: string): { op: Op; close: number; open: number } | null {
+  const lead = /^[\s)]*/.exec(gap)![0];
+  const rest = gap.slice(lead.length);
+  const trail = /[\s(]*$/.exec(rest)![0];
+  let core = rest.slice(0, rest.length - trail.length);
+  const close = (lead.match(/\)/g) ?? []).length;
+  const open = (trail.match(/\(/g) ?? []).length;
+  if (/[()]/.test(core)) return null;
+  if ((core.match(/\n/g) ?? []).length === 1 && /\n\s*[×÷+=]/.test(core)) core = core.replace('\n', ' ');
+  const op = opIn(close || open ? (core.trim() ? core : '') : core);
+  return op ? { op, close, open } : null;
+}
+
+/** Evalúa respetando paréntesis, y × y ÷ antes que + y −. Un paréntesis sin cerrar se ignora. */
+function evaluateGroups(vals: number[], ops: Op[], opens: number[], closes: number[]): number {
+  const out: (number | Op)[] = [];
+  const stack: (Op | '(')[] = [];
+  const prec = (o: Op | '(') => (o === '×' || o === '÷' ? 2 : o === '(' ? 0 : 1);
+  vals.forEach((v, i) => {
+    if (i) {
+      const op = ops[i - 1];
+      while (stack.length && stack.at(-1) !== '(' && prec(stack.at(-1)!) >= prec(op)) out.push(stack.pop() as Op);
+      stack.push(op);
+    }
+    for (let k = 0; k < opens[i]; k++) stack.push('(');
+    out.push(v);
+    for (let k = 0; k < closes[i]; k++) {
+      while (stack.length && stack.at(-1) !== '(') out.push(stack.pop() as Op);
+      if (stack.at(-1) === '(') stack.pop();
+    }
+  });
+  while (stack.length) { const o = stack.pop()!; if (o !== '(') out.push(o); }
+  const st: number[] = [];
+  for (const x of out) {
+    if (typeof x === 'number') { st.push(x); continue; }
+    const b = st.pop()!, a = st.pop()!;
+    st.push(x === '×' ? a * b : x === '÷' ? a / b : x === '+' ? a + b : a - b);
+  }
+  return st.length === 1 ? st[0] : NaN;
+}
+
 function tokensOf(line: string): Tok[] {
   const out: Tok[] = [];
   for (const m of line.matchAll(TOKEN_RE)) {
@@ -92,7 +139,8 @@ function format(t: Tok, v: number): string {
   return prefix + s;
 }
 
-function rewrite(t: Tok, v: number, corrections: string[], why = '') {
+function rewrite(t: Tok, v: number, corrections: string[], why = '', replaced?: { from: number; to: number }[]) {
+  replaced?.push({ from: t.value, to: round2(v) });
   const to = format(t, v);
   corrections.push(`${t.raw} → ${to}${why}`);
   t.raw = to;
@@ -120,6 +168,7 @@ function evaluate(vals: number[], ops: Op[]): number {
  */
 export function fixArithmetic(messages: string[], trusted: FactCorpus, customer?: FactCorpus): ArithmeticResult {
   const corrections: string[] = [];
+  const replaced: { from: number; to: number }[] = [];
   const derived = new Set<string>();
   /**
    * Importe de cada renglón (el último monto de cada cadena de operaciones). `sum`: salió de sumar otros renglones
@@ -151,7 +200,8 @@ export function fixArithmetic(messages: string[], trusted: FactCorpus, customer?
     if (!hasMoney) return c.length === 1 || trusted.hasNumber(c) || !!customer?.hasNumber(c);
     // «× 0.16» o «× 1.16»: el IVA (u otro porcentaje del negocio) escrito como decimal.
     const mult = [ops[j], ops[j + 1]].every((o) => !o || o === '×' || o === '=');
-    if (mult && !Number.isInteger(t.value) && (trusted.hasPercent(canon(t.value * 100)) || trusted.hasPercent(canon((t.value - 1) * 100)))) return true;
+    const asRate = (x: number) => trusted.hasPercent(canon(x * 100)) || (ivaRate !== null && same(x, ivaRate));
+    if (mult && !Number.isInteger(t.value) && (asRate(t.value) || asRate(t.value - 1))) return true;
     // Con dinero, un número sin $ solo puede ser una cantidad entera del cliente que multiplica: «0.5» o «0.9» serían un
     // descuento dictado por el cliente.
     return Number.isInteger(t.value) && t.value > 0 && !!customer?.hasNumber(c) && [ops[j], ops[j + 1]].every((o) => !o || o === '×' || o === '=');
@@ -160,10 +210,14 @@ export function fixArithmetic(messages: string[], trusted: FactCorpus, customer?
   const line = (text: string): string => {
     // «17 postes × 4 (para 2.00 m de altura) = 68»: un comentario entre paréntesis sin "=" no corta la operación. Se tapa
     // con espacios del mismo largo (las posiciones no cambian) y se deja «(16%)» para leer la tasa del IVA.
-    const plain = text.replace(/\([^()=]*\)/g, (m) => (/^\(\s*\d+(?:[.,]\d+)?\s?%\s*\)$/.test(m) ? m : ' '.repeat(m.length)));
+    const plain = text.replace(/\([^()=×÷+*/]*\)/g, (m) => (/^\(\s*\d+(?:[.,]\d+)?\s?%\s*\)$/.test(m) ? m : ' '.repeat(m.length)));
     const toks = tokensOf(plain);
     if (!toks.length) return text;
-    const ops: (Op | null)[] = toks.map((t, i) => (i ? opIn(plain.slice(toks[i - 1].end, t.start)) : null));
+    const gaps = toks.map((t, i) => (i ? gapInfo(plain.slice(toks[i - 1].end, t.start)) : null));
+    const ops: (Op | null)[] = gaps.map((g) => g?.op ?? null);
+    // Paréntesis que abren antes de cada número y que cierran después.
+    const opens = toks.map((t, i) => gaps[i]?.open ?? (/\(\s*$/.test(plain.slice(i ? toks[i - 1].end : 0, t.start)) ? (/[(\s]*$/.exec(plain.slice(i ? toks[i - 1].end : 0, t.start))![0].match(/\(/g) ?? []).length : 0));
+    const closes = toks.map((t, i) => gaps[i + 1]?.close ?? (/^[\s)]*/.exec(plain.slice(t.end))![0].match(/\)/g) ?? []).length);
     let chainMoney: { v: number; sum: boolean } | null = null;
     let usedChain = false;
     let segStart = 0;
@@ -178,7 +232,8 @@ export function fixArithmetic(messages: string[], trusted: FactCorpus, customer?
       }
       if (op !== '=') continue;
       usedChain = true;
-      const expr = toks.slice(segStart, i);
+      const from = segStart;
+      const expr = toks.slice(from, i);
       const exprOps: (Op | null)[] = [null, ...ops.slice(segStart + 1, i), '='];
       const res = toks[i];
       segStart = i;
@@ -187,15 +242,17 @@ export function fixArithmetic(messages: string[], trusted: FactCorpus, customer?
       if (!expr.every((t, j) => known(t, exprOps, j, hasMoney))) continue;
       // «$1,000 - 10%» se lee de varias formas: solo se revisan porcentajes que multiplican («$22,800 × 16%»).
       if (expr.some((t, j) => t.percent && [exprOps[j], exprOps[j + 1]].some((o) => o === '+' || o === '-' || o === '÷'))) continue;
-      const value = evaluate(expr.map((t) => t.value), exprOps.slice(1, -1) as Op[]);
+      const value = evaluateGroups(expr.map((t) => t.value), exprOps.slice(1, -1) as Op[], opens.slice(from, i), closes.slice(from, i));
       // Un resultado negativo no es una cuenta de cotización (p. ej. un rango «$20 - $30»).
       if (!Number.isFinite(value) || value < 0 || res.percent) continue;
       const division = exprOps.includes('÷');
       // Una división puede redondearse a entero (p. ej. «paneles = metros ÷ 2.50 hacia arriba»).
       const rounded = division && (res.value === Math.ceil(value - 1e-9) || res.value === Math.floor(value + 1e-9));
       if (!same(res.value, value) && !rounded) {
-        const to = division && !hasMoney && !Number.isInteger(round2(value)) ? Math.ceil(value) : value;
-        rewrite(res, to, corrections, ` (${expr.map((t) => t.raw).join(' · ')})`);
+        // Cuentas de cantidades («4 abrazaderas por poste de 2.00 m × 17 = 68»): un número puede ser una medida que solo se
+        // menciona. No se corrigen; si no cuadran, no cuentan como revisadas (la IA lo rehace).
+        if (!hasMoney) continue;
+        rewrite(res, value, corrections, ` (${expr.map((t) => t.raw).join(' · ')})`, res.money ? replaced : undefined);
       }
       res.derived = true;
       derived.add(canon(res.value));
@@ -282,6 +339,34 @@ export function fixArithmetic(messages: string[], trusted: FactCorpus, customer?
     return out;
   };
 
-  const fixed = messages.map((m) => m.split('\n').map(line).join('\n'));
-  return { messages: fixed, corrections, derived };
+  // Un renglón que empieza con la operación («× $850 = $13,600») sigue la cuenta del renglón anterior.
+  const logical = (m: string) => m.split('\n').reduce<string[]>((acc, l) => {
+    if (acc.length && /^\s*[×÷+=]/.test(l)) acc[acc.length - 1] += `\n${l}`;
+    else acc.push(l);
+    return acc;
+  }, []);
+  const fixed = messages.map((m) => logical(m).map(line).join('\n'));
+  return { messages: fixed, corrections, derived, replaced };
+}
+
+/**
+ * Cuentas en el razonamiento interno: cuando las instrucciones piden dar solo el total («*MetroMalla Recta:* $41,165.25
+ * con IVA»), la IA escribe cada operación en `thinking` (no se envía). El sistema las revisa ahí: los totales que salen
+ * de esas cuentas valen en el mensaje, y uno que la IA calculó mal se cambia por el correcto también en el mensaje.
+ */
+export function fixHiddenArithmetic(thinking: string, messages: string[], trusted: FactCorpus, customer?: FactCorpus, shown: Set<string> = new Set()): { messages: string[]; corrections: string[]; derived: Set<string> } {
+  if (!/=/.test(thinking)) return { messages, corrections: [], derived: new Set() };
+  const r = fixArithmetic([thinking], trusted, customer);
+  const corrections: string[] = [];
+  const out = messages.map((m) => m.replace(/(US\$|\$)\s?(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)/g, (whole, cur: string, num: string) => {
+    const v = Number(num.replace(/,/g, ''));
+    if (trusted.hasMoney(canon(v)) || r.derived.has(canon(v)) || shown.has(canon(v))) return whole;
+    const fix = r.replaced.find((x) => same(x.from, v));
+    if (!fix) return whole;
+    const tok: Tok = { start: 0, end: 0, raw: whole, value: v, money: true, percent: false, commas: num.includes(','), decimals: /\.\d+$/.test(num), derived: true, rewritten: true };
+    const to = format(tok, fix.to);
+    corrections.push(`${whole} → ${to} (cuenta interna)`);
+    return cur === 'US$' && !to.startsWith('US$') ? `US${to}` : to;
+  }));
+  return { messages: out, corrections: [...r.corrections, ...corrections], derived: r.derived };
 }
