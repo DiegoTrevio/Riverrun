@@ -67,6 +67,7 @@ function fillParams(url: string): string | null {
     [/^\/api\/price-items\/:id/, 'price_item'],
     [/^\/api\/quotes\/:id/, 'quote'],
     [/^\/api\/quote-templates\/:id/, 'quote_template'],
+    [/^\/api\/quote-calculators\/:id/, 'calculator'],
     [/^\/api\/team\/:userId/, 'user'],
     [/^\/api\/social-accounts\/:id/, 'social'],
     [/^\/api\/wa-templates\/:id/, 'wa_template'],
@@ -178,6 +179,7 @@ before(async () => {
   B.booking_link = (await pool.query(`INSERT INTO booking_links (account_id, token, name) VALUES ($1, 'tok-b-reservas', $2) RETURNING id`, [B.account, `Reservas ${MARK}`])).rows[0].id;
   B.card = String((await pool.query(`INSERT INTO pipeline_cards (account_id, pipeline_id, conversation_id, stage_id) VALUES ($1, $2, $3, 'nuevo') RETURNING id`, [B.account, B.pipeline, B.conv])).rows[0].id);
   B.price_item = (await ok200(adminB('POST', '/api/price-items', { code: 'B1', name: `Concepto ${MARK}`, price_mode: 'exact', price_min: 99900 }))).id;
+  B.calculator = (await ok200(adminB('POST', '/api/quote-calculators', { name: `Calculadora ${MARK}`, definition: { inputs: [{ key: 'n', label: 'Cantidad', type: 'number' }], lines: [{ family: 'x', qty: 'n' }] } }))).id;
   const { createQuote, insertTemplate } = await import('../src/store/quotes.js');
   const { exampleTemplate } = await import('../src/quotes/template.js');
   const { attachmentAbsolutePath } = await import('../src/attachments.js');
