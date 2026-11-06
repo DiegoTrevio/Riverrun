@@ -32,6 +32,26 @@ export const checks = {
     await page.locator('dialog').getByRole('button', { name: 'Reemplazar' }).click();
     assert.match(await box.inputValue(), /invitados/);
   },
+  'Usar los precios de las instrucciones: aparece si las instrucciones traen precios y las pasa al cuadro': async ({ h, open, go }: AreaContext) => {
+    const setPrompt = async (prompt: string) => {
+      const revision = (await h.authed('GET', `/api/chatbots/${h.botId}/versions`)).json().draft.revision;
+      const r = await h.authed('POST', `/api/chatbots/${h.botId}/version-apply`, { revision, patch: { personality: { prompt } } });
+      assert.equal(r.statusCode, 200, r.body);
+    };
+    const before = (await h.authed('GET', `/api/chatbots/${h.botId}`)).json().personality.prompt;
+    try {
+      await setPrompt(`${before}\n\nPrecios: panel Clásica $1,050; poste $420; placa $90. Paneles = metros ÷ 2.5 hacia arriba.`);
+      const { page } = await open('admin');
+      await go(page, `bot/${h.botId}/cotizaciones`);
+      const box = page.getByLabel('Productos, precios y reglas', { exact: true });
+      await box.fill('');
+      await page.getByRole('button', { name: 'Usar los precios y reglas de las instrucciones del agente' }).click();
+      assert.match(await box.inputValue(), /panel Clásica \$1,050/);
+      await page.getByText(/Copié las instrucciones del agente/).waitFor();
+    } finally {
+      await setPrompt(before);
+    }
+  },
   'Calculadoras: probar con datos, apagar y encender, exportar, importar (llega apagada) y eliminar': async ({ h, pool, open, go }: AreaContext) => {
     const calc = (await h.authed('POST', `/api/quote-calculators/import?account_id=${h.accountId}`, FILE)).json();
     try {
