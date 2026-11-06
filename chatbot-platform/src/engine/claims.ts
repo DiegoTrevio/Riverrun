@@ -48,7 +48,7 @@ const GENERIC = new Set(
    todavia ahora hoy manana pronto gracias favor posibilidad flexibilidad calidad experiencia cuenta contacto consulta consultas
    pregunta preguntas duda dudas solicitud peticion proceso pasos paso numero numeros nombre datos correo telefono cita citas
    reservacion reservaciones desglose desgloses cotizacion cotizaciones presupuesto presupuestos calculo calculos resumen
-   total totales subtotal`.split(/\s+/),
+   total totales subtotal validez vigencia vigente opcion economica`.split(/\s+/),
 );
 
 const STOP = new Set(

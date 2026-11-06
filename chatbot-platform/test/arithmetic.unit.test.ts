@@ -256,6 +256,8 @@ test('respuestas reales: total en negritas de WhatsApp y «Aquí tiene el desglo
   assert.deepEqual(fixArithmetic(['16 * $1,000 = $16,000'], trusted, new FactCorpus(['quiero 16'])).derived.has('16000'), true, 'un * solo entre números sí multiplica');
   assert.deepEqual(unsupportedClaims('Con gusto le cotizo. Aquí tiene el desglose:', info), []);
   assert.deepEqual(unsupportedClaims('Aquí tiene su cotización y el presupuesto', info), []);
+  assert.deepEqual(unsupportedClaims('Esta cotización tiene una validez de 15 días.', info), [], 'respuesta real');
+  assert.deepEqual(unsupportedClaims('La cotización tiene vigencia de 15 días.', info), []);
   assert.notDeepEqual(unsupportedClaims('Tenemos alberca techada', info), [], 'lo demás se sigue revisando');
 });
 
