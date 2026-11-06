@@ -313,6 +313,8 @@ export interface NewQuote {
   today: string;
   /** Operación del motor que la creó: si se reintenta tras un reinicio, se reutiliza en vez de crear otra. */
   operation?: string;
+  /** Si salió de una calculadora: cuál, en qué versión y con qué datos (para reproducirla). */
+  calculator?: { id: string; version: number; inputs: Record<string, unknown> } | null;
 }
 
 function addDays(isoDate: string, days: number): string {
@@ -356,14 +358,15 @@ export async function createQuote(input: NewQuote): Promise<Quote> {
     const q = (await client.query(
       `INSERT INTO quotes (account_id, chatbot_id, conversation_id, contact_id, request_id, pipeline_card_id, template_id, folio,
          kind, status, source, currency, iva_rate, subtotal_min, subtotal_max, iva_min, iva_max, total_min, total_max, open_ended,
-         has_tbd, notes, valid_until, customer_snapshot, business_snapshot)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+         has_tbd, notes, valid_until, customer_snapshot, business_snapshot, calculator_id, calculator_version, calculator_inputs)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
        RETURNING *`,
       [input.accountId, input.chatbotId ?? null, input.conversationId ?? null, input.contactId ?? null, input.requestId ?? null,
         input.pipelineCardId ?? null, input.templateId ?? null, folio, input.kind, input.status, input.source, settings.currency,
         settings.iva_rate, priced.subtotal_min, priced.subtotal_max, priced.iva_min, priced.iva_max, priced.total_min,
         priced.total_max, priced.open_ended, priced.has_tbd, (input.notes ?? '').slice(0, 2000),
-        addDays(input.today, settings.validity_days), input.customer ?? {}, input.business ?? {}],
+        addDays(input.today, settings.validity_days), input.customer ?? {}, input.business ?? {},
+        input.calculator?.id ?? null, input.calculator?.version ?? null, input.calculator ? JSON.stringify(input.calculator.inputs) : null],
     )).rows[0];
     await insertLines(client, q.id, priced, input.lines);
     await addQuoteEvent(q.id, 'created', { kind: input.kind, status: input.status, source: input.source, ...(input.operation ? { operation: input.operation } : {}) }, input.userId ?? null, client);

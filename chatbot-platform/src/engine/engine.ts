@@ -89,8 +89,10 @@ interface QuoteDelivery {
   file?: OutgoingFile;
   quote?: Quote;
   link?: string;
-  /** Se envió el archivo (o el enlace, en los canales que no envían archivos). */
-  delivered?: 'file' | 'link';
+  /** Se envió el archivo (o el enlace, en los canales que no envían archivos), o solo el desglose en el chat. */
+  delivered?: 'file' | 'link' | 'chat';
+  /** Solo desglose en el chat (sin PDF): cuenta como entregada cuando sale ese mensaje. */
+  chatOnly?: boolean;
   /** Cotización final que quedó por aprobar. */
   pending?: Quote;
 }
@@ -312,6 +314,7 @@ export class Engine {
       requiredFields: quoteCatalog.requiredFields.map((f) => ({ key: f.key, label: f.label })),
       open: !!quoteCatalog.open,
       allowFinal: quoteCatalog.allowFinal,
+      calculator: quoteCatalog.calculator?.definition ?? null,
     } : null;
     const agendaVal: AgendaValidation | null = agendaCtx
       ? {
@@ -572,9 +575,15 @@ export class Engine {
       const prepared = await this.ext.quotes.prepare({ bot, conv, contact, planned: plan.quote, catalog: quoteCatalog, operation: currentOperation() ?? undefined })
         .catch(async (e) => { await log('error', 'engine', `No se pudo preparar la cotización: ${e?.message ?? e}`); return null; });
       if (prepared?.status === 'ready') {
-        // Los canales que no envían archivos reciben un enlace firmado al PDF.
-        const link = sendsAnyFile(transport) ? undefined : this.ext.quotes.link(prepared.quote);
-        quoteOut = { text: this.ext.quotes.message(bot, prepared.quote, link), file: sendsAnyFile(transport) ? prepared.file : undefined, quote: prepared.quote, link };
+        // Los canales que no envían archivos reciben un enlace firmado al PDF (si el agente manda PDF).
+        const link = prepared.file && !sendsAnyFile(transport) ? this.ext.quotes.link(prepared.quote) : undefined;
+        quoteOut = {
+          text: this.ext.quotes.message(bot, prepared.quote, link, { summary: prepared.summary, legend: prepared.legend }),
+          file: sendsAnyFile(transport) ? prepared.file : undefined, quote: prepared.quote, link, chatOnly: !prepared.file,
+        };
+      } else if (prepared?.status === 'handoff') {
+        // La calculadora dice que esto lo ve un asesor: se transfiere con su mensaje (no con lo que escribió la IA).
+        plan = { ...plan, action: 'handoff', messages: [prepared.text], handoffReason: prepared.reason, images: [] };
       } else if (prepared) quoteOut = { text: prepared.text, pending: prepared.status === 'pending' ? prepared.quote : undefined };
       if (currentOperation()) await query(`UPDATE delivery_attempts SET state='sent',updated_at=now() WHERE operation_key=$1 AND part=-2`, [currentOperation()]);
     }
@@ -804,6 +813,7 @@ export class Engine {
       const quoteMeta = { ...meta, quote_message: true, ...(quote.quote ? { quote_id: quote.quote.id, quote_kind: quote.quote.kind } : {}) };
       const told = await this.sendOut(bot, conv, transport, { sender: 'bot', text: quote.text, delay: typingDelay(quote.text, typing), meta: quoteMeta });
       if (told && quote.quote && quote.link) quote.delivered = 'link';
+      if (told && quote.quote && quote.chatOnly) quote.delivered = 'chat';
       if (told && quote.file && (await stillBot())) {
         const sentFile = await this.sendOut(bot, conv, transport, { sender: 'bot', text: '', file: quote.file, delay: typing ? 1200 : 0, meta: quoteMeta });
         if (sentFile) quote.delivered = 'file';

@@ -556,6 +556,7 @@ const IVA_NOTE = { plus: 'más IVA', included: 'IVA incluido', exempt: 'sin IVA'
 
 /** Lista de precios y reglas para cotizar. Los precios cuentan como información del negocio; los totales, no. */
 export function quoteSection(q: QuoteCatalog, contact?: Contact): string {
+  if (q.calculator) return calculatorSection(q, contact);
   const cur = q.settings.currency;
   const s: string[] = ['\n## Cotizaciones (archivo PDF)'];
   s.push('Puedes preparar una cotización formal con estos conceptos. El sistema calcula importes, IVA y totales, llena el formato del negocio y envía el PDF con un mensaje que dice el total y si es APROXIMADA o FINAL.');
@@ -585,6 +586,49 @@ export function quoteSection(q: QuoteCatalog, contact?: Contact): string {
       q.allowFinal
         ? '- wants_final = true solo si el cliente pide una cotización final o formal y todos sus conceptos tienen precio exacto. La final la revisa el equipo antes de enviarla: dile que la están revisando y se la envían en cuanto esté aprobada (no prometas tiempos).'
         : '- Este negocio solo envía cotizaciones aproximadas desde el chat: si pide una final, dile que el equipo se la confirma.',
+    ].join('\n'),
+  );
+  return s.join('\n');
+}
+
+/**
+ * Cotizar con calculadora: la IA solo junta los datos que pide, con las palabras del cliente; el sistema calcula con
+ * las reglas y precios del negocio y envía el desglose y/o el PDF. No se listan precios: la IA no hace cuentas.
+ */
+function calculatorSection(q: QuoteCatalog, contact?: Contact): string {
+  const calc = q.calculator!;
+  const out = [];
+  const s: string[] = ['\n## Cotizaciones (calculadora del negocio)'];
+  if (q.sendSummary) out.push('el desglose en el chat');
+  if (q.sendPdf) out.push('el PDF');
+  s.push(`Para cotizar «${calc.name}» necesitas estos datos del cliente. Con ellos el sistema calcula conceptos, cantidades, IVA y total con las reglas y precios del negocio y envía ${out.join(' y ')}.`);
+  s.push('Datos (clave | qué es | cómo se responde):');
+  for (const d of calc.definition.inputs) {
+    const how = d.type === 'number' ? `número${d.unit ? ` en ${d.unit}` : ''}${d.min !== undefined ? `, mínimo ${d.min}` : ''}${d.max !== undefined ? `, máximo ${d.max}` : ''}`
+      : d.type === 'option' ? `una de: ${d.options.map((o) => `${o.label} (valor "${o.value}")`).join(', ')}`
+      : d.type === 'boolean' ? 'sí o no'
+      : 'texto corto';
+    s.push(`- \`${d.key}\` | ${d.label}${d.required ? '' : ' (opcional: solo si el cliente lo menciona)'} | ${how}${d.help ? ` | ${d.help}` : ''}`);
+  }
+  if (q.requiredFields.length) {
+    const have = contact?.data ?? {};
+    const missing = q.requiredFields.filter((f) => !have[f.key] && !(f.type === 'name' && contact?.name));
+    s.push(`Además, antes de cotizar necesitas: ${q.requiredFields.map((f) => f.label || f.key).join(', ')}${missing.length ? ` (faltan: ${missing.map((f) => f.label || f.key).join(', ')})` : ' (ya los tienes)'}.`);
+  }
+  if (q.open) {
+    s.push(`Cotización ${q.open.folio} EN REVISIÓN por el equipo: no prepares otra; si pregunta, dile que el equipo la está revisando.`);
+  }
+  if (q.lastSent) {
+    s.push(`Ya se le envió la cotización ${q.lastSent.folio}. Si cambia un dato (otra medida, otra opción), vuelve a calcular con los datos nuevos.`);
+  }
+  s.push(
+    [
+      'Reglas de cotización:',
+      '- Cuando el cliente pida cotización, precio o presupuesto, pide los datos que falten de la lista, UNO A LA VEZ y en ese orden. No preguntes por los opcionales; úsalos solo si el cliente los menciona.',
+      '- Con todos los datos obligatorios, usa quote.action = "calculate" y en quote.inputs pon cada dato que dio el cliente: key exacta, value (el número como lo dijo, el valor exacto de la opción o "sí"/"no") y quote (sus palabras exactas). Puede ser en el mismo turno en que da el último dato.',
+      '- NUNCA escribas precios, importes, sumas, IVA ni totales, ni montos tapados como «$XX,XXX» o «[precio]»: el sistema envía la cotización. En tu mensaje solo di, en una frase, que le compartes su cotización.',
+      '- Si el cliente da un dato que no está entre las opciones, dile cuáles hay y pregúntale de nuevo.',
+      '- La cotización sale APROXIMADA: no la llames final.',
     ].join('\n'),
   );
   return s.join('\n');

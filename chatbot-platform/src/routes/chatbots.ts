@@ -13,6 +13,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { parsePayload } from '../automation/buttons.js';
 import { assertAccount, botFor, HttpError, notFound, requireRole, scopeAccount, targetAccount } from '../access.js';
+import { getCalculator } from '../store/quote-calculators.js';
 import { publicChannel } from '../channels/index.js';
 import { query, withTransaction } from '../db.js';
 import { config } from '../config.js';
@@ -100,6 +101,15 @@ async function checkSavedImages(botId: string | null, list: SavedMessage[] | und
   const own = new Set(botId ? (await store.listImages(botId)).map((i) => i.id) : []);
   const bad = withImage.find((m) => !own.has(m.image_id));
   if (bad) throw new HttpError(400, `La foto del mensaje guardado "${bad.code}" no pertenece a este asistente`);
+}
+
+/** La calculadora de cotización del agente es de su cuenta y está activa; y algo sale al cliente (desglose o PDF). */
+async function checkQuoteCalculator(bot: Chatbot, quotes: Chatbot['ai']['quotes'] | undefined) {
+  if (!quotes?.calculator_id) return;
+  const calc = await getCalculator(bot.account_id, quotes.calculator_id).catch(() => null);
+  if (!calc) throw new HttpError(400, 'Esa calculadora de cotización no existe en esta cuenta');
+  if (!calc.active) throw new HttpError(400, `La calculadora «${calc.name}» está apagada: actívala antes de usarla en el agente`);
+  if (!quotes.send_summary && !quotes.send_pdf) throw new HttpError(400, 'Elige al menos una forma de enviar la cotización: el desglose en el chat o el PDF');
 }
 
 const KnowledgeBody = z.object({
@@ -275,6 +285,7 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
       }
     }
     checkActivation(data.rules, existing.rules);
+    await checkQuoteCalculator(existing, data.ai?.quotes);
     const formality = data.personality?.formality;
     if (formality && formality !== existing.personality.formality) data.rules = alignFixedMessages(data.rules ?? existing.rules, formality);
     return data;
