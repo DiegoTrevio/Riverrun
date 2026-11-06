@@ -114,10 +114,18 @@ t('texto pegado y archivo de texto/CSV', async () => {
   h.setScript(() => answer({ catalog: 'Café — $40' }));
   const pasted = await h.authed('POST', `/api/onboarding/import?account_id=${h.accountId}`, { text: 'Café $40, pastel $60. Abrimos todos los días de 8 a 20.' });
   assert.equal(pasted.statusCode, 200, pasted.body);
+  // Una tabla (lista de precios en CSV) se copia completa, renglón por renglón, sin pasar por la IA.
+  const callsBefore = h.calls.length;
   const m = multipart({}, { name: 'precios.csv', type: 'text/csv', data: Buffer.from('producto,precio\nCafé,40\nPastel,60\n') });
   const file = await h.app.inject({ method: 'POST', url: `/api/onboarding/import?account_id=${h.accountId}`, ...m });
   assert.equal(file.statusCode, 200, file.body);
-  assert.match(JSON.stringify(h.calls.at(-1)!.messages), /Pastel,60/);
+  assert.equal(file.json().sections.catalog, 'producto: Café · precio: 40\nproducto: Pastel · precio: 60');
+  assert.equal(h.calls.length, callsBefore, 'sin llamar a la IA');
+  // Un archivo de texto que no es tabla sí va a la IA.
+  const notes = multipart({}, { name: 'notas.txt', type: 'text/plain', data: Buffer.from('Somos una cafetería en el centro. Abrimos de 8 a 20. Café $40.') });
+  const txt = await h.app.inject({ method: 'POST', url: `/api/onboarding/import?account_id=${h.accountId}`, ...notes });
+  assert.equal(txt.statusCode, 200, txt.body);
+  assert.match(JSON.stringify(h.calls.at(-1)!.messages), /cafetería en el centro/);
 });
 
 t('PDF y fotos se envían al modelo como archivo adjunto', async () => {
