@@ -109,7 +109,7 @@ export function quoteBuilderCard(bot, { calculator = null, onApplied } = {}) {
     if (busy) return;
     const text = ta.value.trim();
     if (!text) { say('Escribe tus productos, precios y reglas.', 'err'); ta.focus(); return; }
-    setBusy(true, 'Leyendo tus precios y reglas, y probando cotizaciones de ejemplo… (puede tardar un minuto)');
+    setBusy(true, 'Leyendo tus precios y reglas, y probando cotizaciones de ejemplo… (puede tardar uno o dos minutos)');
     try {
       const r = await api('POST', '/api/quote-calculators/from-text', { text, chatbot_id: bot.id });
       setBusy(false);

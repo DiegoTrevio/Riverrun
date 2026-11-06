@@ -328,7 +328,7 @@ export async function buildFromText(ai: AiProvider, input: { text: string; setti
   ];
   const call = async (msgs: ChatMessage[]) => {
     try {
-      return await ai.complete({ model: input.model ?? config.quoteBuilder.model, messages: msgs, temperature: null, max_tokens: 12000, timeout_ms: 150_000, max_attempts: 2, json_schema: { name: 'quote_builder', schema: BUILDER_SCHEMA as unknown as Record<string, unknown> } });
+      return await ai.complete({ model: input.model ?? config.quoteBuilder.model, messages: msgs, temperature: null, reasoning_effort: 'low', max_tokens: 32000, timeout_ms: 240_000, max_attempts: 2, json_schema: { name: 'quote_builder', schema: BUILDER_SCHEMA as unknown as Record<string, unknown> } });
     } catch (e: any) {
       if (e instanceof HttpError) throw e;
       throw new HttpError(502, e?.message ?? 'La IA no pudo armar el cotizador. Intenta de nuevo.');

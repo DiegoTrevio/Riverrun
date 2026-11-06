@@ -67,7 +67,7 @@ Un precio inventado, o un importe sin la operación de la que sale, sigue sin en
 En **el agente → Cotizaciones → «Productos, precios y reglas»**:
 
 1. **Escribe** tus productos, precios y reglas como se los explicarías a alguien nuevo. Si no sabes por dónde empezar, toca **«Empezar con un ejemplo»** y elige el de tu giro (cercas y mallas, pintura por m², salón y eventos, servicios por hora, productos con mayoreo, renta por días); luego cambia sus precios y reglas por los tuyos.
-2. **«Armar cotizador»** (tarda alrededor de un minuto). El sistema lo entiende **una sola vez** y te muestra, **sin guardar nada**:
+2. **«Armar cotizador»** (tarda uno o dos minutos). El sistema lo entiende **una sola vez** y te muestra, **sin guardar nada**:
    - lo que entendió: los datos que pedirá al cliente, los casos que atiende un asesor y la tabla de precios;
    - **cotizaciones de ejemplo calculadas por el sistema** con tus reglas;
    - lo que **no quedó claro** y las **combinaciones sin precio** (si un cliente las pide, pasa con un asesor);
