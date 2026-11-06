@@ -17,12 +17,16 @@ import { quoteEvent } from '../quotes/agent.js';
 import { receivableBySource } from '../receivables/index.js';
 import { receivableOut } from './receivables.js';
 import { quoteMessage } from '../quotes/messages.js';
+import { evaluateCalculator } from '../quotes/calculator.js';
+import { formatTotals } from '../quotes/format.js';
+import { parsePriceCsv, priceItemsCsv } from '../quotes/price-csv.js';
 import { IVA_MODES, MAX_LINES, MAX_PRICE_CENTS, MAX_QTY, PRICE_MODES } from '../quotes/pricing.js';
 import { renderPdf, renderQuote, sampleData } from '../quotes/render.js';
 import type { ChatService } from '../service.js';
 import { exampleTemplate, inspectTemplate, KNOWN_TAGS, LINE_TAGS, REQUIRED_TAGS, TEMPLATE_MAX_BYTES } from '../quotes/template.js';
 import * as store from '../store/index.js';
 import * as qstore from '../store/quotes.js';
+import * as calcstore from '../store/quote-calculators.js';
 import { parse } from './util.js';
 
 const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
@@ -51,6 +55,9 @@ const PriceItemBody = z.object({
   iva_mode: z.enum(IVA_MODES as [string, ...string[]]).default('plus'),
   active: z.boolean().default(true),
   sort: z.number().int().min(0).max(100000).default(0),
+  // Para la calculadora: familia y atributos con los que se encuentra este precio (vacíos si se usa solo).
+  family: z.string().trim().max(60).default(''),
+  attributes: z.record(z.string().max(40), z.union([z.string(), z.number()]).transform(String)).default({}),
 });
 
 const SettingsBody = z.object({
@@ -143,6 +150,109 @@ export async function quoteRoutes(api: FastifyInstance, service: ChatService) {
     const item = await itemFor(req.user, req.params.id);
     await qstore.deletePriceItem(item.account_id, item.id);
     return { ok: true };
+  });
+
+  /**
+   * Subir la lista de precios en CSV (de Excel): crea y actualiza por clave, todo o nada. Con `dry_run` solo revisa y dice
+   * cuántos se crearían y cuántos se actualizarían, para confirmarlo antes.
+   */
+  api.post('/api/price-items/import', admins, async (req: any) => {
+    const accountId = await targetAccount(req.user, req.query.account_id ?? req.body?.account_id);
+    const body = parse(z.object({ csv: z.string().min(1).max(2_000_000), dry_run: z.boolean().default(false) }), req.body);
+    const settings = await qstore.getQuoteSettings(accountId);
+    const { items, errors } = parsePriceCsv(body.csv, { iva_mode: settings.prices_include_iva ? 'included' : 'plus' });
+    if (errors.length) return { ok: false, errors };
+    const existing = new Set((await qstore.listPriceItems(accountId)).map((i) => i.code.toLowerCase()));
+    const plan = { create: items.filter((i) => !existing.has(i.code.toLowerCase())).length, update: items.filter((i) => existing.has(i.code.toLowerCase())).length };
+    if (body.dry_run) return { ok: true, dry_run: true, ...plan };
+    const done = await friendly(() => qstore.importPriceItems(accountId, items));
+    await logEvent({ level: 'info', source: 'admin', message: `${req.user.email} subió la lista de precios (${done.created} nuevos, ${done.updated} actualizados)`, accountId });
+    return { ok: true, created: done.created, updated: done.updated };
+  });
+
+  api.get('/api/price-items/export.csv', admins, async (req: any, reply) => {
+    const accountId = await targetAccount(req.user, req.query.account_id);
+    return sendFile(reply, Buffer.from(priceItemsCsv(await qstore.listPriceItems(accountId))), 'lista-de-precios.csv', 'text/csv; charset=utf-8');
+  });
+
+  /* ------------------------------ Calculadoras de cotización ------------------------------ */
+
+  const calculatorFor = async (user: any, id: string) => assertAccount(user, await calcstore.findCalculator(id), 'Calculadora no encontrada');
+  const CalculatorBody = z.object({
+    name: z.string().trim().min(1).max(120),
+    description: z.string().trim().max(500).default(''),
+    template_key: z.string().trim().max(60).default(''),
+    definition: z.record(z.string(), z.unknown()),
+    active: z.boolean().default(true),
+  });
+  const PreviewBody = z.object({ inputs: z.record(z.string().max(40), z.union([z.string().max(200), z.number(), z.boolean(), z.null()])).default({}) });
+
+  /** Prueba una definición con datos de ejemplo, como lo haría el asistente: conceptos, total, o por qué no cotiza. */
+  async function preview(accountId: string, definition: unknown, inputs: Record<string, unknown>) {
+    const [settings, items] = await Promise.all([qstore.getQuoteSettings(accountId), qstore.listPriceItems(accountId)]);
+    const r = evaluateCalculator(definition, inputs, items, { iva_rate: settings.iva_rate });
+    if (!r.ok) return r;
+    return { ...r, totals: formatTotals(r.priced, settings.currency), currency: settings.currency };
+  }
+
+  api.get('/api/quote-calculators', admins, async (req: any) => {
+    const accountId = scopeAccount(req.user, req.query.account_id);
+    return accountId ? calcstore.listCalculators(accountId) : [];
+  });
+
+  api.get('/api/quote-calculators/:id', admins, async (req: any) => calculatorFor(req.user, req.params.id));
+
+  api.post('/api/quote-calculators', admins, async (req: any) => {
+    const accountId = await targetAccount(req.user, req.query.account_id ?? req.body?.account_id);
+    const body = parse(CalculatorBody, req.body);
+    const saved = await friendly(() => calcstore.createCalculator(accountId, body));
+    await logEvent({ level: 'info', source: 'admin', message: `${req.user.email} creó la calculadora de cotización «${saved.name}»`, accountId });
+    return saved;
+  });
+
+  api.put('/api/quote-calculators/:id', admins, async (req: any) => {
+    const calc = await calculatorFor(req.user, req.params.id);
+    const body = parse(CalculatorBody, { ...calc, ...(req.body ?? {}) });
+    const saved = await friendly(() => calcstore.updateCalculator(calc.account_id, calc.id, body));
+    if (!saved) throw notFound('Calculadora no encontrada');
+    return saved;
+  });
+
+  api.delete('/api/quote-calculators/:id', admins, async (req: any) => {
+    const calc = await calculatorFor(req.user, req.params.id);
+    await calcstore.deleteCalculator(calc.account_id, calc.id);
+    await logEvent({ level: 'info', source: 'admin', message: `${req.user.email} borró la calculadora de cotización «${calc.name}»`, accountId: calc.account_id });
+    return { ok: true };
+  });
+
+  // Probar una calculadora guardada, o un borrador sin guardar (`definition` en el cuerpo).
+  api.post('/api/quote-calculators/:id/preview', admins, async (req: any) => {
+    const calc = await calculatorFor(req.user, req.params.id);
+    return preview(calc.account_id, calc.definition, parse(PreviewBody, req.body).inputs);
+  });
+  api.post('/api/quote-calculators/preview', admins, async (req: any) => {
+    const accountId = await targetAccount(req.user, req.query.account_id ?? req.body?.account_id);
+    const body = parse(PreviewBody.extend({ definition: z.record(z.string(), z.unknown()) }), req.body);
+    return preview(accountId, body.definition, body.inputs);
+  });
+
+  /** Exportar e importar (JSON): para respaldar o llevar la calculadora a otra cuenta o instalación. */
+  api.get('/api/quote-calculators/:id/export', admins, async (req: any, reply) => {
+    const calc = await calculatorFor(req.user, req.params.id);
+    return sendFile(reply, Buffer.from(JSON.stringify(calcstore.portable(calc), null, 2)), `calculadora-${calc.name}.json`, 'application/json');
+  });
+  api.post('/api/quote-calculators/import', admins, async (req: any) => {
+    const accountId = await targetAccount(req.user, req.query.account_id ?? req.body?.account_id);
+    const body = parse(z.object({
+      format: z.literal('riverrun.quote-calculator', { error: 'El archivo no es una calculadora de cotización exportada' }),
+      name: z.string().trim().min(1).max(120),
+      description: z.string().trim().max(500).default(''),
+      template_key: z.string().trim().max(60).default(''),
+      definition: z.record(z.string(), z.unknown()),
+    }), req.body);
+    const saved = await friendly(() => calcstore.createCalculator(accountId, { ...body, active: false }));
+    await logEvent({ level: 'info', source: 'admin', message: `${req.user.email} importó la calculadora de cotización «${saved.name}»`, accountId });
+    return saved;
   });
 
   api.get('/api/quotes', admins, async (req: any) => {

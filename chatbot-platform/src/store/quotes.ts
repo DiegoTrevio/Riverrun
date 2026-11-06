@@ -42,6 +42,10 @@ export interface PriceItem {
   iva_mode: IvaMode;
   active: boolean;
   sort: number;
+  /** Familia para la calculadora (p. ej. «panel», «flete»); vacía si el concepto se usa solo, como antes. */
+  family: string;
+  /** Atributos con los que la calculadora encuentra el precio (p. ej. producto, altura, escalón). */
+  attributes: Record<string, string>;
 }
 
 export interface QuoteLine extends LineInput {
@@ -122,7 +126,7 @@ function settingsRow(r: any): QuoteSettings {
 }
 
 function itemRow(r: any): PriceItem {
-  return { ...r, price_min: num(r.price_min), price_max: num(r.price_max) };
+  return { ...r, price_min: num(r.price_min), price_max: num(r.price_max), family: r.family ?? '', attributes: r.attributes ?? {} };
 }
 
 const MONEY_COLUMNS = ['subtotal_min', 'subtotal_max', 'iva_min', 'iva_max', 'total_min', 'total_max'] as const;
@@ -213,11 +217,24 @@ export function priceItemProblem(i: PriceItemInput): string | null {
   if (typeof i.name !== 'string' || !i.name.trim() || i.name.length > 200) return 'Escribe el nombre del concepto (hasta 200 caracteres)';
   if (typeof i.description !== 'string' || i.description.length > 1000) return 'La descripción admite hasta 1000 caracteres';
   if (typeof i.unit !== 'string' || !i.unit.trim() || i.unit.length > 40) return 'Escribe la unidad (p. ej. servicio, pieza, hora)';
+  // Familia y atributos son opcionales: quien no los manda (la lista simple) queda con '' y {}.
+  if (i.family != null && (typeof i.family !== 'string' || i.family.length > 60)) return 'La familia admite hasta 60 caracteres';
+  const attrs = i.attributes ?? {};
+  if (attrs === null || typeof attrs !== 'object' || Array.isArray(attrs)) return 'Los atributos no son válidos';
+  if (Object.keys(attrs).length > 20) return 'Un concepto admite hasta 20 atributos';
+  for (const [k, v] of Object.entries(attrs)) {
+    if (!/^[a-z_][a-z0-9_]{0,39}$/.test(k)) return `El atributo «${k}» admite minúsculas, números y guion bajo`;
+    if (typeof v !== 'string' || v.length > 60) return `El valor del atributo «${k}» admite hasta 60 caracteres`;
+  }
   return lineProblem({ ...i, qty: 1 });
 }
 
-const ITEM_FIELDS = ['code', 'name', 'description', 'unit', 'price_mode', 'price_min', 'price_max', 'iva_mode', 'active', 'sort'] as const;
-const itemValues = (i: PriceItemInput) => ITEM_FIELDS.map((k) => (k === 'name' || k === 'unit' ? String(i[k]).trim() : i[k]));
+const ITEM_FIELDS = ['code', 'name', 'description', 'unit', 'price_mode', 'price_min', 'price_max', 'iva_mode', 'active', 'sort', 'family', 'attributes'] as const;
+const itemValues = (i: PriceItemInput) => ITEM_FIELDS.map((k) => {
+  if (k === 'name' || k === 'unit' || k === 'family') return String(i[k] ?? '').trim();
+  if (k === 'attributes') return JSON.stringify(i.attributes ?? {});
+  return i[k];
+});
 
 function friendlyUnique(e: any): never {
   if (e?.code === '23505') throw new Error('Ya hay un concepto con esa clave');
@@ -248,6 +265,30 @@ export async function updatePriceItem(accountId: string, id: string, input: Pric
 /** Borrar un concepto no altera las cotizaciones hechas: sus renglones guardan nombre y precio. */
 export async function deletePriceItem(accountId: string, id: string): Promise<boolean> {
   return (await query('DELETE FROM price_items WHERE account_id = $1 AND id = $2 RETURNING id', [accountId, id])).length > 0;
+}
+
+/**
+ * Sube muchos conceptos (CSV): crea los que no existen y actualiza los que ya tienen esa clave, todo o nada. No borra
+ * lo que no venga en el archivo. Cada concepto ya viene revisado por `priceItemProblem`.
+ */
+export async function importPriceItems(accountId: string, items: PriceItemInput[]): Promise<{ created: number; updated: number }> {
+  return withTransaction(async (client) => {
+    let created = 0;
+    let updated = 0;
+    for (const item of items) {
+      const problem = priceItemProblem(item);
+      if (problem) throw new Error(`${item.code}: ${problem}`);
+      const { rows } = await client.query(
+        `INSERT INTO price_items (account_id, ${ITEM_FIELDS.join(', ')}) VALUES ($1, ${ITEM_FIELDS.map((_, i) => `$${i + 2}`).join(', ')})
+         ON CONFLICT (account_id, code) DO UPDATE SET ${ITEM_FIELDS.filter((k) => k !== 'code').map((k) => `${k} = EXCLUDED.${k}`).join(', ')}, updated_at = now()
+         RETURNING (xmax = 0) AS inserted`,
+        [accountId, ...itemValues(item)],
+      );
+      if (rows[0].inserted) created++;
+      else updated++;
+    }
+    return { created, updated };
+  });
 }
 
 /* ------------------------------ Cotizaciones ------------------------------ */
