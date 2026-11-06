@@ -40,6 +40,7 @@ const EXPECTED_ACCEPT_NOOP: [RegExp, RegExp, string][] = [
   [/^Nombre del flujo$/, /^flowboard\.js:/, 'el nombre ya estaba escrito: guardarlo igual no cambia nada'],
   [/^Foto (de referencia|o archivo del mensaje)$/, /^flowboard\.js:/, 'sin elegir una foto o un archivo, «Usar este» no tiene qué usar'],
   [/^Importar contactos$/, /^contact-(workspace|fields)\.js:/, 'pide un archivo CSV: lo sube test:ux'],
+  [/^Confirma la acción$/, /^quote-builder\.js:/, 'el ejemplo por giro llena el cuadro de texto (cambia su valor, no la página): lo comprueba el área calculadoras'],
 ];
 const PROBLEMS: Verdict[] = ['SIN EFECTO', 'SIN MANEJADOR', 'ERROR JS', 'ERROR API', 'ERROR SILENCIOSO', 'PÁGINA NO ENCONTRADA', 'REDIRIGIDO', 'CANCELAR ESCRIBIÓ', 'NO SE PUDO PRESIONAR', 'ACEPTAR SIN EFECTO', 'NO SE ACEPTÓ'];
 export const isProblem = (o: Outcome) => PROBLEMS.includes(o.verdict);

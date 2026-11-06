@@ -6,14 +6,18 @@ import assert from 'node:assert/strict';
 import { toast, type AreaContext } from '../areas.mts';
 
 const DEF = {
-  inputs: [{ key: 'm2', label: 'Metros cuadrados', type: 'number', min: 1 }, { key: 'acabado', label: 'Acabado', type: 'option', options: [{ value: 'mate', label: 'Mate' }, { value: 'satinado', label: 'Satinado' }] }],
+  inputs: [
+    { key: 'm2', label: 'Metros cuadrados', type: 'number', min: 1 },
+    { key: 'acabado', label: 'Acabado', type: 'option', options: [{ value: 'mate', label: 'Mate' }, { value: 'satinado', label: 'Satinado' }] },
+    { key: 'sellador', label: 'Con sellador', type: 'boolean', required: false },
+  ],
   values: [{ key: 'litros', formula: 'redondear_arriba(m2 / 10)' }],
-  lines: [{ label: 'Pintura {acabado}', family: 'pintura', match: { acabado: 'acabado' }, qty: 'litros' }],
+  lines: [{ label: 'Pintura {acabado}', family: 'pintura', match: { acabado: 'acabado' }, qty: 'litros' }, { label: 'Sellador', family: 'sellador', qty: 'm2', when: 'sellador' }],
   stops: [{ when: 'm2 > 500', message: 'Para más de 500 m² te atiende un asesor.' }],
   legend: 'Aproximada.',
 };
 const item = (code: string, acabado: string, pesos: number) => ({ code, name: `Pintura ${acabado}`, description: '', unit: 'litro', family: 'pintura', attributes: { acabado }, price_mode: 'exact', price_min: pesos * 100, price_max: null, iva_mode: 'plus', active: true, sort: 0 });
-const FILE = { format: 'riverrun.quote-calculator', version: 2, name: 'Pintura (botones)', template_key: 'texto', source_text: 'Pintura por m²: mate $90, satinado $110 el litro.', definition: DEF, price_items: [item('BTNC-MATE', 'mate', 90), item('BTNC-SAT', 'satinado', 110)] };
+const FILE = { format: 'riverrun.quote-calculator', version: 2, name: 'Pintura (botones)', template_key: 'texto', source_text: 'Pintura por m²: mate $90, satinado $110 el litro.', definition: DEF, price_items: [item('BTNC-MATE', 'mate', 90), item('BTNC-SAT', 'satinado', 110), { ...item('BTNC-SELL', 'sellador', 10), name: 'Sellador', unit: 'm²', family: 'sellador', attributes: {} }] };
 
 export const checks = {
   'Plantilla por giro: llena el cuadro del cotizador, pidiendo confirmar si ya había texto': async ({ h, open, go }: AreaContext) => {
@@ -40,6 +44,10 @@ export const checks = {
       await page.getByLabel('Acabado', { exact: true }).selectOption('satinado');
       await page.getByRole('button', { name: 'Calcular', exact: true }).click();
       await page.getByText('$382.80', { exact: true }).waitFor(); // 3 litros × $110 + IVA
+      // Con sellador (sí o no): 25 m² × $10 más → $580 + IVA = $672.80.
+      await page.getByLabel('Con sellador', { exact: true }).check();
+      await page.getByRole('button', { name: 'Calcular', exact: true }).click();
+      await page.getByText('$672.80', { exact: true }).waitFor();
       // Llegó importada (apagada): encender y apagar.
       await page.getByRole('button', { name: 'Encender', exact: true }).click();
       await toast(page, 'Calculadora encendida');
@@ -85,7 +93,7 @@ export const checks = {
       await toast(page, /Copiada a «Destino de la copia \(botones\)» \(apagada\)/);
       const copy = (await pool.query('SELECT id, active FROM quote_calculators WHERE account_id = $1', [target.id])).rows[0];
       assert.equal(copy?.active, false);
-      assert.equal((await pool.query('SELECT count(*)::int AS n FROM price_items WHERE account_id = $1 AND calculator_id = $2', [target.id, copy.id])).rows[0].n, 2);
+      assert.equal((await pool.query('SELECT count(*)::int AS n FROM price_items WHERE account_id = $1 AND calculator_id = $2', [target.id, copy.id])).rows[0].n, 3);
     } finally {
       await pool.query('DELETE FROM accounts WHERE id = $1', [target.id]);
       await pool.query('DELETE FROM price_items WHERE calculator_id = $1', [calc.id]);
