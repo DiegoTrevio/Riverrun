@@ -178,8 +178,14 @@ export const AiSettingsSchema = z.object({
       allow_final: z.boolean().default(true),
       /** Datos del cliente que se piden antes de cotizar (claves de los datos a recopilar). */
       required_fields: z.array(z.string().max(60)).max(20).default([]),
+      /** Calculadora de la cuenta con que se cotiza ('' = la lista simple: la IA elige conceptos y cantidades). */
+      calculator_id: z.string().max(40).default(''),
+      /** Con calculadora: mandar el desglose (conceptos, IVA y total) en el chat. */
+      send_summary: z.boolean().default(true),
+      /** Mandar el PDF con el formato del negocio. */
+      send_pdf: z.boolean().default(true),
     })
-    .default({ enabled: false, template_id: '', allow_final: true, required_fields: [] }),
+    .default({ enabled: false, template_id: '', allow_final: true, required_fields: [], calculator_id: '', send_summary: true, send_pdf: true }),
 });
 export type AiSettings = z.infer<typeof AiSettingsSchema>;
 

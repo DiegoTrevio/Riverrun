@@ -6,7 +6,8 @@ import { unsupportedClaims } from './claims.js';
 import type { LeakDetector } from './leak.js';
 import { asksQuestion, contactNameKey, declines, isAnswered, questionList, questionProgress, repeatsQuestion, type QuestionProgress } from './questions.js';
 import { cardNumbersIn, isSensitiveField } from './safety.js';
-import { countEmojis, deepClean, FactCorpus, limitEmojis, normalize, stripEmojis, toWhatsappFormat, truncateChars } from './text.js';
+import { checkInputs, parseHumanNumber, type CalculatorDefinition } from '../quotes/calculator.js';
+import { countEmojis, deepClean, FactCorpus, limitEmojis, MASKED_MONEY_RE, normalize, stripEmojis, toWhatsappFormat, truncateChars } from './text.js';
 
 /** Plan final ya validado que el backend ejecutará. */
 export interface ExecutionPlan {
@@ -38,7 +39,7 @@ export interface ExecutionPlan {
   /** La IA detectó que el cliente empieza otra vez una solicitud ya terminada (el motor decide si la abre). */
   newRequest?: boolean;
   /** Cotización ya validada (conceptos existentes y cantidades que dio el cliente); los montos los calcula el sistema. */
-  quote?: { lines: { itemId: string; code: string; qty: number }[]; notes: string; final: boolean } | null;
+  quote?: { lines: { itemId: string; code: string; qty: number }[]; calculate?: { inputs: Record<string, string> }; notes: string; final: boolean } | null;
 }
 
 export interface ValidationResult {
@@ -64,6 +65,8 @@ export interface QuoteValidation {
   /** Ya hay una cotización en revisión en esta solicitud. */
   open: boolean;
   allowFinal: boolean;
+  /** Calculadora del agente (datos que pide); `null` = lista simple. */
+  calculator?: CalculatorDefinition | null;
 }
 
 /** Lo que el validador necesita saber de la agenda. */
@@ -679,6 +682,16 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     }
   }
 
+  // ---------- Montos tapados («$XX,XXX», «[precio]»): nunca salen, en ninguna cuenta ----------
+  if (messages.some((m) => MASKED_MONEY_RE.test(m))) {
+    factIssues = true;
+    soft(
+      'Escribiste un monto tapado (como «$XX,XXX» o «[precio]»). No tapes montos: el sistema da los precios y las cotizaciones. Si no tienes el dato, pide lo que falta o di con naturalidad que un asesor lo confirma.',
+      () => (messages = dropSentences(messages, (_n, x) => MASKED_MONEY_RE.test(x))),
+      'Se quitó una frase con un monto tapado',
+    );
+  }
+
   // ---------- Afirmaciones sin números ("sí tenemos alberca") ----------
   if (rules.verify_claims !== 'apagado' && messages.length && input.claimSources) {
     const claims = unsupportedClaims(messages.join('\n'), input.claimSources);
@@ -975,6 +988,67 @@ export function validateDecision(input: ValidationInput): ValidationResult {
             'Se quitó una frase que llamaba final a una cotización aproximada',
           );
         }
+      }
+    }
+  }
+
+  // ---------- Cotización con calculadora: la IA da los datos (con las palabras del cliente); el sistema calcula ----------
+  if (q.action === 'calculate') {
+    const qv = input.quotes;
+    const calc = qv?.calculator;
+    if (!qv || !calc) fixes.push('Cotización ignorada: este asistente no tiene calculadora de cotización');
+    else if (action === 'handoff' || action === 'no_reply') fixes.push('Cotización ignorada: la respuesta no llega al cliente');
+    else {
+      const problems: string[] = [];
+      const sources = [input.customerText, ...(input.customerDataSources ?? input.customerSources ?? [])];
+      const said = (quote: string) => {
+        const t = normalize(quote).trim();
+        return t.length > 0 && sources.some((s) => normalize(s).includes(t));
+      };
+      const defs = new Map(calc.inputs.map((x) => [x.key, x]));
+      const raw: Record<string, string> = {};
+      for (const it of q.inputs.slice(0, 40)) {
+        const def = defs.get(it.key.trim());
+        if (!def || raw[def.key] !== undefined) continue;
+        const value = it.value.trim();
+        if (!value) continue;
+        if (!said(it.quote)) {
+          problems.push(`El cliente no dijo «${def.label}» con esas palabras: pregúntaselo, o copia en quote sus palabras exactas.`);
+          continue;
+        }
+        if (def.type === 'number') {
+          const n = parseHumanNumber(value);
+          if (n === null || !customerSaidQuantity(n, it.quote, sources)) {
+            problems.push(`El número de «${def.label}» (${value}) no es el que dijo el cliente: usa el número de sus palabras.`);
+            continue;
+          }
+        }
+        raw[def.key] = value;
+      }
+      const check = checkInputs(calc, raw);
+      for (const x of check.invalid) problems.push(`«${x.label}»: ${x.message}. Vuelve a preguntárselo al cliente.`);
+      if (check.missing.length) problems.push(`Para cotizar falta: ${check.missing.map((m) => m.label).join(', ')}. Pregunta uno a la vez y no uses "calculate" todavía.`);
+      const have = { ...(input.knownData ?? {}), ...saveData };
+      const missingFields = qv.requiredFields.filter((f) => !have[f.key] && !(f.key === nameKey && (contactName || input.knownName)));
+      if (missingFields.length) problems.push(`Antes de cotizar falta: ${missingFields.map((f) => f.label || f.key).join(', ')}. Pídeselo al cliente.`);
+      if (qv.open) problems.push('Ya hay una cotización en revisión para esta solicitud: no prepares otra; dile que el equipo la está revisando.');
+      if (problems.length) {
+        quoteIssue = true;
+        if (input.final) {
+          const tu = bot.personality.formality !== 'usted';
+          const first = check.invalid[0]?.label ?? check.missing[0]?.label ?? missingFields[0]?.label;
+          messages = [qv.open ? `${tu ? 'Tu' : 'Su'} cotización está en revisión con el equipo; ${tu ? 'te' : 'se'} la enviamos en cuanto esté lista.`
+            : first ? `Para ${tu ? 'cotizarte' : 'cotizarle'} necesito ${tu ? 'que me digas' : 'que me diga'}: ${first}.`
+            : `Para ${tu ? 'cotizarte' : 'cotizarle'}, ¿me ${tu ? 'confirmas' : 'confirma'} los datos?`];
+          fixes.push(`Cotización no calculada: ${problems.join(' ')}`);
+        } else retryable.push(...problems);
+      } else {
+        const notes = quoteNotes(q.notes, (sentence) =>
+          !!input.leak?.leak(sentence)
+          || (rules.verify_facts && all.unverified(sentence, trusted, customerCorpus).length > 0)
+          || (rules.verify_claims !== 'apagado' && !!input.claimSources && unsupportedClaims(sentence, input.claimSources).length > 0));
+        if (notes.dropped.length) fixes.push(`Se quitó de las notas de la cotización lo que no tiene respaldo: ${notes.dropped.join(' · ').slice(0, 300)}`);
+        quote = { lines: [], calculate: { inputs: raw }, notes: notes.text, final: false };
       }
     }
   }

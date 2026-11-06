@@ -172,6 +172,12 @@ const MONEY_RE = new RegExp(
   'giu',
 );
 
+/**
+ * Montos tapados: «$XX,XXX», «$###», «$__», «[precio]», «{total}». La IA los usa para esquivar la revisión de precios;
+ * nunca son algo que el cliente deba recibir (en ninguna cuenta).
+ */
+export const MASKED_MONEY_RE = /(?:us\$|\$)\s?[xX#?*_]+(?:[.,\s]?[xX#?*_\d]+)*|\[\s*(?:precio|monto|total|importe|costo|cantidad)[^\]\n]{0,40}\]|\{\s*(?:precio|monto|total|importe|costo)[^}\n]{0,40}\}/i;
+
 /** Montos de dinero mencionados ("$1,650", "350 pesos", "USD 1200", "15 mil pesos"), en forma canónica. */
 export function extractMoney(text: string): string[] {
   return (text.match(MONEY_RE) || []).map((m) => {

@@ -655,12 +655,14 @@ function noticeRecipients(rule) {
 
 /** Cotizaciones en PDF: encender, formato, si puede enviar finales (con aprobación) y qué datos pedir antes. */
 async function tabQuotes(root, bot) {
-  const [items, templates] = await Promise.all([
+  const [items, templates, calculators] = await Promise.all([
     api('GET', `/api/price-items?account_id=${bot.account_id}&active=1`).catch(() => []),
     api('GET', `/api/quote-templates?account_id=${bot.account_id}`).catch(() => []),
+    api('GET', `/api/quote-calculators?account_id=${bot.account_id}`).catch(() => []),
   ]);
-  const m = { enabled: false, template_id: '', allow_final: true, required_fields: [], ...(bot.ai.quotes || {}) };
+  const m = { enabled: false, template_id: '', allow_final: true, required_fields: [], calculator_id: '', send_summary: true, send_pdf: true, ...(bot.ai.quotes || {}) };
   const active = templates.filter((t) => t.status === 'active');
+  const calcs = calculators.filter((c) => c.active || c.id === m.calculator_id);
   root.append(
     h('div', { class: 'card' },
       check(m, 'enabled', 'Preparar y enviar cotizaciones en PDF'),
@@ -670,6 +672,10 @@ async function tabQuotes(root, bot) {
       items.length
         ? h('p', { class: 'small' }, `${items.length} ${items.length === 1 ? 'concepto activo' : 'conceptos activos'} en tu `, h('a', { href: '#/cotizaciones/precios' }, 'lista de precios'), '.')
         : h('p', { class: 'banner warn', role: 'status' }, 'Tu lista de precios está vacía: el agente no cotiza hasta que agregues conceptos. ', h('a', { href: '#/cotizaciones/precios?id=new' }, 'Agregar conceptos')),
+      field('Calculadora', select(m, 'calculator_id', [['', 'Sin calculadora: el agente elige conceptos de la lista'], ...calcs.map((c) => [c.id, `${c.name}${c.active ? '' : ' (apagada)'}`])]),
+        'Con calculadora, el agente solo pide los datos (medidas, opciones…) y el sistema calcula cantidades, escalones, IVA y total con tus reglas. Si una regla lo indica o falta un precio, pasa con un asesor.'),
+      check(m, 'send_summary', 'Con calculadora: mandar el desglose en el chat (conceptos, IVA y total)'),
+      check(m, 'send_pdf', 'Mandar el PDF con tu formato'),
       field('Formato', select(m, 'template_id', [['', active.length ? 'El más reciente de la cuenta' : 'El formato del sistema'], ...active.map((t) => [t.id, `${t.name} (versión ${t.version})`])]),
         h('span', {}, 'Sube o cambia formatos en ', h('a', { href: '#/cotizaciones/formatos' }, 'Cotizaciones → Formatos'), '.')),
       check(m, 'allow_final', 'Permitir cotizaciones finales (alguien del equipo las aprueba antes de enviarlas)'),

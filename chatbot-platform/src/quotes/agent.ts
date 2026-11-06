@@ -10,11 +10,13 @@ import * as astore from '../automation/store.js';
 import { query, queryOne } from '../db.js';
 import { logEvent } from '../logs.js';
 import * as pstore from '../store/pipelines.js';
+import * as calcstore from '../store/quote-calculators.js';
 import * as qstore from '../store/quotes.js';
 import type { Chatbot, Contact, Conversation, DataField } from '../types.js';
 import type { OutgoingFile } from '../engine/transport.js';
+import { ADVISOR_MESSAGE, evaluateCalculator, prepareCalculator, type CalculatorDefinition, type CalculatorResult } from './calculator.js';
 import { formatTotals } from './format.js';
-import { failedMessage, pendingMessage, quoteMessage } from './messages.js';
+import { failedMessage, pendingMessage, quoteMessage, summaryMessage } from './messages.js';
 import { localDate, renderQuote } from './render.js';
 
 /** Lo que el asistente sabe para cotizar en esta conversación. */
@@ -30,19 +32,29 @@ export interface QuoteCatalog {
   open: qstore.Quote | null;
   /** Última cotización que recibió el cliente en esta conversación. */
   lastSent: qstore.Quote | null;
+  /** Calculadora activa del agente: la IA junta sus datos y el sistema calcula. `null` = lista simple. */
+  calculator: { id: string; version: number; name: string; definition: CalculatorDefinition } | null;
+  /** Qué sale al cliente: el desglose en el chat y/o el PDF. */
+  sendSummary: boolean;
+  sendPdf: boolean;
 }
 
-/** Lo que la IA propuso y el validador aceptó. */
+/** Lo que la IA propuso y el validador aceptó: conceptos de la lista, o los datos para la calculadora. */
 export interface PlannedQuote {
   lines: { itemId: string; code: string; qty: number }[];
+  /** Con calculadora: los datos que dio el cliente (clave → valor). */
+  calculate?: { inputs: Record<string, string> };
   notes: string;
   final: boolean;
 }
 
 export type PreparedQuote =
-  | { status: 'ready'; quote: qstore.Quote; file: OutgoingFile }
+  /** `file` falta si el agente no manda PDF. `summary` = mandar el desglose en el chat. */
+  | { status: 'ready'; quote: qstore.Quote; file?: OutgoingFile; summary: boolean; legend: string }
   | { status: 'pending'; quote: qstore.Quote; text: string }
-  | { status: 'failed'; text: string };
+  | { status: 'failed'; text: string }
+  /** La calculadora dice que esto lo ve un asesor (regla del negocio o precio que falta): se transfiere con este mensaje. */
+  | { status: 'handoff'; text: string; reason: string };
 
 interface Hooks {
   alertTeam?(accountId: string, o: { title: string; body: string; link?: string; kind?: string; conversationId?: string }): Promise<void>;
@@ -64,6 +76,7 @@ export class Quotes {
     if (!cfg?.enabled) return null;
     const items = await qstore.listPriceItems(conv.account_id, { activeOnly: true });
     if (!items.length) return null;
+    const calculator = await this.calculatorFor(conv, cfg.calculator_id);
     const request = await queryOne<{ id: string }>('SELECT id FROM conversation_requests WHERE conversation_id = $1 ORDER BY number DESC LIMIT 1', [conv.id]);
     const requestId = request ? Number(request.id) : null;
     const [settings, open, lastSent] = await Promise.all([
@@ -76,7 +89,30 @@ export class Quotes {
       requiredFields: bot.data_fields.filter((f) => cfg.required_fields.includes(f.key)),
       allowFinal: cfg.allow_final,
       templateId: cfg.template_id || null,
+      calculator,
+      // Sin calculadora la lista simple sigue como siempre: mensaje con el total y PDF.
+      sendSummary: calculator ? cfg.send_summary !== false : false,
+      sendPdf: calculator ? cfg.send_pdf !== false || cfg.send_summary === false : true,
     };
+  }
+
+  /**
+   * La calculadora del agente, si existe, está activa, es de la cuenta y su definición sirve. Si no, el agente cotiza con
+   * la lista simple y queda un aviso en el registro (el negocio la corrige en el panel).
+   */
+  private async calculatorFor(conv: Conversation, id: string | undefined): Promise<QuoteCatalog['calculator']> {
+    if (!id) return null;
+    const c = await calcstore.getCalculator(conv.account_id, id).catch(() => null);
+    if (!c || !c.active) {
+      await this.log(conv, 'warn', `La calculadora de cotización del agente ${c ? 'está apagada' : 'ya no existe'}: se cotiza con la lista de precios simple`);
+      return null;
+    }
+    try {
+      return { id: c.id, version: c.version, name: c.name, definition: prepareCalculator(c.definition).def };
+    } catch (e: any) {
+      await this.log(conv, 'warn', `La calculadora «${c.name}» tiene un error (${e?.message ?? e}): se cotiza con la lista de precios simple`);
+      return null;
+    }
   }
 
   /**
@@ -86,15 +122,29 @@ export class Quotes {
   async prepare(o: { bot: Chatbot; conv: Conversation; contact: Contact; planned: PlannedQuote; catalog: QuoteCatalog; operation?: string }): Promise<PreparedQuote> {
     const { bot, conv, contact, planned, catalog } = o;
     const formality = bot.personality.formality;
+    const calc = planned.calculate && catalog.calculator ? catalog.calculator : null;
+    const legend = calc?.definition.legend ?? '';
     let quote = o.operation ? await qstore.quoteByOperation(conv.account_id, o.operation) : null;
     if (!quote) {
-      const byId = new Map(catalog.items.map((i) => [i.id, i]));
-      const lines = planned.lines.flatMap((l) => {
-        const item = byId.get(l.itemId);
-        return item ? [{ price_item_id: item.id, code: item.code, name: item.name, description: item.description, unit: item.unit, qty: l.qty,
-          price_mode: item.price_mode, price_min: item.price_min, price_max: item.price_max, iva_mode: item.iva_mode }] : [];
-      });
-      const final = planned.final && lines.every((l) => l.price_mode === 'exact');
+      let lines: qstore.NewQuote['lines'];
+      let final: boolean;
+      let notes = planned.notes;
+      if (calc) {
+        // La calculadora hace las cuentas con los precios vigentes; la IA solo dio los datos.
+        const r = evaluateCalculator(calc.definition, planned.calculate!.inputs, catalog.items, { iva_rate: catalog.settings.iva_rate });
+        if (!r.ok) return this.calculatorStopped(conv, contact, calc, r);
+        lines = r.lines;
+        final = r.kind === 'final' && catalog.allowFinal && r.priced.can_be_final;
+        notes = [legend, planned.notes].filter(Boolean).join('\n');
+      } else {
+        const byId = new Map(catalog.items.map((i) => [i.id, i]));
+        lines = planned.lines.flatMap((l) => {
+          const item = byId.get(l.itemId);
+          return item ? [{ price_item_id: item.id, code: item.code, name: item.name, description: item.description, unit: item.unit, qty: l.qty,
+            price_mode: item.price_mode, price_min: item.price_min, price_max: item.price_max, iva_mode: item.iva_mode }] : [];
+        });
+        final = planned.final && lines.every((l) => l.price_mode === 'exact');
+      }
       const settings = await astore.getSettings(conv.account_id);
       const card = await pstore.openCardOf(conv.id).catch(() => null);
       const emailField = bot.data_fields.find((f) => f.type === 'email')?.key;
@@ -107,8 +157,9 @@ export class Quotes {
         quote = await qstore.createQuote({
           accountId: conv.account_id, kind: final ? 'final' : 'approximate', status: final ? 'pending_approval' : 'draft', source: 'bot',
           lines, chatbotId: bot.id, conversationId: conv.id, contactId: contact.id, requestId: catalog.requestId,
-          pipelineCardId: card ? Number(card.id) : null, templateId: catalog.templateId, notes: planned.notes, customer,
+          pipelineCardId: card ? Number(card.id) : null, templateId: catalog.templateId, notes, customer,
           today: localDate(new Date(), settings.timezone), operation: o.operation,
+          calculator: calc ? { id: calc.id, version: calc.version, inputs: planned.calculate!.inputs } : null,
         });
       } catch (e: any) {
         // Otra cotización quedó abierta en esta solicitud al mismo tiempo: no se duplica.
@@ -126,6 +177,9 @@ export class Quotes {
       }
     }
     if (quote.kind === 'final' && ['pending_approval', 'draft'].includes(quote.status)) return { status: 'pending', quote, text: pendingMessage(formality) };
+    const summary = catalog.sendSummary && !!calc;
+    // Solo desglose en el chat: no hace falta generar el archivo.
+    if (summary && !catalog.sendPdf) return { status: 'ready', quote: (await qstore.getQuote(conv.account_id, quote.id))!, summary, legend };
     try {
       const rendered = quote.pdf_path ? { fileName: `Cotizacion-${quote.folio}.pdf`, pdfPath: quote.pdf_path } : await renderQuote(conv.account_id, quote.id);
       return {
@@ -133,6 +187,8 @@ export class Quotes {
         quote: (await qstore.getQuote(conv.account_id, quote.id))!,
         // Con su dirección firmada, Messenger e Instagram también lo reciben como archivo.
         file: { id: quote.id, name: rendered.fileName, mime: 'application/pdf', kind: 'document', absPath: attachmentAbsolutePath(rendered.pdfPath), url: signedQuoteUrl(quote.id) },
+        summary,
+        legend,
       };
     } catch (e: any) {
       await qstore.transitionQuote(conv.account_id, quote.id, 'failed', { detail: { error: String(e?.message ?? e).slice(0, 300) } });
@@ -146,18 +202,42 @@ export class Quotes {
     }
   }
 
+  /**
+   * La calculadora no cotizó sola. Una regla del negocio (`stop`) o un precio que falta (`price`) pasan con un asesor; en
+   * el segundo caso el equipo recibe qué falta en la lista para completarla. Datos que faltan o no sirven no deberían
+   * llegar aquí (el validador ya los pidió): si llegan, se le pregunta al cliente.
+   */
+  private async calculatorStopped(conv: Conversation, contact: Contact, calc: NonNullable<QuoteCatalog['calculator']>, r: Exclude<CalculatorResult, { ok: true }>): Promise<PreparedQuote> {
+    if (r.reason === 'missing' || r.reason === 'invalid') return { status: 'failed', text: r.reason === 'missing' ? `Para cotizarte necesito: ${r.missing.map((m) => m.label).join(', ')}.` : `Revisemos un dato: ${r.message}.` };
+    if (r.reason === 'stop') {
+      await this.log(conv, 'info', `La calculadora «${calc.name}» pasó la cotización con un asesor: ${r.message}`);
+      return { status: 'handoff', text: r.message, reason: `Cotización: ${r.message}` };
+    }
+    await this.log(conv, 'warn', `La calculadora «${calc.name}» no pudo cotizar: ${r.detail}`);
+    await this.hooks.alertTeam?.(conv.account_id, {
+      title: '🧾 Cotización sin precio',
+      body: conversationAlert({ contact, reason: 'pidió una cotización que la calculadora no pudo hacer', extra: `${r.detail}. Completa la lista de precios (o la calculadora «${calc.name}») y atiende al cliente.` }),
+      link: `#/conversation/${conv.id}`, kind: 'quote', conversationId: conv.id,
+    }).catch(() => undefined);
+    return { status: 'handoff', text: r.message || ADVISOR_MESSAGE, reason: `Cotización: ${r.detail}` };
+  }
+
   /** Enlace firmado al PDF (7 días), para los canales que no envían archivos. */
   link(quote: qstore.Quote) {
     return signedQuoteUrl(quote.id);
   }
 
-  /** El mensaje con el total (y el enlace si el canal no envía archivos). */
-  message(bot: Chatbot, quote: qstore.Quote, link?: string) {
+  /**
+   * El mensaje del sistema con la cotización: el desglose (con calculadora y `send_summary`) o el mensaje corto con el
+   * total; en ambos casos con el enlace si el canal no envía archivos.
+   */
+  message(bot: Chatbot, quote: qstore.Quote, link?: string, o: { summary?: boolean; legend?: string } = {}) {
+    if (o.summary) return summaryMessage(quote, bot.personality.formality, { legend: o.legend, link });
     return quoteMessage(quote, bot.personality.formality, link);
   }
 
   /** Llegó al cliente: queda enviada y, si la oportunidad aún no tiene valor, toma el total de la cotización. */
-  async delivered(conv: Conversation, quote: qstore.Quote, opts: { userId?: string | null; via: 'file' | 'link' }): Promise<qstore.Quote | null> {
+  async delivered(conv: Conversation, quote: qstore.Quote, opts: { userId?: string | null; via: 'file' | 'link' | 'chat' }): Promise<qstore.Quote | null> {
     const sent = await qstore.transitionQuote(conv.account_id, quote.id, 'sent', { userId: opts.userId ?? null, detail: { via: opts.via } });
     if (!sent) return null;
     const card = await pstore.openCardOf(conv.id).catch(() => null);

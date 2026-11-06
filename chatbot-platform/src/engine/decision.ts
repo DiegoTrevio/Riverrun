@@ -30,12 +30,13 @@ export const DecisionSchema = z.object({
     .default({ action: 'none', service_id: '', slot: '', appointment_id: '', person: '' }),
   quote: z
     .object({
-      action: z.enum(['none', 'prepare']).default('none'),
+      action: z.enum(['none', 'prepare', 'calculate']).default('none'),
       items: z.array(z.object({ item_code: z.string().default(''), qty: z.number().default(1), qty_quote: z.string().default('') })).max(100).default([]),
+      inputs: z.array(z.object({ key: z.string().default(''), value: z.string().default(''), quote: z.string().default('') })).max(40).default([]),
       notes: z.string().default(''),
       wants_final: z.boolean().default(false),
     })
-    .default({ action: 'none', items: [], notes: '', wants_final: false }),
+    .default({ action: 'none', items: [], inputs: [], notes: '', wants_final: false }),
 });
 export type Decision = z.infer<typeof DecisionSchema>;
 
@@ -120,10 +121,24 @@ export const DECISION_JSON_SCHEMA = {
     quote: {
       type: 'object',
       additionalProperties: false,
-      required: ['action', 'items', 'notes', 'wants_final'],
-      description: 'Cotización en PDF: "prepare" solo si hay sección Cotizaciones, el cliente pidió cotización o presupuesto y ya sabes qué conceptos y cantidades quiere; si no, "none". El sistema calcula los montos y envía el archivo.',
+      required: ['action', 'items', 'inputs', 'notes', 'wants_final'],
+      description: 'Cotización: "calculate" si la sección Cotizaciones tiene calculadora y ya tienes todos sus datos obligatorios (llena inputs); "prepare" si la sección lista conceptos y ya sabes cuáles y cuántos quiere el cliente (llena items); si no, "none". El sistema calcula los montos y los envía.',
       properties: {
-        action: { type: 'string', enum: ['none', 'prepare'] },
+        action: { type: 'string', enum: ['none', 'prepare', 'calculate'] },
+        inputs: {
+          type: 'array',
+          description: 'Solo con "calculate": un elemento por dato de la calculadora que dio el cliente. Vacío en otro caso.',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['key', 'value', 'quote'],
+            properties: {
+              key: { type: 'string', description: 'Clave exacta del dato (de la lista de datos de la calculadora).' },
+              value: { type: 'string', description: 'Valor: el número tal cual lo dijo el cliente, el valor exacto de la opción, o "sí"/"no".' },
+              quote: { type: 'string', description: 'Palabras exactas del cliente donde lo dice (p. ej. "son 40 metros").' },
+            },
+          },
+        },
         items: {
           type: 'array',
           description: 'Conceptos de la lista de precios (clave exacta) y cantidad que pidió el cliente.',

@@ -3,7 +3,7 @@
  * dice si es APROXIMADA o FINAL, igual que en el archivo.
  */
 import type { Quote } from '../store/quotes.js';
-import { formatDate, formatTotals } from './format.js';
+import { formatDate, formatLineAmount, formatQty, formatTotals, formatUnitPrice } from './format.js';
 
 type Formality = 'tu' | 'usted';
 
@@ -21,6 +21,28 @@ export function quoteMessage(q: Quote, f: Formality, link?: string): string {
     : `${tu ? 'Te comparto tu' : 'Le comparto su'} cotización APROXIMADA (folio ${q.folio}): ${q.open_ended || q.total_min !== q.total_max || q.has_tbd ? 'total estimado' : 'total'} ${total(q)}. `
       + `Es aproximada: el precio final puede cambiar al confirmar los detalles. Vigente hasta el ${valid}.`;
   return link ? `${text}\n${tu ? 'Puedes verla' : 'Puede verla'} aquí: ${link}` : text;
+}
+
+/**
+ * El desglose en el chat (sin PDF o además del PDF): cada concepto con cantidad × precio = importe, subtotal, IVA y total,
+ * si es aproximada o final, la vigencia y la leyenda del negocio. Todo sale del cálculo guardado.
+ */
+export function summaryMessage(q: Quote, f: Formality, o: { legend?: string; link?: string } = {}): string {
+  const tu = f === 'tu';
+  const cur = q.currency;
+  const lines = q.lines ?? [];
+  const t = formatTotals({ ...q, lines, can_be_final: false }, cur);
+  const head = `${tu ? 'Esta es tu' : 'Esta es su'} cotización ${q.kind === 'final' ? 'FINAL' : 'APROXIMADA'} (folio ${q.folio}):`;
+  const rows = lines.map((l) => `• ${formatQty(l.qty)} × ${l.name}${l.unit && l.unit !== 'pieza' ? ` (${l.unit})` : ''} — ${formatUnitPrice(l, cur)} = ${formatLineAmount(l, cur)}`);
+  const totals = q.iva_max > 0 || q.iva_min > 0
+    ? [`Subtotal: ${t.subtotal}`, `IVA: ${t.iva}`, `Total: ${t.total}`]
+    : [`Total: ${t.total}`];
+  const tail = [
+    q.kind === 'final' ? `Vigente hasta el ${formatDate(q.valid_until)}.` : `Es aproximada: el precio final puede cambiar al confirmar los detalles. Vigente hasta el ${formatDate(q.valid_until)}.`,
+    ...(o.legend ? [o.legend] : []),
+    ...(o.link ? [`${tu ? 'Puedes verla' : 'Puede verla'} en PDF aquí: ${o.link}`] : []),
+  ];
+  return [head, ...rows, '', ...totals, '', ...tail].join('\n');
 }
 
 /** La final la revisa el equipo antes de enviarla. */
