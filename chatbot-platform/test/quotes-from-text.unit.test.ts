@@ -95,3 +95,15 @@ test('cotizador escrito: encuentra combinaciones sin precio antes de que un clie
   assert.match(missing[0], /Falta en la lista de precios: «pintura» con .*satinado/);
   assert.deepEqual(coverageCheck(toDraft(PINTURA, NO_IVA_INCL).definition, draftItems(toDraft(PINTURA, NO_IVA_INCL)), 0.16), []);
 });
+
+test('cotizador escrito: la llamada deja espacio para la configuración completa (con muchos precios no se corta)', async () => {
+  const { buildFromText } = await import('../src/quotes/from-text.js');
+  const seen: any[] = [];
+  const ai = { complete: async (req: any) => { seen.push(req); return { content: JSON.stringify(PINTURA), model: 'm', usage: { input_tokens: 1, cached_tokens: 0, output_tokens: 1 }, latency_ms: 1 }; } } as any;
+  const r = await buildFromText(ai, { text: 'Pintura mate $90 el litro', settings: { currency: 'MXN', iva_rate: 0.16, prices_include_iva: false } as any });
+  assert.ok(r.draft);
+  // Con una lista de precios por escalón (Metromalla, 56 precios) la IA gastaba casi todo el tope en razonar y la
+  // configuración salía cortada («La IA no terminó de armar el cotizador»).
+  assert.equal(seen[0].reasoning_effort, 'low');
+  assert.ok(seen[0].max_tokens >= 32000);
+});

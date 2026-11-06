@@ -67,7 +67,8 @@ export interface ProcessResult {
   status: 'nothing' | 'busy' | 'inactive' | 'human' | 'paused' | 'handoff' | 'replied' | 'no_reply' | 'restart' | 'error';
   plan?: ExecutionPlan;
   decision?: unknown;
-  attempts?: { retryable: string[]; fixes: string[] }[];
+  /** Cada propuesta de la IA: lo que el sistema rechazó, lo que ajustó y el texto que propuso (para el simulador). */
+  attempts?: { retryable: string[]; fixes: string[]; draft?: string[] }[];
   fallbackUsed?: boolean;
   error?: string;
 }
@@ -427,7 +428,8 @@ export class Engine {
           v.retryable.push(`Afirmaste algo que la información del negocio no respalda o contradice: ${unsupported.join('; ')}. Quítalo o di con naturalidad que lo confirmas con el equipo.`);
         }
       }
-      attempts.push({ retryable: v.retryable, fixes: v.fixes });
+      const draft = Array.isArray((raw as any)?.messages) ? (raw as any).messages.map((m: unknown) => String(m ?? '')).slice(0, 10) : [];
+      attempts.push({ retryable: v.retryable, fixes: v.fixes, draft });
       await store.insertAiRun({
         account_id: conv.account_id,
         chatbot_id: bot.id,

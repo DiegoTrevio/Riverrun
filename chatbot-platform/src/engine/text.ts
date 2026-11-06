@@ -211,7 +211,8 @@ const percentsIn = (folded: string) => [...folded.matchAll(PERCENT_RE)].map((m) 
 
 /** Promociones "2x1", "3 x 2", "2 por 1", "dos por uno" (la primera cifra mayor: no son medidas como "4x4"). */
 // Al final puede ir un punto o una coma ("2x1."), pero no una cifra ("2x1.5", "3x2:30") ni un porcentaje.
-const PROMO_RE = /(?<![\d.,$])([2-9])\s?(?:x|×|por)\s?([1-8])(?!\d|[.,:]\d|\s?%)(?!\s?(?:m|cm|mts?|metros|pulgadas)(?![\p{L}]))|(?<![\p{L}])(dos|tres|cuatro)\s+por\s+(uno|dos|tres)(?![\p{L}])/giu;
+// «6 × 2 = 12 abrazaderas» es una cuenta, no un «6x2»: después del segundo número no puede venir «=».
+const PROMO_RE = /(?<![\d.,$])([2-9])\s?(?:x|×|por)\s?([1-8])(?!\d|[.,:]\d|\s?%)(?!\s*=)(?!\s?(?:m|cm|mts?|metros|pulgadas)(?![\p{L}]))|(?<![\p{L}])(dos|tres|cuatro)\s+por\s+(uno|dos|tres)(?![\p{L}])/giu;
 const SMALL: Record<string, number> = { uno: 1, dos: 2, tres: 3, cuatro: 4 };
 function promosIn(folded: string): string[] {
   const out: string[] = [];
