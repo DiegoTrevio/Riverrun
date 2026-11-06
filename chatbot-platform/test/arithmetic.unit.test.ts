@@ -172,3 +172,102 @@ test('validador: el aviso de «escribe tú la cotización» nunca deja al client
   assert.deepEqual(run(INFO, true).retryable, []);
   assert.match(run(INFO, false).retryable.join(' '), /escribe tú la cotización/);
 });
+
+test('respuestas reales (segunda prueba en vivo): comentario entre paréntesis dentro de la operación e IVA de un monto sin escribir la multiplicación', async () => {
+  const { QUOTE_TEXT_TEMPLATES } = await import('../src/quotes/text-templates.js');
+  const info = [QUOTE_TEXT_TEMPLATES.find((t) => t.key === 'cercas')!.text, 'Flete en Santiago: $1,500 por viaje. IVA (16%).'];
+  const check = (customer: string[], reply: string) => {
+    const trusted = new FactCorpus(info);
+    const cust = new FactCorpus(customer);
+    return { bad: new FactCorpus([...info, ...customer]).unverified(reply, trusted, cust), fixes: fixArithmetic([reply], trusted, cust).corrections };
+  };
+  // Gemini: «17 postes × 4 (para 2.00 m de altura) = 68 abrazaderas».
+  const gemini = [
+    'Paneles: 40 ÷ 2.50 = 16 paneles',
+    'Postes: 16 paneles + 1 = 17 postes (cimentado, altura + 0.50 m = 2.50 m)',
+    'Abrazaderas: 17 postes × 4 (para 2.00 m de altura) = 68 abrazaderas',
+    'Paneles: 16 × $1,000 = $16,000',
+    'Postes: 17 × $450 = $7,650',
+    'Abrazaderas: 68 × $12 = $816',
+    'Subtotal materiales: $16,000 + $7,650 + $816 = $24,466',
+  ].join('\n');
+  assert.deepEqual(check(['Quiero 40 metros de valla de 2 metros de alto', 'Clasica, cimentado', 'Santiago'], gemini), { bad: [], fixes: [] });
+  // GPT: el IVA del flete escrito como monto («$1,500 + $240»): $240 = $1,500 × 16 %.
+  const gpt = 'Flete en Santiago: $1,500 + IVA = $1,500 + $240 = $1,740';
+  assert.deepEqual(check(['Cotízame 60 metros, Santiago'], gpt), { bad: [], fixes: [] });
+  // El IVA de un monto que no es del negocio ni salió de una cuenta sigue sin pasar.
+  assert.deepEqual(check(['Cotízame 60 metros, Santiago'], 'Extra: $2,200 + $352 = $2,552').bad, ['2200', '352', '2552']);
+});
+
+test('respuestas reales: IVA solo de los materiales con la instalación aparte, y flete suelto antes del subtotal', async () => {
+  const { QUOTE_TEXT_TEMPLATES } = await import('../src/quotes/text-templates.js');
+  const info = [QUOTE_TEXT_TEMPLATES.find((t) => t.key === 'cercas')!.text, 'Flete en Santiago y Monterrey: $1,500 por viaje. IVA (16%).'];
+  const run = (customer: string[], reply: string) => {
+    const trusted = new FactCorpus(info);
+    const cust = new FactCorpus(customer);
+    const r = fixArithmetic([reply], trusted, cust);
+    return { bad: new FactCorpus([...info, ...customer]).unverified(r.messages[0], trusted, cust), fixes: r.corrections, text: r.messages[0] };
+  };
+  // GPT-4.1-mini: el IVA y el total son de los materiales; la instalación se suma después. Nada debe cambiar.
+  const gpt = [
+    'Instalación cimentada: $600 × 25 m = $15,000',
+    'Paneles: 10 × $850 = $8,500',
+    'Postes: 11 × $450 = $4,950',
+    'Abrazaderas: 44 × $12 = $528',
+    'Subtotal materiales: $8,500 + $4,950 + $528 = $13,978',
+    'IVA 16%: $2,236.48',
+    'Total materiales: $16,214.48',
+    'Instalación: $15,000',
+    'Total general: $16,214.48 + $15,000 = $31,214.48',
+  ].join('\n');
+  const customer = ['Necesito 25 metros de Recta de 2 metros, cimentada, con instalación, en Monterrey'];
+  const derivation = ['Paneles: 25 ÷ 2.5 = 10 paneles', 'Postes: 10 + 1 = 11 postes', 'Abrazaderas: 11 postes × 4 = 44 abrazaderas'].join('\n');
+  assert.deepEqual(run(customer, `${derivation}\n${gpt}`), { bad: [], fixes: [], text: `${derivation}\n${gpt}` });
+  // Gemini: flete en un renglón suelto antes del subtotal (el subtotal lo incluye).
+  const gemini = [
+    'Paneles: 10 ÷ 2.50 = 4 paneles × $700 = $2,800',
+    'Postes: 4 + 1 = 5 postes × $360 = $1,800',
+    'Placas: 5 placas × $90 = $450',
+    'Abrazaderas: 5 postes × 3 = 15 abrazaderas × $14 = $210',
+    'Flete a Santiago: $1,500',
+    'Subtotal: $6,760',
+    'IVA (16%): $1,081.60',
+    'Total: $7,841.60',
+  ].join('\n');
+  const c2 = ['Hola, quiero cotizar 10 metros de malla Recta de 1.50 m con placa, para Santiago, sin instalación'];
+  assert.deepEqual(run(c2, gemini), { bad: [], fixes: [], text: gemini });
+  // Con un monto suelto, un subtotal que no cuadra no se «corrige» (no se sabe qué quiso sumar): lo revisa la verificación.
+  const off = gemini.replace('$6,760', '$6,000');
+  assert.deepEqual(run(c2, off).fixes, []);
+});
+
+test('respuestas reales: total en negritas de WhatsApp y «Aquí tiene el desglose»', async () => {
+  const { unsupportedClaims } = await import('../src/engine/claims.js');
+  const info = [...INFO, 'Flete en Santiago: $1,500 por viaje.'];
+  const trusted = new FactCorpus(info);
+  const cust = new FactCorpus(CUSTOMER);
+  const reply = `${QUOTE}\nTotal con flete: $26,448 + $1,500 = *$27,948*`;
+  assert.deepEqual(new FactCorpus([...info, ...CUSTOMER]).unverified(reply, trusted, cust), []);
+  assert.deepEqual(fixArithmetic([reply], trusted, cust).corrections, []);
+  assert.deepEqual(fixArithmetic(['16 * $1,000 = $16,000'], trusted, new FactCorpus(['quiero 16'])).derived.has('16000'), true, 'un * solo entre números sí multiplica');
+  assert.deepEqual(unsupportedClaims('Con gusto le cotizo. Aquí tiene el desglose:', info), []);
+  assert.deepEqual(unsupportedClaims('Aquí tiene su cotización y el presupuesto', info), []);
+  assert.notDeepEqual(unsupportedClaims('Tenemos alberca techada', info), [], 'lo demás se sigue revisando');
+});
+
+test('validador: «permítame un momento mientras calculo» sin precios se regresa a la IA (nunca en el último intento)', async () => {
+  const { validateDecision } = await import('../src/engine/validator.js');
+  const { hydrateChatbot } = await import('../src/types.js');
+  const b = hydrateChatbot({ id: 'b1', account_id: 'a1', name: 'Metromalla', active: true, personality: {}, rules: {}, data_fields: [], flow: {}, ai: {}, created_at: new Date(), updated_at: new Date() } as any);
+  const run = (text: string, final = false, grounding = INFO) => validateDecision({
+    raw: { thinking: '', action: 'reply', messages: [text], image_ids: [], save_data: [], remember: [], handoff_reason: '', info_not_found: false },
+    bot: b, images: [], sentImageIds: [], customerText: 'Santiago', groundingSources: grounding, claimSources: grounding, customerSources: CUSTOMER, final,
+  } as any).retryable.join(' ');
+  for (const stall of ['Con gusto le ayudo con su cotización. Permítame un momento mientras calculo los detalles.', 'Entendido, sin instalación. Permítame recalcular la cotización.', 'Calculo la cotización para 40 metros de valla clásica.']) {
+    assert.match(run(stall), /Prometiste calcular/, stall);
+    assert.doesNotMatch(run(stall, true), /Prometiste calcular/, 'en el último intento sale');
+  }
+  assert.doesNotMatch(run('¿Qué modelo prefiere, Recta o Clásica?'), /Prometiste/);
+  assert.doesNotMatch(run('Permítame un momento, le paso con un asesor.'), /Prometiste/);
+  assert.doesNotMatch(run('Permítame un momento mientras calculo.', false, ['Salón para eventos.']), /Prometiste/, 'sin precios no hay cotización que pedir');
+});

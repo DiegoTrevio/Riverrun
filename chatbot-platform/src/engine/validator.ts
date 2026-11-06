@@ -462,6 +462,9 @@ function dropSentences(messages: string[], test: (sentenceNorm: string, sentence
  *  - Precios, números, links, correos y teléfonos deben existir en el contexto.
  *  - Frases prohibidas, emojis, formato y longitud según configuración.
  */
+/** «Permítame un momento mientras calculo», «le preparo la cotización»: una promesa que el sistema no cumple después. */
+const QUOTE_STALL_RE = /\b(permit[ae]me|deme|dame|un momento|en breve|enseguida|ahorita)\b[^.?!\n]{0,60}\b(calcul|cotiz|prepar|envi|mand)\w*|\b(calculo|estoy calculando|voy a calcular|(le|te) (preparo|calculo|envio|mando)|recalcul)\w*/;
+const QUOTE_STALL = 'Prometiste calcular o enviar la cotización después, pero nada se envía después de esta respuesta. Si ya tienes los datos y los precios, escribe la cotización ahora, con cada operación y sus números; si es un caso que atiende un asesor, usa action = "handoff".';
 const NO_QUOTE_TOOL = 'Este agente no envía cotizaciones del sistema (no uses quote.action): si el cliente ya dio los datos, escribe tú la cotización en el mensaje con los precios y reglas de la información del negocio, con cada operación y sus números (p. ej. «Paneles: 40 ÷ 2.50 = 16 paneles × $1,000 = $16,000», luego subtotal, IVA y total). El sistema revisa las cuentas.';
 
 export function validateDecision(input: ValidationInput): ValidationResult {
@@ -950,6 +953,7 @@ export function validateDecision(input: ValidationInput): ValidationResult {
   const shouldWriteQuote = () =>
     !input.final && action !== 'handoff' && action !== 'no_reply' &&
     !messages.some((m) => /\$\s?\d/.test(m)) && input.groundingSources.some((g) => /\$\s?\d/.test(g));
+  if (q.action === 'none' && shouldWriteQuote() && messages.some((m) => QUOTE_STALL_RE.test(normalize(m)))) retryable.push(QUOTE_STALL);
   if (q.action === 'prepare') {
     const qv = input.quotes;
     if (!qv) {
