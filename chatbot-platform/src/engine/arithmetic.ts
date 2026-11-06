@@ -54,9 +54,10 @@ function opIn(gap: string): Op | null {
   const g = gap.trim().toLowerCase();
   if (g === '-' || g === '−' || g === '–') return '-';
   if (g === '/') return '÷';
+  if (g === '*') return '×';
   const found: Op[] = [];
   for (const ch of g) {
-    if (ch === '×' || ch === '*' || ch === '·') found.push('×');
+    if (ch === '×' || ch === '·') found.push('×');
     else if (ch === '÷') found.push('÷');
     else if (ch === '+') found.push('+');
     else if (ch === '=') found.push('=');
@@ -120,22 +121,32 @@ function evaluate(vals: number[], ops: Op[]): number {
 export function fixArithmetic(messages: string[], trusted: FactCorpus, customer?: FactCorpus): ArithmeticResult {
   const corrections: string[] = [];
   const derived = new Set<string>();
-  /** Importe de cada renglón (el último monto de cada cadena de operaciones), para el subtotal. */
-  let items: number[] = [];
-  let subtotal: number | null = null;
-  let iva: number | null = null;
   /**
-   * Hubo un monto fuera de las operaciones y de los renglones de subtotal/IVA/total (instalación, flete, descuento,
-   * anticipo): el sistema ya no sabe de qué sale el total, así que no lo rehace (lo revisa la verificación normal).
+   * Importe de cada renglón (el último monto de cada cadena de operaciones). `sum`: salió de sumar otros renglones
+   * («Subtotal materiales: $8,500 + $4,950 = $13,450»), así que también puede ser la base del IVA.
    */
-  let loose = false;
-  const reset = () => { items = []; subtotal = null; iva = null; loose = false; };
+  let items: { v: number; sum: boolean }[] = [];
+  /** Montos sueltos ya verificados fuera de las operaciones (un flete o una instalación de la lista de precios). */
+  let loose: number[] = [];
+  /** Hubo un monto suelto sin respaldo: el sistema ya no sabe de qué sale el total. */
+  let unknownLoose = false;
+  let subtotal: number | null = null;
+  let iva: { v: number; base: number } | null = null;
+  const reset = () => { items = []; loose = []; unknownLoose = false; subtotal = null; iva = null; };
+
+  const ivaRate = trusted.ivaRate();
+  /** ¿Es el IVA (con la tasa del negocio) de un precio del negocio o de un resultado ya revisado? */
+  const isIvaOf = (v: number) => {
+    if (ivaRate === null || v <= 0) return false;
+    const base = round2(v / ivaRate);
+    return [base, base - 0.01, base + 0.01].some((b) => same(round2(b * ivaRate), v) && (derived.has(canon(b)) || trusted.hasMoney(canon(b))));
+  };
 
   const known = (t: Tok, ops: (Op | null)[], j: number, hasMoney: boolean) => {
     // Un resultado ya revisado en esta respuesta, aunque se use en otro renglón («16 paneles» y luego «16 × $1,000»).
     if (t.derived || (!t.percent && derived.has(canon(t.value)))) return true;
     const c = canonicalNumber(t.raw.replace(/^(US\$|\$)\s?/, '').replace(/\s?%$/, ''));
-    if (t.money) return trusted.hasMoney(c);
+    if (t.money) return trusted.hasMoney(c) || isIvaOf(t.value);
     if (t.percent) return trusted.hasPercent(c);
     if (!hasMoney) return c.length === 1 || trusted.hasNumber(c) || !!customer?.hasNumber(c);
     // «× 0.16» o «× 1.16»: el IVA (u otro porcentaje del negocio) escrito como decimal.
@@ -147,10 +158,13 @@ export function fixArithmetic(messages: string[], trusted: FactCorpus, customer?
   };
 
   const line = (text: string): string => {
-    const toks = tokensOf(text);
+    // «17 postes × 4 (para 2.00 m de altura) = 68»: un comentario entre paréntesis sin "=" no corta la operación. Se tapa
+    // con espacios del mismo largo (las posiciones no cambian) y se deja «(16%)» para leer la tasa del IVA.
+    const plain = text.replace(/\([^()=]*\)/g, (m) => (/^\(\s*\d+(?:[.,]\d+)?\s?%\s*\)$/.test(m) ? m : ' '.repeat(m.length)));
+    const toks = tokensOf(plain);
     if (!toks.length) return text;
-    const ops: (Op | null)[] = toks.map((t, i) => (i ? opIn(text.slice(toks[i - 1].end, t.start)) : null));
-    let chainMoney: number | null = null;
+    const ops: (Op | null)[] = toks.map((t, i) => (i ? opIn(plain.slice(toks[i - 1].end, t.start)) : null));
+    let chainMoney: { v: number; sum: boolean } | null = null;
     let usedChain = false;
     let segStart = 0;
     // Cadenas: números unidos por operaciones; cada "=" cierra una operación y su resultado abre la siguiente.
@@ -188,42 +202,76 @@ export function fixArithmetic(messages: string[], trusted: FactCorpus, customer?
       for (const t of expr) if (!t.percent) derived.add(canon(t.value));
       if (hasMoney) {
         // Una suma de importes ya contados («$16,000 + $7,650 = $23,650») los reemplaza: no se cuentan dos veces.
-        if (exprOps.slice(1, -1).every((o) => o === '+')) {
+        const isSum = exprOps.slice(1, -1).every((o) => o === '+');
+        if (isSum) {
           for (const t of expr) {
-            const k = items.findIndex((x) => same(x, t.value));
+            const k = items.findIndex((x) => same(x.v, t.value));
             if (k >= 0) items.splice(k, 1);
+            else {
+              const l = loose.findIndex((x) => same(x, t.value));
+              if (l >= 0) loose.splice(l, 1);
+            }
           }
         }
-        chainMoney = res.value;
+        chainMoney = { v: res.value, sum: isSum };
       }
     }
 
-    // Subtotal, IVA y total sin operación escrita: el sistema los calcula con los importes de los renglones de arriba.
+    // Subtotal, IVA y total sin operación escrita. Se aceptan si salen de una base razonable (todos los renglones, el último
+    // subtotal o eso más los montos sueltos de la lista, como el flete). Solo se corrigen si la base es una sola, sin dudas:
+    // la IA puede calcular el IVA solo de los materiales y sumar la instalación aparte, y eso no es un error.
     const money = toks.filter((t) => t.money);
     if (!usedChain && money.length) {
-      const f = fold(text);
+      const f = fold(plain);
       const isSubtotal = SUBTOTAL_RE.test(f);
       const isTotal = TOTAL_RE.test(f) && !isSubtotal;
       const isIva = IVA_RE.test(f) && !isSubtotal && !isTotal;
       if (!isSubtotal && !isTotal && !isIva) {
-        if (items.length) loose = true;
-      } else if (money.length === 1 && items.length && !loose) {
+        if (items.length) {
+          for (const t of money) {
+            const c = canonicalNumber(t.raw.replace(/^(US\$|\$)\s?/, ''));
+            if (derived.has(canon(t.value)) || trusted.hasMoney(c) || isIvaOf(t.value)) loose.push(t.value);
+            else unknownLoose = true;
+          }
+        }
+      } else if (money.length === 1 && items.length) {
         const t = money[0];
-        const sum = items.reduce((a, b) => a + b, 0);
-        let expected: number | null = null;
-        if (isSubtotal) expected = subtotal = round2(sum);
+        const sumItems = round2(items.reduce((a, b) => a + b.v, 0));
+        const sumLoose = round2(loose.reduce((a, b) => a + b, 0));
+        const bases = new Set<number>(subtotal !== null ? [subtotal] : [sumItems]);
+        if (subtotal === null) {
+          if (loose.length) bases.add(round2(sumItems + sumLoose));
+          const last = items.at(-1)!;
+          if (last.sum) bases.add(last.v);
+        }
+        // Base → resultado esperado.
+        const cands = new Map<number, number>();
+        if (isSubtotal) for (const b of bases) cands.set(b, b);
         else if (isIva) {
           const pcts = toks.filter((x) => x.percent);
           // El porcentaje del renglón debe ser del negocio; si no dice cuál, el de la información.
-          const rate = pcts.length === 1 && trusted.hasPercent(canon(pcts[0].value * 100)) ? pcts[0].value : pcts.length ? null : trusted.ivaRate();
-          if (rate !== null) expected = iva = round2((subtotal ?? sum) * rate);
-        } else if (iva !== null || !IVA_RE.test(f)) {
+          const rate = pcts.length === 1 && trusted.hasPercent(canon(pcts[0].value * 100)) ? pcts[0].value : pcts.length ? null : ivaRate;
+          if (rate !== null) for (const b of bases) cands.set(b, round2(b * rate));
+        } else if (iva) {
+          cands.set(iva.base, round2(iva.base + iva.v));
+          if (loose.length) cands.set(iva.base + sumLoose, round2(iva.base + iva.v + sumLoose));
+        } else if (!IVA_RE.test(f)) {
           // «Total con IVA» sin el renglón del IVA: no se sabe si los precios ya lo incluyen; no se rehace.
-          expected = round2((subtotal ?? sum) + (iva ?? 0));
+          for (const b of bases) cands.set(b, b);
         }
-        if (expected !== null) {
-          if (!same(t.value, expected)) rewrite(t, expected, corrections);
-          derived.add(canon(expected));
+        const hit = [...cands].find(([, v]) => same(t.value, v));
+        const values = new Set([...cands.values()]);
+        let base: number | null = null;
+        if (hit) base = hit[0];
+        else if (values.size === 1 && !loose.length && !unknownLoose) {
+          const [[b, v]] = [...cands];
+          rewrite(t, v, corrections);
+          base = b;
+        }
+        if (base !== null) {
+          derived.add(canon(t.value));
+          if (isSubtotal) subtotal = t.value;
+          if (isIva) iva = { v: t.value, base };
         }
       }
       if (isTotal) reset();
