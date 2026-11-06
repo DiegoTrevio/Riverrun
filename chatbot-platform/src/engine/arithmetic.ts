@@ -213,6 +213,13 @@ export function fixArithmetic(messages: string[], trusted: FactCorpus, customer?
     const plain = text.replace(/\([^()=×÷+*/]*\)/g, (m) => (/^\(\s*\d+(?:[.,]\d+)?\s?%\s*\)$/.test(m) ? m : ' '.repeat(m.length)));
     const toks = tokensOf(plain);
     if (!toks.length) return text;
+    // Un monto que el sistema ya corrigió arriba (un subtotal mal sumado) vale con su cifra correcta en lo que sigue
+    // («IVA: $18,011.96 × 0.16» pasa a «$21,010.96 × 0.16»), siempre que esa cifra no sea también un precio o un resultado.
+    for (const t of toks) {
+      if (!t.money || derived.has(canon(t.value)) || trusted.hasMoney(canon(t.value))) continue;
+      const fix = replaced.find((x) => same(x.from, t.value));
+      if (fix) rewrite(t, fix.to, corrections, ' (arrastra la corrección de arriba)');
+    }
     const gaps = toks.map((t, i) => (i ? gapInfo(plain.slice(toks[i - 1].end, t.start)) : null));
     const ops: (Op | null)[] = gaps.map((g) => g?.op ?? null);
     // Paréntesis que abren antes de cada número y que cierran después.

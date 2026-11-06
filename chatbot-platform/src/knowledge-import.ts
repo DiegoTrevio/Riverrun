@@ -12,6 +12,7 @@ import type { AiProvider, ContentPart } from './ai/provider.js';
 import { isPrivateIp, safeLookup } from './automation/automator.js';
 import { HttpError } from './access.js';
 import { config } from './config.js';
+import { parseCsv } from './contacts/csv.js';
 
 export const IMPORT_SECTIONS = ['catalog', 'hours', 'location', 'faq', 'other'] as const;
 export type ImportSection = (typeof IMPORT_SECTIONS)[number];
@@ -384,8 +385,44 @@ Reglas estrictas:
 
 const clean = (s: unknown) => String(s ?? '').replace(/\r/g, '').trim().slice(0, 20_000);
 
+/**
+ * Una tabla (CSV, TSV o Google Sheets) con columnas: lista de precios por escalón, catálogo con medidas… Se copia renglón
+ * por renglón, con cada columna y su encabezado, sin pasar por la IA: al reordenarla, la IA se quedaba con una sola columna
+ * de precios (el escalón A) y perdía las demás. `null` si el texto no es una tabla.
+ */
+export function tableCatalog(text: string): { catalog: string; rows: number; truncated: boolean } | null {
+  const lines = text.replace(/\r/g, '').split('\n').filter((l) => l.trim());
+  if (lines.length < 3) return null;
+  let rows: string[][];
+  try { rows = parseCsv(lines.join('\n')).map((r) => r.map((c) => c.trim())).filter((r) => r.some(Boolean)); } catch { return null; }
+  const header = rows[0];
+  if (!header || header.filter(Boolean).length < 2) return null;
+  const body = rows.slice(1);
+  const fit = body.filter((r) => r.length === header.length).length;
+  const numeric = body.filter((r) => r.some((c) => /^\$?\s?-?\d[\d,]*(\.\d+)?$/.test(c))).length;
+  if (body.length < 2 || fit / body.length < 0.8 || numeric / body.length < 0.5) return null;
+  const out: string[] = [];
+  let size = 0;
+  let truncated = false;
+  for (const r of body) {
+    const cells = header.map((hd, i) => ({ hd: hd || `columna ${i + 1}`, v: r[i] ?? '' })).filter((c) => c.v);
+    if (!cells.length) continue;
+    const line = cells.map((c) => `${c.hd}: ${c.v}`).join(' · ');
+    if (size + line.length + 1 > 20_000) { truncated = true; break; }
+    out.push(line);
+    size += line.length + 1;
+  }
+  return { catalog: out.join('\n'), rows: out.length, truncated };
+}
+
 export async function importKnowledge(ai: AiProvider, source: Source, hint = ''): Promise<ImportResult> {
   let truncated = false;
+  const table = source.kind === 'text' ? tableCatalog(source.text) : null;
+  if (table && source.kind === 'text') {
+    const sections = Object.fromEntries(IMPORT_SECTIONS.map((k) => [k, ''])) as Record<ImportSection, string>;
+    sections.catalog = table.catalog;
+    return { description: '', sections, source: source.label, model: 'tabla (sin IA)', usage: { input_tokens: 0, cached_tokens: 0, output_tokens: 0 }, cost_usd: 0, latency_ms: 0, truncated: table.truncated };
+  }
   const intro = `Material del negocio${hint ? ` (${hint.slice(0, 200)})` : ''}:`;
   let content: string | ContentPart[];
   if (source.kind === 'text') {

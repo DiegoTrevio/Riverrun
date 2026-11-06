@@ -98,7 +98,9 @@ export async function tabPlayground(root, bot) {
         r.result.info_not_found ? h('div', { class: 'small' }, h('span', { class: 'badge orange' }, 'dato no encontrado'), ' Le preguntaron algo que no está en "Conocimiento". Agrégalo si quieres que lo responda.') : null),
       r.result.status === 'paused' ? null : h('div', {}, h('strong', {}, 'Revisión de reglas: '),
         !rejected.length && !fixes.length ? h('span', { class: 'badge green' }, 'cumplió todo a la primera') : null,
-        rejected.length ? h('div', { class: 'small' }, h('span', { class: 'badge orange' }, `${rejected.length} ${rejected.length === 1 ? 'respuesta rehecha' : 'respuestas rehechas'}`), h('ul', { class: 'muted' }, [...new Set(rejected.flatMap((a) => a.retryable).map(explainIssue))].map((x) => h('li', {}, x)))) : null,
+        rejected.length ? h('div', { class: 'small' }, h('span', { class: 'badge orange' }, `${rejected.length} ${rejected.length === 1 ? 'respuesta rehecha' : 'respuestas rehechas'}`), h('ul', { class: 'muted' }, [...new Set(rejected.flatMap((a) => a.retryable).map(explainIssue))].map((x) => h('li', {}, x))),
+          // Lo que la IA intentó responder y no se envió: para ajustar las instrucciones o la información sin entrar al servidor.
+          rejected.filter((a) => a.draft?.length).map((a, i) => h('details', { class: 'small' }, h('summary', {}, `Lo que intentó responder (no se envió)${rejected.length > 1 ? ` · intento ${i + 1}` : ''}`), h('div', { class: 'pre muted' }, a.draft.join('\n\n'))))) : null,
         fixes.length ? h('div', { class: 'small' }, h('span', { class: 'badge' }, 'ajustes automáticos'), h('ul', { class: 'muted' }, fixes.map((x) => h('li', {}, x)))) : null),
       h('div', {}, h('strong', {}, 'Conversación: '),
         r.conversation?.status === 'human' ? h('span', { class: 'badge orange' }, 'pasó con una persona (el asistente ya no responde)')

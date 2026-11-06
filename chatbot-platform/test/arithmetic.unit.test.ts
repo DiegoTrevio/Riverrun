@@ -258,6 +258,8 @@ test('respuestas reales: total en negritas de WhatsApp y «Aquí tiene el desglo
   assert.deepEqual(unsupportedClaims('Aquí tiene su cotización y el presupuesto', info), []);
   assert.deepEqual(unsupportedClaims('Esta cotización tiene una validez de 15 días.', info), [], 'respuesta real');
   assert.deepEqual(unsupportedClaims('La cotización tiene vigencia de 15 días.', info), []);
+  assert.deepEqual(unsupportedClaims('Aquí tiene su cotización actualizada con el flete:', info), [], 'respuesta real');
+  assert.deepEqual(unsupportedClaims('Le comparto la cotización aproximada y detallada.', info), []);
   assert.notDeepEqual(unsupportedClaims('Tenemos alberca techada', info), [], 'lo demás se sigue revisando');
 });
 
@@ -337,4 +339,24 @@ test('respuestas reales (instrucciones de Metromalla): cuenta partida en renglon
   assert.match(check(grouped.replace('$27,510.56', '$27,410.56')).text, /× 1\.16 = \$27,510\.56/);
   // Un comentario entre paréntesis sin operación sigue sin cortar la cuenta.
   assert.deepEqual(check('Paneles: 40 ÷ 2.50 = 16\nPostes: 16 + 1 = 17\nAbrazaderas: 17 postes × 4 (para 2.00 m de altura) = 68 abrazaderas\n68 × $12 = $816').bad, []);
+});
+
+test('respuestas reales (lista importada): «6 × 2 = 12» no es una promoción y una corrección se arrastra al IVA y al total', async () => {
+  const { QUOTE_TEXT_TEMPLATES } = await import('../src/quotes/text-templates.js');
+  const info = [QUOTE_TEXT_TEMPLATES.find((t) => t.key === 'cercas')!.text, 'IVA (16%) = subtotal × 0.16. Allende: $1,500, $2,500 y $3,500.'];
+  const customer = ['Necesito 12 metros de reja de 1.00 m con placa', 'y aparte 40 metros', 'Allende'];
+  const run = (reply: string) => {
+    const trusted = new FactCorpus(info);
+    const cust = new FactCorpus(customer);
+    const r = fixArithmetic([reply], trusted, cust);
+    return { bad: new FactCorpus([...info, ...customer]).unverified(r.messages[0], trusted, cust), text: r.messages[0] };
+  };
+  assert.deepEqual(run('Postes: 5 + 1 = 6\nAbrazaderas: 6 × 2 = 12 × $14 = $168').bad, [], '«6 × 2» es una cuenta');
+  assert.deepEqual(new FactCorpus(info).unverified('Tenemos 3x2 en paneles', new FactCorpus(info), new FactCorpus(['hola'])), ['3x2'], 'una promoción inventada sigue sin pasar');
+  // GPT sumó mal el subtotal ($17,000 en vez de $18,500); el IVA y el total venían de esa cifra.
+  const gpt = ['Paneles: 40 ÷ 2.50 = 16 × $1,000 = $16,000', 'Flete: $2,500', 'Subtotal: $16,000 + $2,500 = $18,500', 'IVA: $18,500 × 0.16 = $2,960', '*Total: $18,500 + $2,960 = $21,460*'].join('\n');
+  const wrong = gpt.replace('= $18,500', '= $17,000').replace('IVA: $18,500', 'IVA: $17,000').replace('= $2,960', '= $2,720').replace('Total: $18,500 + $2,960 = $21,460', 'Total: $17,000 + $2,720 = $19,720');
+  const r = run(wrong);
+  assert.equal(r.text, gpt);
+  assert.deepEqual(r.bad, []);
 });
