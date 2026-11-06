@@ -496,10 +496,11 @@ export class FactCorpus {
    * `customer` (lo que dijo el cliente) sirve para la cantidad de una cotización y para la hora que propuso.
    * `plainNumbers: false` no revisa los números sueltos (un plazo como "en 24 horas" en un pendiente del reporte).
    */
-  unverified(reply: string, trusted?: FactCorpus, customer?: FactCorpus, opts: { plainNumbers?: boolean } = {}): string[] {
+  unverified(reply: string, trusted?: FactCorpus, customer?: FactCorpus, opts: { plainNumbers?: boolean; derived?: Iterable<string> } = {}): string[] {
     const f = extractFacts(reply);
     const bad: string[] = [];
-    const computed = new Set<string>();
+    // `derived`: resultados de cuentas ya revisadas fuera de la respuesta (las del razonamiento interno de la IA).
+    const computed = new Set<string>(opts.derived ?? []);
     if (trusted) {
       // Cuentas escritas con números del negocio y del cliente (40 ÷ 2.50 = 16, 16 × $1,000 = $16,000, subtotal, IVA,
       // total): sus resultados correctos no son inventos. Las incorrectas las corrige el validador antes de llegar aquí.
