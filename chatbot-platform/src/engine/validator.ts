@@ -250,8 +250,9 @@ const LENGTH_BUDGET: Record<string, number> = { muy_corta: 220, corta: 480, medi
 // Formas inequívocas de tuteo (verbos en 2ª persona y pronombres) y de "usted".
 // Límites de palabra con \p{L}: \b no reconoce letras acentuadas ("tú", "estás").
 const word = (alts: string) => new RegExp(`(?<![\\p{L}])(?:${alts})(?![\\p{L}])`, 'giu');
+// «estás» solo con acento: «estas» sin acento es «estas medidas», no tuteo.
 const TU_RE = word(
-  't[uú]|te|ti|contigo|tuy[oa]s?|tus|quieres|puedes|tienes|necesitas|prefieres|deseas|buscas|est[aá]s|eres|sabes|vienes|llegas|pagas|escr[ií]beme|av[ií]same|dime|cu[eé]ntame|conf[ií]rmame|mándame|mandame',
+  't[uú]|te|ti|contigo|tuy[oa]s?|tus|quieres|puedes|tienes|necesitas|prefieres|deseas|buscas|estás|eres|sabes|vienes|llegas|pagas|escr[ií]beme|av[ií]same|dime|cu[eé]ntame|conf[ií]rmame|mándame|mandame',
 );
 const USTED_RE = word('usted');
 

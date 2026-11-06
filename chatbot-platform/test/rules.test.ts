@@ -38,6 +38,7 @@ test('trato: "usted" rechaza el tuteo y "tú" rechaza el usted', () => {
   assert.equal(registerMismatch('¿Le gustaría agendar? Con gusto le ayudo.', 'usted'), null);
   assert.equal(registerMismatch('¿Te gustaría agendar?', 'usted'), 'Te');
   assert.equal(registerMismatch('¿Estás disponible mañana?', 'usted'), 'Estás');
+  assert.equal(registerMismatch('Con estas medidas: 40 metros. Estas son las opciones.', 'usted'), null, '«estas» (demostrativo) no es tuteo');
   assert.equal(registerMismatch('Un té verde, por favor', 'usted'), null, '"té" (bebida) no es tuteo');
   assert.equal(registerMismatch('El paquete "te consiento" incluye masaje', 'usted'), null, 'lo citado no cuenta');
   assert.equal(registerMismatch('¿Ustedes vienen juntos?', 'tu'), null, '"ustedes" (plural) sí se usa con tú');
