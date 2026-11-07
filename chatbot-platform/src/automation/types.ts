@@ -434,6 +434,8 @@ export const DEFAULT_REMINDER = 'Hola {{nombre}}, te recordamos tu {{cita.tipo}}
 export interface AutomationEvent {
   type: TriggerType;
   conversationId: string;
+  /** handoff: el asistente avisó al equipo pero sigue atendiendo (la conversación no pasó a «con una persona»). */
+  keepAnswering?: boolean;
   /** Texto del mensaje del cliente (message_received). */
   text?: string;
   isFirstMessage?: boolean;

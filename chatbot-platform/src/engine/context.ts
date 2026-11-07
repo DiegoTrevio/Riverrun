@@ -309,6 +309,9 @@ function agentSection(input: ContextInput, questions: Question[]): string {
   );
   s.push('\n## Cuándo pasar con una persona');
   s.push(r.handoff_rules.length ? r.handoff_rules.map((x) => `- ${x}`).join('\n') : '- Además de lo que dicen las reglas que nunca se rompen, solo si el cliente lo pide.');
+  if (r.handoff_mode === 'keep_answering') {
+    s.push('- Pasar con una persona no termina la conversación: el equipo recibe el aviso y tú sigues atendiendo. Con action = "handoff" di en una frase que en este momento no puedes ayudar con eso y que alguien del equipo lo atenderá cuando se ponga en contacto; después sigue respondiendo lo demás que pregunte, con normalidad.');
+  }
 
   s.push(photosSection(input));
   const saved = savedMessagesSection(input);
