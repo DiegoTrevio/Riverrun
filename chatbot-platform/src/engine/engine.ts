@@ -23,6 +23,7 @@ import { maybeSummarize } from './memory.js';
 import { briefReport } from './report-format.js';
 import { summarizeConversation } from './report.js';
 import { normalize } from './text.js';
+import { FIXED_MESSAGES } from '../templates/business.js';
 import { CAPTION_MAX, libraryFile, sendsAnyFile, type OutgoingButton, type OutgoingFile, type OutgoingTemplate, type Transport } from './transport.js';
 import { emptyPlan, validateDecision, type AgendaValidation, type ExecutionPlan, type QuoteValidation, type ValidationInput } from './validator.js';
 import { quoteEvent, type QuoteCatalog, type Quotes } from '../quotes/agent.js';
@@ -134,6 +135,14 @@ export function savedItems(bot: Chatbot, codes: string[], imagesById: Map<string
 }
 
 /** Plataformas donde tiene sentido simular "escribiendo…". */
+/** El mensaje de «sigue atendiendo» en el trato del agente (si nadie lo cambió, el de fábrica de tú o de usted). */
+export function keepAnsweringMessage(bot: Chatbot): string {
+  const msg = bot.rules.keep_answering_message.trim();
+  const factory: string[] = Object.values(FIXED_MESSAGES).map((m) => m.keep_answering_message);
+  if (!msg || factory.includes(msg)) return FIXED_MESSAGES[bot.personality.formality].keep_answering_message;
+  return msg;
+}
+
 function hasTyping(t: Transport) {
   return t.typingSimulation !== false && (t.kind === 'whatsapp' || t.kind === 'telegram' || t.kind === 'messenger' || t.kind === 'instagram');
 }
@@ -351,6 +360,7 @@ export class Engine {
     let bookingIssue = false;
     let lastInput: ValidationInput | undefined;
     const attempts: ProcessResult['attempts'] = [];
+    let fallbackUsed = false;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       const ctx = buildContext({
         bot, knowledge: semantic ?? knowledge, knowledgeSelected: semantic !== null, images: aiImages, contact, conversation: conv, channelType: channel.type, history, pending, sentImageIds, imagesById, correction, intents, agenda: agendaCtx, business, pipeline,
@@ -374,7 +384,7 @@ export class Engine {
         });
       } catch (e: any) {
         if(e instanceof AiBudgetBlocked){
-          await this.executeHandoff(bot,conv,contact,transport,[bot.rules.handoff_message||'Una persona del equipo te ayudará a continuar.'],e.message);
+          await this.executeHandoff(bot,conv,contact,transport,[bot.rules.handoff_message||'Una persona del equipo te ayudará a continuar.'],e.message,{ transfer: true });
           await store.markProcessed(conv.id,lastPendingId);
           return {status:'handoff',plan:emptyPlan('handoff'),fallbackUsed:true,attempts};
         }
@@ -455,11 +465,17 @@ export class Engine {
       correction = retryable.join(' ');
     }
 
-    let fallbackUsed = false;
     if (!plan || (retryable.length && !factIssues && !bookingIssue)) {
-      // Respuesta inválida (JSON roto o vacía) incluso tras reintentar: no se envía nada inventado.
-      await log('error', 'ai', 'La IA no generó una respuesta válida; se reintentará más tarde', { issues: retryable, decision: lastRaw });
-      return { status: 'error', error: retryable.join(' | ') || 'Respuesta inválida', attempts };
+      if (bot.rules.handoff_mode !== 'keep_answering') {
+        // Respuesta inválida (JSON roto o vacía) incluso tras reintentar: no se envía nada inventado.
+        await log('error', 'ai', 'La IA no generó una respuesta válida; se reintentará más tarde', { issues: retryable, decision: lastRaw });
+        return { status: 'error', error: retryable.join(' | ') || 'Respuesta inválida', attempts };
+      }
+      // El asistente nunca se queda callado: dice que alguien del equipo lo atenderá y avisa al equipo (sin inventar nada).
+      await log('warn', 'ai', 'La IA no generó una respuesta válida: se avisó al equipo y el asistente sigue atendiendo', { issues: retryable, decision: lastRaw });
+      plan = { ...emptyPlan('handoff'), handoffReason: 'El asistente no logró una respuesta válida' };
+      retryable = [];
+      fallbackUsed = true;
     }
     if (retryable.length) {
       // Datos no verificables tras el reintento: respuesta segura según la regla configurada.
@@ -687,7 +703,7 @@ export class Engine {
         summarized = true;
         if (goalHandoff && !tookOver) {
           // Ya se envió la respuesta de la IA (que se despide): solo se pasa a una persona, sin otro mensaje.
-          await this.executeHandoff(bot, conv, contact, transport, [], 'Se cumplió el objetivo de la conversación', { silent: true });
+          await this.executeHandoff(bot, conv, contact, transport, [], 'Se cumplió el objetivo de la conversación', { silent: true, transfer: true });
         } else if (bot.flow.on_goal_action === 'notify' && channel.type !== 'playground' && this.ext.alertTeam) {
           const who = contact.name || contact.push_name || contact.phone || 'Un cliente';
           const brief = await briefReport(conv.id, 1500, { customer: false }).catch(() => '');
@@ -984,14 +1000,15 @@ export class Engine {
 
   /** Riesgo para la vida o emergencia: mensaje fijo, transferencia inmediata y aviso prioritario al equipo. */
   private async escalateRisk(bot: Chatbot, conv: Conversation, contact: Contact, channel: Channel, transport: Transport, risk: RiskHit, text: string) {
-    await this.executeHandoff(bot, conv, contact, transport, [SAFETY_MESSAGES[risk.kind][risk.lang]], risk.kind === 'selfharm' ? 'Riesgo para la vida: el cliente lo mencionó' : 'Posible emergencia: el cliente lo mencionó');
+    await this.executeHandoff(bot, conv, contact, transport, [SAFETY_MESSAGES[risk.kind][risk.lang]], risk.kind === 'selfharm' ? 'Riesgo para la vida: el cliente lo mencionó' : 'Posible emergencia: el cliente lo mencionó', { transfer: true });
     await this.notify(conv, channel, '🚨 Posible emergencia en una conversación', `${customerLabel(contact)} (${channel.name}): "${text.slice(0, 200)}". Atiéndelo cuanto antes.`, 'safety');
   }
 
-  async executeHandoff(bot: Chatbot, conv: Conversation, contact: Contact, transport: Transport, messages: string[], reason: string, opts: { silent?: boolean; via?: 'bot' | 'regla' } = {}) {
+  async executeHandoff(bot: Chatbot, conv: Conversation, contact: Contact, transport: Transport, messages: string[], reason: string, opts: { silent?: boolean; via?: 'bot' | 'regla'; transfer?: boolean } = {}) {
     const before = await store.getConversation(conv.id);
     await assertOwnership();
     if(before?.status==='human') return;
+    if (!opts.transfer && bot.rules.handoff_mode === 'keep_answering') return this.notifyAndKeepAnswering(bot, conv, contact, transport, messages, reason);
     const control=await queryOne(`UPDATE conversations SET status='human',handoff_reason=$2,status_changed_at=now() WHERE id=$1 AND status='bot' AND ($3::bigint IS NULL OR control_version=$3) RETURNING control_version`,[conv.id,reason,controlVersion()??null]);
     if(!control) return;
     setControlVersion(Number(control.control_version));
@@ -1020,13 +1037,43 @@ export class Engine {
     this.ext.onEvent?.({ type: 'handoff', conversationId: conv.id, managerNotified });
   }
 
+  /**
+   * «Avisar al equipo y seguir atendiendo»: el cliente sabe que alguien del equipo lo contactará, el equipo recibe el aviso
+   * (y la asignación, según sus reglas), y el asistente SIGUE respondiendo lo demás hasta que una persona escriba. Para no
+   * saturar al equipo, el aviso sale una vez cada 12 horas por cliente; la respuesta al cliente sale siempre.
+   */
+  private async notifyAndKeepAnswering(bot: Chatbot, conv: Conversation, contact: Contact, transport: Transport, messages: string[], reason: string) {
+    const texts = messages.map((m) => m.trim()).filter(Boolean);
+    for (const text of texts.length ? texts : [keepAnsweringMessage(bot)]) {
+      await this.sendOut(bot, conv, transport, { sender: 'bot', text, delay: typingDelay(text, bot.ai.typing_simulation && hasTyping(transport)), meta: { action: 'handoff' } });
+    }
+    const due = await queryOne(`UPDATE contacts SET handoff_at = now(), handoff_by = NULL, handoff_via = 'bot'
+      WHERE id = $1 AND (handoff_at IS NULL OR handoff_at < now() - interval '12 hours') RETURNING id`, [contact.id]);
+    await query(`UPDATE conversations SET handoff_reason = $2 WHERE id = $1 AND status = 'bot'`, [conv.id, reason]);
+    await logEvent({ level: 'info', source: 'engine', message: `${due ? 'Aviso al equipo' : 'Pendiente para el equipo (ya avisado)'}; el asistente sigue atendiendo: ${reason}`, accountId: conv.account_id, chatbotId: bot.id, channelId: conv.channel_id, conversationId: conv.id });
+    if (!due) return;
+    let managerNotified: string | undefined;
+    if (bot.rules.handoff_notify_number) {
+      const who = contact.name || contact.push_name || contact.phone || contact.external_id;
+      const brief = await briefReport(conv.id, 1200, { customer: false }).catch(() => '');
+      const text = `🔔 *${bot.name}*: ${who}${contact.phone ? ` (+${contact.phone})` : ''} necesita que alguien del equipo lo contacte (el asistente sigue atendiendo).\nMotivo: ${reason}${brief ? `\n\n${brief}` : ''}`;
+      try {
+        await transport.notify(bot.rules.handoff_notify_number, text);
+        managerNotified = bot.rules.handoff_notify_number.replace(/\D/g, '');
+      } catch (e: any) {
+        await logEvent({ level: 'error', source: 'channel', message: `No se pudo avisar al encargado: ${e?.message ?? e}`, accountId: conv.account_id, chatbotId: bot.id, conversationId: conv.id });
+      }
+    }
+    this.ext.onEvent?.({ type: 'handoff', conversationId: conv.id, managerNotified, keepAnswering: true });
+  }
+
   /** Apaga al asistente en la conversación según lo configurado: pausa, pasa a una persona o cierra. */
   async deactivate(bot: Chatbot, conv: Conversation, contact: Contact, transport: Transport, reason: string) {
     const a = bot.rules.activation;
     const msg = a.off_message.trim();
     const log = (message: string) => logEvent({ level: 'info', source: 'engine', message, accountId: conv.account_id, chatbotId: bot.id, channelId: conv.channel_id, conversationId: conv.id });
     if (a.off_action === 'handoff') {
-      await this.executeHandoff(bot, conv, contact, transport, msg ? [msg] : [], `Asistente desactivado: ${reason}`, { silent: !msg, via: 'regla' });
+      await this.executeHandoff(bot, conv, contact, transport, msg ? [msg] : [], `Asistente desactivado: ${reason}`, { silent: !msg, via: 'regla', transfer: true });
     } else {
       if (msg) await this.sendOut(bot, conv, transport, { sender: 'bot', text: msg, delay: typingDelay(msg, bot.ai.typing_simulation && hasTyping(transport)), meta: { action: 'agent_off' } });
       if (a.off_action === 'close') {

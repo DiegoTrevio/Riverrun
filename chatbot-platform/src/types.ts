@@ -48,6 +48,15 @@ export const RulesSchema = z.object({
   /** Palabras que disparan la transferencia sin consultar a la IA. */
   handoff_keywords: z.array(z.string()).default(['asesor', 'humano', 'persona real', 'hablar con alguien']),
   handoff_message: z.string().default('Claro, te comunico con alguien del equipo. En un momento te atienden.'),
+  /**
+   * Qué pasa cuando el asistente pasa la conversación a una persona (no sabe algo, falta un precio, el cliente pide un
+   * asesor). «keep_answering»: avisa y asigna al equipo, le dice al cliente que alguien lo contactará y SIGUE
+   * respondiendo hasta que una persona escriba. «transfer»: deja de responder en esa conversación (como antes).
+   * Las emergencias siempre pasan a una persona.
+   */
+  handoff_mode: z.enum(['keep_answering', 'transfer']).default('keep_answering'),
+  /** Lo que dice el asistente en «keep_answering» cuando no puede ayudar con algo (si la IA no escribió su propia frase). */
+  keep_answering_message: z.string().max(1000).default('En este momento no te puedo ayudar con eso, pero alguien del equipo te ayudará cuando se ponga en contacto contigo.'),
   /** Número (solo dígitos, con lada) que recibe un aviso cuando hay transferencia. */
   handoff_notify_number: z.string().default(''),
   /** Si un humano responde desde el teléfono, el bot se pausa en esa conversación. */

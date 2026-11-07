@@ -654,7 +654,10 @@ export async function createHarness(opts: { realAi?: import('../src/ai/provider.
         assert.equal(acc.statusCode, 200, acc.body);
         h.accountId = acc.json().id;
       }
-      const r = await authed('POST', '/api/chatbots', { account_id: h.accountId, name: 'Hotel Palmas', active: true, ai: { debounce_seconds: 0.2 }, ...patch });
+      // Las pruebas existentes prueban «transferir y dejar de responder»; las de «avisar y seguir atendiendo» (el modo
+      // por omisión) lo piden explícitamente con rules.handoff_mode.
+      const rules = { handoff_mode: 'transfer', ...((patch.rules as Record<string, unknown>) ?? {}) };
+      const r = await authed('POST', '/api/chatbots', { account_id: h.accountId, name: 'Hotel Palmas', active: true, ai: { debounce_seconds: 0.2 }, ...patch, rules });
       assert.equal(r.statusCode, 200, r.body);
       h.botId = r.json().id;
       const ch = await authed('POST', '/api/channels', { account_id: h.accountId, type: 'whatsapp', name: 'WhatsApp', chatbot_id: h.botId, config: { instance: 'palmas' } });

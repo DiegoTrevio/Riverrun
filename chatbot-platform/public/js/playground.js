@@ -104,6 +104,7 @@ export async function tabPlayground(root, bot) {
         fixes.length ? h('div', { class: 'small' }, h('span', { class: 'badge' }, 'ajustes automáticos'), h('ul', { class: 'muted' }, fixes.map((x) => h('li', {}, x)))) : null),
       h('div', {}, h('strong', {}, 'Conversación: '),
         r.conversation?.status === 'human' ? h('span', { class: 'badge orange' }, 'pasó con una persona (el asistente ya no responde)')
+          : r.result.action === 'handoff' && r.conversation?.status === 'bot' ? h('span', {}, h('span', { class: 'badge orange' }, 'avisó al equipo'), ' y sigue atendiendo')
           : r.conversation?.status === 'closed' ? h('span', { class: 'badge' }, 'cerrada (si escribes de nuevo, empieza otra vez)')
           : r.agent && !r.agent.on ? h('span', {}, h('span', { class: 'badge orange' }, r.agent.state === 'waiting' ? 'esperando palabra de activación' : `asistente en pausa: ${r.agent.reason}`), ' ',
               h('button', { class: 'small', onclick: async () => { if (await run(() => api('POST', `/api/conversations/${r.conversation.id}/release`), 'Asistente reactivado')) chat.append(bubble('notify', '(asistente reactivado)')); } }, 'Reactivar asistente'))

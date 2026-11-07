@@ -161,10 +161,12 @@ export const FIXED_MESSAGES = {
   tu: {
     handoff_message: 'Claro, te comunico con alguien del equipo. En un momento te atienden.',
     fallback_message: 'Ese dato no lo tengo confirmado, déjame revisarlo con el equipo y te aviso.',
+    keep_answering_message: 'En este momento no te puedo ayudar con eso, pero alguien del equipo te ayudará cuando se ponga en contacto contigo.',
   },
   usted: {
     handoff_message: 'Claro, le comunico con alguien del equipo. En un momento le atienden.',
     fallback_message: 'Ese dato no lo tengo confirmado; permítame revisarlo con el equipo y le aviso.',
+    keep_answering_message: 'En este momento no le puedo ayudar con eso, pero alguien del equipo le ayudará cuando se ponga en contacto con usted.',
   },
 } as const;
 
@@ -172,13 +174,14 @@ export const FIXED_MESSAGES = {
  * Los mensajes fijos se envían tal cual, sin la IA: si siguen siendo los de fábrica del otro trato,
  * se cambian al trato elegido (los que el negocio escribió a mano no se tocan).
  */
-export function alignFixedMessages<T extends { handoff_message: string; fallback_message: string }>(rules: T, formality: Personality['formality']): T {
+export function alignFixedMessages<T extends { handoff_message: string; fallback_message: string; keep_answering_message?: string }>(rules: T, formality: Personality['formality']): T {
   const other = FIXED_MESSAGES[formality === 'usted' ? 'tu' : 'usted'];
   const mine = FIXED_MESSAGES[formality];
   return {
     ...rules,
     handoff_message: rules.handoff_message === other.handoff_message ? mine.handoff_message : rules.handoff_message,
     fallback_message: rules.fallback_message === other.fallback_message ? mine.fallback_message : rules.fallback_message,
+    ...(rules.keep_answering_message !== undefined ? { keep_answering_message: rules.keep_answering_message === other.keep_answering_message ? mine.keep_answering_message : rules.keep_answering_message } : {}),
   };
 }
 

@@ -70,7 +70,7 @@ export default class EngineProvider {
         const patch = secret ? {} : vars.bot || {};
         const bot = await store.createChatbot(account.id, { name: 'Hotel sintético', active: vars.active !== false,
           personality: { prompt: 'Ayuda a reservar una habitación doble. Pregunta nombre y fecha de llegada, una pregunta a la vez. Si el cliente pide hablar con una persona, transfiere.', emojis: 'none', ...patch.personality },
-          flow: { goal: 'Resolver la solicitud de reserva', ...patch.flow }, rules: { verify_facts: true, handoff_keywords: ['asesor humano'], ...patch.rules },
+          flow: { goal: 'Resolver la solicitud de reserva', ...patch.flow }, rules: { verify_facts: true, handoff_keywords: ['asesor humano'], handoff_mode: 'transfer', ...patch.rules },
           data_fields: patch.data_fields ?? (vars.branching && !secret ? BRANCHED : []), ai: { typing_simulation: false } });
         await db.query('INSERT INTO knowledge_items (chatbot_id,title,category,content,active) VALUES ($1,$2,$3,$4,true)', [bot.id, 'Tarifa', 'precios', secret ? 'Clave privada del otro perfil: ULTRASECRETO784.' : 'Habitación doble: $1,650 MXN por noche.']);
         const channel = await store.createChannel({ account_id: account.id, chatbot_id: bot.id, type: 'playground', name: 'Simulador', config: {} });

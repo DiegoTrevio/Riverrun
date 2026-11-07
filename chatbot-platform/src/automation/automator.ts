@@ -289,7 +289,7 @@ export class Automator {
   async handle(e: AutomationEvent): Promise<{ stopAi: boolean; matched: string[] }> {
     const ctx = await this.loadCtx(e.conversationId);
     if (!ctx || ctx.channel.account_active === false) return { stopAi: false, matched: [] };
-    if (e.type === 'handoff') {
+    if (e.type === 'handoff' && !e.keepAnswering) {
       // Una persona toma la conversación: sus flujos se detienen al momento y sus botones dejan de contar.
       await astore.stopEnrollments(ctx.conv.id, 'una persona tomó la conversación');
       await query(`UPDATE conversations SET pending_buttons = NULL WHERE id = $1`, [ctx.conv.id]);
