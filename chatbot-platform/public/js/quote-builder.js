@@ -195,9 +195,9 @@ export function quoteBuilderCard(bot, { calculator = null, onApplied } = {}) {
       calc.disabled = true;
       try {
         const r = await api('POST', `/api/quote-calculators/preview?account_id=${bot.account_id}`, { definition: built.r.draft.definition, price_items: built.r.draft.price_items, inputs: values });
-        const money = (c) => new Intl.NumberFormat('es-MX', { style: 'currency', currency: built.r.currency || 'MXN' }).format(c / 100);
+        // El servidor ya escribe cada renglón como lo verá el cliente (rangos, «desde», por confirmar).
         out.replaceChildren(r.ok
-          ? breakdown(r.priced.lines.map((l) => ({ qty: String(l.qty), name: l.name, unit_price: money(l.price_min ?? 0), amount: money(l.amount_min ?? 0) })), r.totals)
+          ? breakdown(r.rows, r.totals)
           : h('p', { class: 'small' }, '→ ', r.message));
       } catch (e) { out.replaceChildren(h('p', { class: 'small err' }, e.message)); } finally { calc.disabled = false; }
     } }, 'Calcular');

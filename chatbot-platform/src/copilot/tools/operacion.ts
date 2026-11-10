@@ -10,6 +10,7 @@ import { defineTool, type Ctx } from '../registry.js';
 import { stableJson } from '../store.js';
 import { day, links, when } from '../summarize.js';
 import { Id, nameOf, profile } from './common.js';
+import { formatLineAmount, formatUnitPrice } from '../../quotes/format.js';
 
 const Text = (max: number) => z.string().trim().min(1).max(max);
 const Slot = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/, 'Usa AAAA-MM-DDTHH:MM (hora del negocio)');
@@ -528,7 +529,7 @@ export const verCotizaciones = defineTool({
         read: [{ kind: 'quote', id: q.id }],
         data: {
           id: q.id, folio: q.folio, estado: QUOTE_ES[q.status] ?? q.status, tipo: q.kind === 'final' ? 'final' : 'aproximada', total: totalOf(q), vence: q.valid_until,
-          renglones: (q.lines ?? []).map((l: any, i: number) => ({ n: i + 1, concepto: l.name, cantidad: Number(l.qty), precio: l.price_mode === 'tbd' ? 'por confirmar' : money(l.price_min, q.currency) })),
+          renglones: (q.lines ?? []).map((l: any, i: number) => ({ n: i + 1, concepto: l.name, cantidad: Number(l.qty), precio: formatUnitPrice(l, q.currency, q.iva_rate), importe: formatLineAmount(l, q.currency) })),
           datos_del_cliente: { cliente: q.customer_snapshot, notas: q.notes },
         },
       };

@@ -215,7 +215,7 @@ export function runExample(definition: unknown, items: PriceItem[], ivaRate: num
   if (!r.ok) return { description, inputs: shown, ok: false, message: r.message, ...('detail' in r ? { detail: r.detail } : {}) };
   return {
     description, inputs: shown, ok: true,
-    lines: r.priced.lines.map((l) => ({ name: l.name, qty: formatQty(l.qty), unit_price: formatUnitPrice(l, currency), amount: formatLineAmount(l, currency) })),
+    lines: r.priced.lines.map((l) => ({ name: l.name, qty: formatQty(l.qty), unit_price: formatUnitPrice(l, currency, ivaRate), amount: formatLineAmount(l, currency) })),
     totals: formatTotals(r.priced, currency),
     total_cents: r.priced.total_min,
   };

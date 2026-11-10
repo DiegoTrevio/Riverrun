@@ -23,7 +23,7 @@ El cliente recibe un PDF. Tanto el archivo como el mensaje del chat dicen si es 
      | Rango | $3,000.00 a $5,000.00 | El total es un rango. |
      | Por confirmar | sin precio | «Por confirmar». |
 
-   - el IVA: se suma, ya viene incluido o es exento.
+   - el IVA: se suma, ya viene incluido o es exento. Con **IVA incluido**, la cotización muestra cada precio **antes de IVA** (p. ej. $1,160 con IVA se ve como $1,000.00) para que cantidad × precio = importe y subtotal + IVA = total; el total es siempre tu precio de lista × cantidad.
 
    Cualquier concepto que no sea exacto hace que la cotización sea **aproximada**.
 2. **Formato** (*Cotizaciones → Formatos*). Diseña tu documento en Word (logo, colores, condiciones) y escribe marcas donde va cada dato. Hay un formato de ejemplo para descargar y una vista previa en PDF. Si no subes ninguno, se usa el del sistema.
@@ -98,6 +98,7 @@ Instalación solo si la piden: $598 por metro. Aclara que es aproximado y sujeto
 
 - El agente **pide un dato a la vez**; si el cliente da varios juntos («40 m de la clásica, cimentada»), cotiza de inmediato.
 - Si un dato no está entre las opciones («3 metros de alto»), le dice cuáles hay.
+- Entiende los datos como los escribe la gente: «40 m2», «$1,500», «12 m.l.», «2 metros» para la opción de 2.00 m, «sí, por favor» o «no gracias». Lo que no es una respuesta clara («no sé», «entre 20 y 30») lo vuelve a preguntar.
 - Con los datos, el sistema calcula y envía, según elijas en *Cómo se envía*:
   - **el desglose en el chat**: cada concepto con cantidad × precio = importe, subtotal, IVA, total, que es APROXIMADA, la vigencia y tu leyenda;
   - **el PDF** con tu formato.

@@ -55,7 +55,7 @@ export function templateData(q: qstore.Quote, s: qstore.QuoteSettings, opts: { a
     negocio: business,
     conceptos: lines.map((l) => ({
       concepto: clip(l.name), clave: clip(l.code), descripcion: clip(l.description), cantidad: formatQty(l.qty), unidad: clip(l.unit),
-      precio_unitario: formatUnitPrice(l, q.currency), importe: formatLineAmount(l, q.currency),
+      precio_unitario: formatUnitPrice(l, q.currency, q.iva_rate), importe: formatLineAmount(l, q.currency),
     })),
   };
 }

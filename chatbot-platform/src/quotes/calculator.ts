@@ -198,20 +198,43 @@ function placeOf(path: readonly PropertyKey[]): string {
 
 /* ------------------------------ Datos del cliente ------------------------------ */
 
-/** Un número escrito por una persona: «40», «40.5», «40,5», «1,250», «2 m». */
+/** Unidad escrita después del número: letras y puntos («metros», «m.l.», «mts.»), con «2»/«3» solo tras metros (m2, mts3). */
+const UNIT_RE = /^[a-záéíóúñ][a-záéíóúñ. ]*?(?:(?<=m|mt|mts|metro|metros)[23])?[²³]?\.?$/i;
+
+/** Un número escrito por una persona: «40», «40.5», «40,5», «1,250», «$1,500», «2 m», «40 m2», «12 m.l.». */
 export function parseHumanNumber(v: unknown): number | null {
   if (typeof v === 'number') return Number.isFinite(v) ? v : null;
-  if (typeof v !== 'string') return null;
-  let s = v.trim().replace(/\s+/g, '').replace(/[a-záéíóúñ²³]+\.?$/i, '');
-  if (!s) return null;
+  if (typeof v !== 'string' || v.length > 100) return null;
+  const m = /^\$?\s*(-?[\d.,]*\d)\.?\s*(.*)$/.exec(v.trim());
+  if (!m) return null;
+  // Los espacios cuentan: «40 m2» es una medida, pero «2 m 3» no es un solo número.
+  const unit = m[2].trim().replace(/\s+/g, ' ');
+  if (unit && !UNIT_RE.test(unit)) return null;
+  let s = m[1];
   if (/^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(s)) s = s.replace(/,/g, '');
   else if (/^-?\d+,\d+$/.test(s)) s = s.replace(',', '.');
   if (!/^-?\d*\.?\d+$/.test(s)) return null;
   return Number(s);
 }
 
-const YES = new Set(['si', 'sí', 'true', '1', 'yes', 'verdadero']);
+const YES = new Set(['si', 'true', '1', 'yes', 'verdadero', 'claro']);
 const NO = new Set(['no', 'false', '0', 'falso']);
+/** Lo que puede seguir a un «sí» o a un «no» sin cambiar la respuesta: «sí, por favor», «no gracias», «no, por ahora no». */
+const COURTESY_ANY = ['', 'gracias', 'muchas gracias', 'por favor', 'porfa'];
+const COURTESY_YES = new Set([...COURTESY_ANY, 'quiero', 'lo quiero', 'la quiero', 'los quiero', 'las quiero', 'me interesa', 'claro', 'tambien', 'de acuerdo']);
+const COURTESY_NO = new Set([...COURTESY_ANY, 'por ahora', 'por el momento', 'por ahora no', 'por el momento no', 'no quiero', 'no me interesa']);
+
+/** Sí o no como lo escribe una persona; `null` si no es una respuesta clara («no sé», «tal vez», «sí, por ahora no»). */
+function yesNo(text: string): boolean | null {
+  const t = normalizeText(text).replace(/[!¡.¿?]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (YES.has(t)) return true;
+  if (NO.has(t)) return false;
+  const m = /^(si|no|claro)\b[\s,]*(.*)$/.exec(t);
+  if (!m) return null;
+  const rest = m[2].replace(/,/g, ' ').replace(/\s+/g, ' ').trim();
+  if (m[1] === 'no') return COURTESY_NO.has(rest) ? false : null;
+  return COURTESY_YES.has(rest) ? true : null;
+}
 
 export interface InputCheck {
   values: Record<string, Value>;
@@ -248,17 +271,19 @@ export function checkInputs(def: CalculatorDefinition, raw: Record<string, unkno
       }
       case 'option': {
         const text = String(given);
-        const found = d.options.find((o) => sameValue(o.value, text) || normalizeText(o.label) === normalizeText(text));
+        // «2 m», «2 metros» o «1,5 m» eligen la opción de ese número (las alturas o medidas suelen ser opciones).
+        const n = parseHumanNumber(text);
+        const found = d.options.find((o) => sameValue(o.value, text) || normalizeText(o.label) === normalizeText(text))
+          ?? (n === null ? undefined : d.options.find((o) => numericValue(o.value) !== null && sameValue(o.value, n)));
         if (!found) { bad(`no está entre las opciones (${d.options.map((o) => o.label).join(', ')})`); break; }
         values[d.key] = found.value;
         break;
       }
       case 'boolean': {
         if (typeof given === 'boolean') { values[d.key] = given; break; }
-        const t = normalizeText(String(given));
-        if (YES.has(t)) values[d.key] = true;
-        else if (NO.has(t)) values[d.key] = false;
-        else bad('se responde con sí o no');
+        const yn = yesNo(String(given));
+        if (yn === null) bad('se responde con sí o no');
+        else values[d.key] = yn;
         break;
       }
       case 'text': {

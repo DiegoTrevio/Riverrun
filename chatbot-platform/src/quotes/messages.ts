@@ -33,7 +33,7 @@ export function summaryMessage(q: Quote, f: Formality, o: { legend?: string; lin
   const lines = q.lines ?? [];
   const t = formatTotals({ ...q, lines, can_be_final: false }, cur);
   const head = `${tu ? 'Esta es tu' : 'Esta es su'} cotización ${q.kind === 'final' ? 'FINAL' : 'APROXIMADA'} (folio ${q.folio}):`;
-  const rows = lines.map((l) => `• ${formatQty(l.qty)} × ${l.name}${l.unit && l.unit !== 'pieza' ? ` (${l.unit})` : ''} — ${formatUnitPrice(l, cur)} = ${formatLineAmount(l, cur)}`);
+  const rows = lines.map((l) => `• ${formatQty(l.qty)} × ${l.name}${l.unit && l.unit !== 'pieza' ? ` (${l.unit})` : ''} — ${formatUnitPrice(l, cur, q.iva_rate)} = ${formatLineAmount(l, cur)}`);
   const totals = q.iva_max > 0 || q.iva_min > 0
     ? [`Subtotal: ${t.subtotal}`, `IVA: ${t.iva}`, `Total: ${t.total}`]
     : [`Total: ${t.total}`];

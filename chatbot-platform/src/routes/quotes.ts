@@ -21,7 +21,7 @@ import { receivableBySource } from '../receivables/index.js';
 import { receivableOut } from './receivables.js';
 import { quoteMessage } from '../quotes/messages.js';
 import { evaluateCalculator } from '../quotes/calculator.js';
-import { formatTotals } from '../quotes/format.js';
+import { formatLineAmount, formatQty, formatTotals, formatUnitPrice } from '../quotes/format.js';
 import { buildFromText, coverageCheck, draftItems, MAX_BUILT_ITEMS, SOURCE_TEXT_MAX, validateDraft, type QuoteDraft } from '../quotes/from-text.js';
 import { QUOTE_TEXT_TEMPLATES } from '../quotes/text-templates.js';
 import { parsePriceCsv, priceItemsCsv } from '../quotes/price-csv.js';
@@ -209,7 +209,10 @@ export async function quoteRoutes(api: FastifyInstance, service: ChatService) {
     const [settings, items] = await Promise.all([qstore.getQuoteSettings(accountId), draft ? draftItems({ price_items: draft, definition }) : qstore.listPriceItems(accountId)]);
     const r = evaluateCalculator(definition, inputs, items, { iva_rate: settings.iva_rate });
     if (!r.ok) return r;
-    return { ...r, totals: formatTotals(r.priced, settings.currency), currency: settings.currency };
+    const cur = settings.currency;
+    // Renglones ya escritos como los verá el cliente (rangos, «desde», por confirmar y precio antes de IVA).
+    const rows = r.priced.lines.map((l) => ({ name: l.name, qty: formatQty(l.qty), unit: l.unit ?? '', unit_price: formatUnitPrice(l, cur, settings.iva_rate), amount: formatLineAmount(l, cur) }));
+    return { ...r, rows, totals: formatTotals(r.priced, cur), currency: cur };
   }
 
   api.get('/api/quote-calculators', admins, async (req: any) => {
