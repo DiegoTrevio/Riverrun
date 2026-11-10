@@ -149,7 +149,7 @@ Rechaza los archivos con macros, controles ActiveX, objetos incrustados o conten
 
 - **La IA solo elige** los conceptos (por su clave) y las cantidades. Cada cantidad debe venir de lo que escribió el cliente: se copian sus palabras («80 personas») y el validador revisa que estén en sus mensajes y que digan esa cantidad.
 - **Con cotizador** (arriba), la IA ni siquiera elige conceptos: solo junta los datos que pide la calculadora, cada uno con las palabras del cliente; el validador revisa que el cliente los dijo, que las opciones existen y que los números coinciden.
-- **El sistema calcula** importes, IVA y totales, en centavos enteros. Si la IA escribe un total o una suma propia, el validador lo rechaza porque no está en la información del negocio, y le pide otra respuesta.
+- **El sistema calcula** importes, IVA y totales, en centavos enteros. El IVA de los conceptos que «suman IVA» es **subtotal × tasa**, redondeado una sola vez al centavo (no la suma del IVA de cada renglón); el IVA incluido se separa del importe de su concepto y los exentos no llevan. Si la IA escribe un total o una suma propia, el validador lo rechaza porque no está en la información del negocio, y le pide otra respuesta.
 - **Montos tapados**: «$XX,XXX», «$###», «[precio]» o «{total}» nunca llegan al cliente, en ninguna cuenta: el validador los rechaza y, si insiste, quita esa frase.
 - **Antes de cotizar** se piden los datos que el negocio eligió. Si falta alguno, no hay cotización: el agente lo pide.
 - **Una cotización abierta por solicitud.** Mientras una final está en revisión, el agente no prepara otra: le dice al cliente que el equipo la está revisando.

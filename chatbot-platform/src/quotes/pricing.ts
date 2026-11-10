@@ -92,6 +92,9 @@ export function priceQuote(input: LineInput[], settings: PricingSettings): Price
   if (input.length > MAX_LINES) throw new Error(`Una cotización admite hasta ${MAX_LINES} conceptos`);
   const rateBp = BigInt(Math.round(settings.iva_rate * 10000));
   let subMin = 0n, subMax = 0n, ivaMin = 0n, ivaMax = 0n;
+  // Los conceptos que «suman IVA» se juntan y el IVA se calcula una vez sobre su suma (subtotal × tasa, redondeado al
+  // centavo), como lo escribe el negocio. Redondear el IVA de cada renglón y sumarlo podía dar un centavo de diferencia.
+  let plusMin = 0n, plusMax = 0n;
   let openEnded = false, hasTbd = false;
   const lines: PricedLine[] = input.map((l) => {
     const problem = lineProblem(l);
@@ -103,10 +106,19 @@ export function priceQuote(input: LineInput[], settings: PricingSettings): Price
     if (l.price_mode === 'from') openEnded = true;
     const lo = split(times(l.price_min!, l.qty), l.iva_mode, rateBp);
     const hi = l.price_mode === 'range' ? split(times(l.price_max!, l.qty), l.iva_mode, rateBp) : lo;
-    subMin += lo.base; ivaMin += lo.iva;
-    subMax += hi.base; ivaMax += hi.iva;
+    subMin += lo.base;
+    subMax += hi.base;
+    if (l.iva_mode === 'plus') {
+      plusMin += lo.base;
+      plusMax += hi.base;
+    } else {
+      ivaMin += lo.iva;
+      ivaMax += hi.iva;
+    }
     return { ...l, amount_min: Number(lo.base), amount_max: Number(hi.base) };
   });
+  ivaMin += split(plusMin, 'plus', rateBp).iva;
+  ivaMax += split(plusMax, 'plus', rateBp).iva;
   return {
     lines,
     subtotal_min: Number(subMin),
