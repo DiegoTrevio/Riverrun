@@ -86,3 +86,26 @@ test('cotizaciones: la cantidad debe salir de lo que escribió el cliente (cifra
   assert.equal(customerSaidQuantity(120, '120 personas', said), false, 'el cliente no lo escribió');
   assert.equal(customerSaidQuantity(80, '', said), false);
 });
+
+test('cotizaciones: el IVA es subtotal × tasa, redondeado una sola vez (no la suma del IVA de cada renglón)', () => {
+  // Metromalla, 1 m Clásica 1.00 m con placa: subtotal $1,872.91 × 0.16 = $299.6656 → $299.67.
+  // Redondeando el IVA de cada renglón salía $299.66 (144.75 + 104.59 + 31.64 + 18.68).
+  const q = priceQuote([
+    line({ name: 'Panel', qty: 1, price_min: 90471 }),
+    line({ name: 'Poste', qty: 2, price_min: 32683 }),
+    line({ name: 'Placa', qty: 2, price_min: 9889 }),
+    line({ name: 'Abrazadera', qty: 4, price_min: 2919 }),
+  ], IVA);
+  assert.deepEqual([q.subtotal_min, q.iva_min, q.total_min], [187291, 29967, 217258]);
+  // Ejemplo oficial de Metromalla (Clásica, 25 m, 1.50 m, con placa y flete): subtotal $16,981.05, IVA $2,716.97.
+  const ex = priceQuote([line({ price_min: 956800 }), line({ price_min: 298100 }), line({ price_min: 148335 }), line({ price_min: 144870 }), line({ price_min: 150000 })], IVA);
+  assert.deepEqual([ex.subtotal_min, ex.iva_min, ex.total_min], [1698105, 271697, 1969802]);
+  // Con renglones de IVA incluido y exentos: el IVA de los que «suman IVA» se calcula sobre su suma; el incluido se separa
+  // de su propio importe; el exento no lleva.
+  const mixed = priceQuote([line({ price_min: 333 }), line({ price_min: 333 }), line({ price_min: 116000, iva_mode: 'included' }), line({ price_min: 5000, iva_mode: 'exempt' })], IVA);
+  assert.equal(mixed.iva_min, Math.round(666 * 0.16) + 16000, '0.16 × $6.66 = $1.07 (renglón por renglón eran $0.53 + $0.53)');
+  assert.equal(mixed.subtotal_min, 666 + 100000 + 5000);
+  // En un rango, mínimo y máximo con la misma regla.
+  const r = priceQuote([line({ price_mode: 'range', price_min: 333, price_max: 999 }), line({ price_min: 333 })], IVA);
+  assert.deepEqual([r.iva_min, r.iva_max], [Math.round(666 * 0.16), Math.round(1332 * 0.16)]);
+});
