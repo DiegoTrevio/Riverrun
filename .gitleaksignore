@@ -14,3 +14,7 @@ c54b94862b6fbc15bcb35a2440bafcb95f3f0f1c:chatbot-platform/test/startup.test.ts:g
 c54b94862b6fbc15bcb35a2440bafcb95f3f0f1c:chatbot-platform/test/startup.test.ts:generic-api-key:15
 5482deba13651c5f65bd361b7f1abb32022dacb0:chatbot-platform/test/startup.test.ts:generic-api-key:14
 5482deba13651c5f65bd361b7f1abb32022dacb0:chatbot-platform/test/startup.test.ts:generic-api-key:15
+# El commit que creó esas dos llaves de prueba (10 de octubre de 2026), con los mismos valores en hexadecimal que hoy
+# llevan «prueba-»: la búsqueda semanal del historial completo lo marcaba (2 hallazgos).
+c76f4d2cfe52a81225b9fb2471175c9e22ee0093:chatbot-platform/test/startup.test.ts:generic-api-key:14
+c76f4d2cfe52a81225b9fb2471175c9e22ee0093:chatbot-platform/test/startup.test.ts:generic-api-key:15
