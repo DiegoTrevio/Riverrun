@@ -204,6 +204,8 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     const admins = new Set((await astore.teamMembers(accountId, ['admin'])).map((u) => u.id));
     next.alert_timing.escalate_user_ids = next.alert_timing.escalate_user_ids.filter((id) => admins.has(id));
     await astore.saveSettings(accountId, next);
+    // Guardar el horario lo da por revisado en «Ajustes» (aunque sea el que venía de ejemplo).
+    if ('business_hours' in raw) await store.markOnboarding(accountId, { hours: true });
     await logEvent({ level: 'info', source: 'admin', message: 'Configuración de la cuenta actualizada', accountId });
     return hidden(next);
   });

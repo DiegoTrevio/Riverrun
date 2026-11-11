@@ -529,6 +529,10 @@ ol.flow-steps li.current { color: var(--accent-ink); font-weight: 600; }
 .settings-index a.tile:hover strong { color: var(--accent); }
 .settings-index a.tile .icon { color: var(--muted); grid-row: span 2; align-self: start; margin-top: 2px; }
 .settings-index a.tile strong { font-size: 15px; font-weight: 600; }
+.settings-index a.tile .tile-title { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
+.settings-group { margin: 28px 0 0; font-size: 13px; font-weight: 600; color: var(--muted); text-transform: none; }
+.setup-summary { margin-bottom: 8px; }
+.setup-summary .row.between { gap: 12px; flex-wrap: wrap; }
 .settings-index a.tile span.desc { grid-column: 2; color: var(--muted); font-size: 13px; }
 .settings-index a.tile .chev { grid-column: 3; grid-row: 1 / span 2; color: var(--muted); }
 @media (max-width: 760px) { .settings-index { grid-template-columns: minmax(0, 1fr); } }
@@ -971,3 +975,15 @@ html { scroll-padding-top: calc(var(--topbar-h) + 8px); }
 .recovery-codes { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(10em, 1fr)); gap: 6px; }
 .recovery-codes code { font-size: 1rem; letter-spacing: .04em; }
 button.link-button { border-color: transparent; background: transparent; color: var(--accent-ink); text-decoration: underline; text-underline-offset: 3px; justify-self: start; }
+
+/* Sistema: lo que hay que revisar arriba, la bitácora de seguridad plegada al final. */
+.system-attention { margin-top: 16px; }
+.system-attention-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
+.system-attention-list li { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 12px; align-items: start; }
+.system-attention-list .badge { justify-self: start; }
+details.system-security { margin-top: 16px; }
+details.system-security > summary { cursor: pointer; padding: 4px 0; }
+details.system-security > .card { border: 0; padding: 12px 0 0; margin: 0; box-shadow: none; background: transparent; }
+/* Sistema → Zernio: el nombre del negocio y el perfil no se parten letra por letra. */
+.zernio-tenants td:first-child { min-width: 10rem; }
+.zernio-tenants td:nth-child(2) { white-space: nowrap; }

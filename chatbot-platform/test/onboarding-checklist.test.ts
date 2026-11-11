@@ -97,6 +97,62 @@ t('lista de pendientes: «Ocultar», permisos y cuentas creadas por el superadmi
   assert.deepEqual([own.json().show, own.json().complete], [false, false]);
 });
 
+t('estado de la configuración en «Ajustes»: qué está listo, qué falta y adónde ir', async () => {
+  const S = await newAccount('brisa@cafe.mx', 'Café Brisa');
+  const setup = async () => {
+    const r = await S.api('GET', '/api/onboarding/setup');
+    assert.equal(r.statusCode, 200, r.body);
+    return r.json();
+  };
+  const states = (s: any) => Object.fromEntries(s.sections.map((x: any) => [x.key, x.state]));
+  let s = await setup();
+  assert.deepEqual(states(s), { agents: 'todo', hours: 'todo', prices: 'optional', social: 'optional', team: 'optional' }, 'sin cobro en línea no se pide plan');
+  assert.deepEqual([s.done_count, s.total, s.next.key, s.next.href], [0, 2, 'agents', '#/agentes/nuevo']);
+
+  // Ver la página de horario (que guarda las llaves internas) no lo da por listo; guardarlo sí.
+  assert.equal((await S.api('GET', '/api/settings')).statusCode, 200);
+  assert.equal(states(await setup()).hours, 'todo');
+  const current = (await S.api('GET', '/api/settings')).json();
+  assert.equal((await S.api('PUT', '/api/settings', { business_hours: current.business_hours })).statusCode, 200);
+  assert.equal(states(await setup()).hours, 'ok');
+
+  // Agente sin canal → falta conectar; conectado y en pausa → encenderlo; encendido → listo.
+  const botId = (await S.api('POST', '/api/chatbots', { name: 'Brisa', active: false })).json().id;
+  s = await setup();
+  assert.deepEqual([s.next.key, s.next.href, s.next.detail], ['agents', '#/empezar', 'Falta conectar tu WhatsApp u otro canal.']);
+  const wa = await store.createChannel({ account_id: S.account, chatbot_id: botId, type: 'whatsapp', name: 'WhatsApp', config: {} });
+  await pool.query(`UPDATE channels SET connection_state = 'open' WHERE id = $1`, [wa.id]);
+  assert.equal((await setup()).next.href, `#/bot/${botId}/instrucciones`);
+  await pool.query(`UPDATE chatbots SET active = true WHERE id = $1`, [botId]);
+  s = await setup();
+  assert.deepEqual([states(s).agents, s.done_count, s.total, s.next], ['ok', 2, 2, null]);
+
+  // Lista de precios y redes: opcionales hasta que hay algo; una red caída pide reconectar.
+  await pool.query(`INSERT INTO price_items (account_id, code, name, price_mode, price_min) VALUES ($1, 'CAF', 'Café americano', 'exact', 4500)`, [S.account]);
+  await pool.query(`INSERT INTO social_accounts (account_id, zernio_account_id, profile_id, platform, username, status) VALUES ($1, 'acc_brisa', 'prof_brisa', 'instagram', 'cafebrisa', 'needs_reconnect')`, [S.account]);
+  s = await setup();
+  const by = Object.fromEntries(s.sections.map((x: any) => [x.key, x]));
+  assert.deepEqual([by.prices.state, by.prices.detail], ['ok', '1 concepto en tu lista de precios.']);
+  assert.deepEqual([by.social.state, by.social.detail, s.next.key], ['warn', '1 red necesita volver a conectarse.', 'social'], 'lo que dejó de funcionar va primero');
+
+  // WhatsApp desconectado desde el teléfono: aviso con el motivo y enlace para volver a vincular.
+  await pool.query(`UPDATE channels SET connection_state = 'close', disconnect_reason = 'logged_out', down_since = now() WHERE id = $1`, [wa.id]);
+  s = await setup();
+  assert.deepEqual([s.next.key, s.next.state, s.next.href], ['agents', 'warn', `#/channel/${wa.id}?conectar=1`]);
+  assert.match(s.next.detail, /Se cerró la sesión desde el teléfono/);
+
+  // Solo administradores.
+  await h.addUser({ account_id: S.account, name: 'Lalo', email: 'lalo@cafe.mx', password: 'Pz-109-Qx-309-Kv', role: 'agent' });
+  assert.equal((await (await h.loginAs('lalo@cafe.mx', 'Pz-109-Qx-309-Kv'))('GET', '/api/onboarding/setup')).statusCode, 403);
+});
+
+t('estado de la configuración: un horario distinto al de ejemplo cuenta como listo en cuentas anteriores', async () => {
+  const I = await newAccount('isla@cafe.mx', 'Café Isla');
+  await pool.query(`UPDATE accounts SET settings = jsonb_set(settings, '{business_hours}', $2::jsonb) WHERE id = $1`, [I.account, JSON.stringify({ mon: [['08:00', '14:00']] })]);
+  const r = (await I.api('GET', '/api/onboarding/setup')).json();
+  assert.equal(r.sections.find((x: any) => x.key === 'hours').state, 'ok');
+});
+
 t('correos de seguimiento: conectar al día 1, probar al día 3, una sola vez cada uno', async () => {
   const C = await newAccount('mar@cafe.mx', 'Café Mar');
   outbox.length = 0;

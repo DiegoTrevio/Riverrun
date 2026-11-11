@@ -14,7 +14,7 @@ import { queryOne, withTransaction } from '../db.js';
 import { accountOwner } from '../identity/ownership.js';
 import { assertWithinLimit, assertWithinLimitLocked } from '../billing/limits.js';
 import { logEvent } from '../logs.js';
-import { accountChecklist } from '../onboarding-checklist.js';
+import { accountChecklist, accountSetupStatus } from '../onboarding-checklist.js';
 import * as store from '../store/index.js';
 import { alignFixedMessages, BUSINESS_TYPES, chatbotFromTemplate } from '../templates/business.js';
 import { DataFieldSchema, FlowSchema, PersonalitySchema, RulesSchema, type User } from '../types.js';
@@ -109,7 +109,7 @@ export async function onboardingRoutes(api: FastifyInstance) {
     const phone = b.alert_phone.replace(/\D/g, '');
     if (req.user.account_id === accountId) await store.updateUser(req.user.id, { phone, notify_whatsapp: !!phone });
     if (b.business_type && BUSINESS_TYPES.some((t) => t.key === b.business_type)) await store.updateAccount(accountId, { business_type: b.business_type });
-    await store.markOnboarding(accountId, { business: true });
+    await store.markOnboarding(accountId, { business: true, ...(b.business_hours ? { hours: true } : {}) });
     return { ok: true };
   });
 
@@ -206,6 +206,13 @@ export async function onboardingRoutes(api: FastifyInstance) {
     const list = await accountChecklist(accountId, userId);
     if (list.complete && !acc.onboarding.checklist_done) await store.markOnboarding(accountId, { checklist_done: true });
     return { ...list, show: acc.signup_source === 'signup' && !acc.onboarding.checklist_hidden && !list.complete };
+  });
+
+  /** Estado de cada parte de la configuración (portada de «Ajustes»): qué está listo, qué falta y adónde ir. */
+  api.get('/api/onboarding/setup', admins, async (req: any) => {
+    const accountId = await targetAccount(req.user, req.query.account_id);
+    const userId = accountId === req.user.account_id ? req.user.id : ((await accountOwner(accountId))?.id ?? null);
+    return accountSetupStatus(accountId, userId);
   });
 
   /** Paso 5: crea (o reutiliza) el canal de WhatsApp de la cuenta, ya con su bot. El QR se pide con /whatsapp/connect. */

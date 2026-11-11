@@ -1,4 +1,4 @@
-import { api, confirmAction, field, fill, fmtDate, h, run, toast } from './core.js';
+import { api, confirmAction, field, fill, fmtDate, h, run, state, toast } from './core.js';
 import { okMark } from './icons.js';
 import { render } from './main.js';
 import { configSection, functionalSection } from './system-config.js';
@@ -17,11 +17,8 @@ export async function viewSystem(root) {
     h('div', { class: 'row between' }, h('h1', {}, 'Sistema'), h('button', { onclick: () => render() }, '↻ Actualizar')),
     h('div', { class: `banner ${sys.status === 'fail' ? 'danger' : sys.status === 'warn' ? 'warn' : 'ok'}` },
       sys.status === 'ok' ? 'Todo funciona correctamente.' : sys.status === 'warn' ? 'Funciona, pero hay algo que revisar.' : 'Hay un problema que necesita atención ahora.'),
-    h('div', { class: 'card', style: 'margin-top:16px' },
-      h('table', {}, h('tbody', {}, sys.checks.map((c) => h('tr', {},
-        h('td', {}, h('strong', {}, c.label)),
-        h('td', {}, h('span', { class: `badge ${CHECK_BADGE[c.status][0]}` }, CHECK_BADGE[c.status][1])),
-        h('td', { class: 'small muted' }, c.detail)))))),
+    attentionCard(sys),
+    functionalSection(sys.functional),
     h('div', { class: 'grid' },
       h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Servidor'),
         h('p', { class: 'small' }, 'Versión: ', h('code', {}, sys.version)),
@@ -43,9 +40,31 @@ export async function viewSystem(root) {
         h('p', { class: 'small' }, okMark(sys.alerts_configured.email), ' ', sys.alerts_configured.email ? 'Por correo (SUPERADMIN_EMAIL + SMTP)' : 'Por correo: falta SUPERADMIN_EMAIL o RESEND_API_KEY (o SMTP_URL)'),
         h('p', { class: 'small' }, okMark(sys.alerts_configured.webhook), ' ', sys.alerts_configured.webhook ? 'Por webhook (Slack, Discord, ntfy…)' : '– Por webhook: opcional (ALERT_WEBHOOK_URL)'),
         h('p', { class: 'small' }, okMark(sys.alerts_configured.heartbeat), ' ', sys.alerts_configured.heartbeat ? 'Latido externo (HEARTBEAT_URL): si el servidor cae, el servicio externo avisa' : 'Latido externo: falta HEARTBEAT_URL (por ejemplo healthchecks.io); sin él nadie avisa si el servidor completo se cae'),
-        !sys.alerts_configured.email && !sys.alerts_configured.webhook ? h('p', { class: 'banner danger', role: 'alert' }, 'Ninguna alerta sale del panel: si algo falla de noche, nadie se entera. Configura RESEND_API_KEY (o SMTP_URL) o ALERT_WEBHOOK_URL.') : null,
-        h('p', { class: 'small' }, okMark(sys.heartbeat_configured), ' ', sys.heartbeat_configured ? 'Latido externo activo' : 'Sin latido externo: si el servidor entero cae, nadie se entera. Configura HEARTBEAT_URL (healthchecks.io es gratis).'))));
-  root.append(securityCard({ superadmin: true }), await mailCard(), await zernioCard(), functionalSection(sys.functional), await configSection());
+        !sys.alerts_configured.email && !sys.alerts_configured.webhook ? h('p', { class: 'banner danger', role: 'alert' }, 'Ninguna alerta sale del panel: si algo falla de noche, nadie se entera. Configura RESEND_API_KEY (o SMTP_URL) o ALERT_WEBHOOK_URL.') : null)));
+  // Lo que se configura va antes que la bitácora; la bitácora de seguridad (larga) queda plegada al final.
+  root.insertBefore(await configSection(), root.querySelector(':scope > .grid'));
+  root.append(await mailCard(), await zernioCard(),
+    h('details', { class: 'card system-security' }, h('summary', {}, h('strong', {}, 'Seguridad: accesos y cambios'), h('span', { class: 'small muted' }, ' · entradas, verificación en dos pasos, descargas y avisos de detección')),
+      securityCard({ superadmin: true })));
+}
+
+/**
+ * Lo primero de Sistema: lo que falla o hay que revisar, en una sola lista y con su detalle. Si todo está bien, no se
+ * muestra (el aviso verde de arriba ya lo dice). El detalle completo de cada servicio sigue en «Estado operativo».
+ */
+function attentionCard(sys) {
+  const items = sys.checks.filter((c) => c.status === 'fail' || c.status === 'warn')
+    .sort((a, b) => (a.status === b.status ? 0 : a.status === 'fail' ? -1 : 1))
+    .map((c) => ({ status: c.status, label: c.label, detail: c.detail }));
+  if (!sys.alerts_configured.email && !sys.alerts_configured.webhook) items.push({ status: 'fail', label: 'Alertas', detail: 'Ninguna alerta sale del panel: configura RESEND_API_KEY (o SMTP_URL) o ALERT_WEBHOOK_URL.' });
+  if (!sys.alerts_configured.heartbeat) items.push({ status: 'warn', label: 'Latido externo', detail: 'Sin HEARTBEAT_URL nadie avisa si el servidor completo se cae (healthchecks.io es gratis).' });
+  if (!items.length) return null;
+  return h('section', { class: 'card system-attention', 'aria-labelledby': 'system-attention-title' },
+    h('h2', { id: 'system-attention-title', style: 'margin-top:0' }, items.length === 1 ? '1 cosa por revisar' : `${items.length} cosas por revisar`),
+    h('ul', { class: 'system-attention-list' }, items.map((i) => h('li', {},
+      h('span', { class: `badge ${CHECK_BADGE[i.status][0]}` }, CHECK_BADGE[i.status][1]),
+      h('div', {}, h('strong', {}, i.label), h('p', { class: 'small muted', style: 'margin:2px 0 0' }, i.detail))))),
+    h('p', { class: 'small muted', style: 'margin-bottom:0' }, 'Abajo, en «Configuración», está cómo corregir cada variable del servidor.'));
 }
 
 const DNS_BADGE = { true: ['green', 'Bien'], false: ['red', 'Falta'], null: ['', 'Sin revisar'] };
@@ -93,6 +112,8 @@ async function zernioCard() {
         : s.source === 'panel' ? h('p', { class: 'small' }, `Guardada en el panel (cifrada), termina en …${s.hint}`, s.updated_at ? ` · ${fmtDate(s.updated_at)}` : '', '.')
           : h('p', { class: 'small' }, 'Crea una llave en zernio.com → Settings → API Keys y pégala aquí.'),
       s.enabled ? h('p', { class: 'small' }, `Negocios con perfil de Zernio: ${s.accounts_with_profile} de ${s.accounts_total} (se crea al conectar su primera red)`, s.checking_profiles ? ` · revisando ${s.checking_profiles} perfiles…` : '', ` · redes conectadas: ${s.connected_channels}`) : null,
+      // Todo pasa por Zernio: si la app de Meta sigue activa, Facebook e Instagram contestan mensajes por ella y no por Zernio.
+      state.meta?.meta_connect_enabled ? h('p', { class: 'banner warn', role: 'note' }, 'META_APP_ID está activo: los mensajes de Facebook e Instagram pasan por la app de Meta, no por Zernio. Para que todo pase por Zernio, quita META_APP_ID y META_APP_SECRET del .env, reinicia y que cada negocio conecte Facebook e Instagram desde Redes sociales.') : null,
       s.webhook ? h('p', { class: `small ${s.webhook.ok ? '' : 'error'}` }, okMark(s.webhook.ok), ' ', s.webhook.ok ? 'Webhook registrado en Zernio: ' : 'No se pudo registrar el webhook: ', s.webhook.ok ? h('code', {}, s.webhook_url) : s.webhook.error) : null,
       s.source !== 'env' ? h('div', { class: 'row', style: 'align-items:flex-end' },
         field(s.source === 'panel' ? 'Reemplazar llave' : 'Llave de Zernio', input),

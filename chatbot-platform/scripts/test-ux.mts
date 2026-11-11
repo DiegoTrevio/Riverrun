@@ -89,6 +89,29 @@ try {
     await phone.close();
   }
   checked('Notificaciones muestra por dónde llegó cada aviso y los que no llegaron, con «Reintentar»');
+  {
+    // Ajustes dice qué está listo y qué falta, con el siguiente paso; Sistema pone arriba lo que hay que revisar.
+    const ctx = await contextFor('admin'); const p = await ctx.newPage();
+    await p.goto(`${base}/#/ajustes`);
+    await p.getByRole('heading', { name: /Te faltan? \d+ pasos? para atender/ }).waitFor();
+    const hours = p.locator('a.tile', { hasText: 'Horario y avisos' });
+    assert.equal(await hours.locator('.badge').textContent(), 'Falta');
+    assert.equal(await hours.getAttribute('href'), '#/automation/settings');
+    assert.equal(await p.locator('a.tile', { hasText: 'Redes sociales' }).locator('.badge').textContent(), 'Listo');
+    await p.getByRole('link', { name: 'Hacerlo ahora' }).click();
+    await p.locator('.main h1').waitFor();
+    assert.notEqual(new URL(p.url()).hash, '#/ajustes', '«Hacerlo ahora» lleva al paso que falta');
+    // Todo pasa por Zernio: Redes sociales no manda a «Conectar con Facebook».
+    await p.goto(`${base}/#/redes`); await p.getByRole('heading', { name: 'Conectar otra red' }).waitFor();
+    assert.equal(await p.getByText(/Conectar con Facebook/).count(), 0, 'Redes no guía hacia la app de Meta');
+    await ctx.close();
+    const sa = await contextFor('superadmin'); const sp = await sa.newPage();
+    await sp.goto(`${base}/#/sistema`);
+    await sp.getByRole('heading', { name: /cosas? por revisar/ }).waitFor();
+    assert.equal(await sp.locator('details.system-security').evaluate((d) => (d as HTMLDetailsElement).open), false, 'la bitácora de seguridad empieza plegada');
+    await sa.close();
+  }
+  checked('Ajustes muestra el estado de cada parte con el siguiente paso; Sistema pone arriba lo que hay que revisar');
   // Página pública para reservar: sin sesión, accesible y sin desbordamiento (celular y escritorio, claro y oscuro).
   const bookingLink = (await h.authed('POST', '/api/booking-links', { account_id: h.accountId, name: 'Agenda con nosotros' })).json();
   for (const width of [320, 390, 1024]) for (const theme of ['light', 'dark'] as const) {
