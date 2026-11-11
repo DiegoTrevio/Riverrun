@@ -69,7 +69,7 @@ Variables: `ZERNIO_API_KEY` (obligatoria para activar las redes), `ZERNIO_API_UR
 
 ### Facebook e Instagram con un botón (app de Meta de la plataforma)
 
-Con `META_APP_ID` y `META_APP_SECRET` definidos, cada negocio conecta su página de Facebook (Messenger) y su Instagram profesional con **Conectar con Facebook**, sin copiar tokens ni configurar webhooks. Implementación: `src/channels/meta-connect.ts`.
+Lo recomendado es que **todas las redes, Facebook e Instagram incluidos, pasen por Zernio** (Ajustes → Redes sociales) y dejar `META_APP_ID` vacío; si sigue activo, **Sistema → Redes sociales (Zernio)** lo avisa, porque entonces los mensajes de Facebook e Instagram van por la app de Meta y no por Zernio. Opcionalmente, con `META_APP_ID` y `META_APP_SECRET` definidos, cada negocio conecta su página de Facebook (Messenger) y su Instagram profesional con **Conectar con Facebook**, sin copiar tokens ni configurar webhooks. Implementación: `src/channels/meta-connect.ts`.
 
 1. El negocio pulsa **Conectar con Facebook** (en las conexiones del agente), inicia sesión y acepta los permisos. El regreso (`/meta/callback`) usa un estado de un solo uso que vence a los 30 minutos.
 2. El servidor cambia el código por un token de larga duración y lee las páginas con su Instagram vinculado. El negocio elige qué conectar (Messenger, Instagram o ambos) y el agente que responde; los tokens nunca llegan al navegador.

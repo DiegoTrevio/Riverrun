@@ -1,4 +1,4 @@
-import { api, confirmAction, field, fill, fmtDate, h, run, toast } from './core.js';
+import { api, confirmAction, field, fill, fmtDate, h, run, state, toast } from './core.js';
 import { okMark } from './icons.js';
 import { render } from './main.js';
 import { configSection, functionalSection } from './system-config.js';
@@ -112,6 +112,8 @@ async function zernioCard() {
         : s.source === 'panel' ? h('p', { class: 'small' }, `Guardada en el panel (cifrada), termina en …${s.hint}`, s.updated_at ? ` · ${fmtDate(s.updated_at)}` : '', '.')
           : h('p', { class: 'small' }, 'Crea una llave en zernio.com → Settings → API Keys y pégala aquí.'),
       s.enabled ? h('p', { class: 'small' }, `Negocios con perfil de Zernio: ${s.accounts_with_profile} de ${s.accounts_total} (se crea al conectar su primera red)`, s.checking_profiles ? ` · revisando ${s.checking_profiles} perfiles…` : '', ` · redes conectadas: ${s.connected_channels}`) : null,
+      // Todo pasa por Zernio: si la app de Meta sigue activa, Facebook e Instagram contestan mensajes por ella y no por Zernio.
+      state.meta?.meta_connect_enabled ? h('p', { class: 'banner warn', role: 'note' }, 'META_APP_ID está activo: los mensajes de Facebook e Instagram pasan por la app de Meta, no por Zernio. Para que todo pase por Zernio, quita META_APP_ID y META_APP_SECRET del .env, reinicia y que cada negocio conecte Facebook e Instagram desde Redes sociales.') : null,
       s.webhook ? h('p', { class: `small ${s.webhook.ok ? '' : 'error'}` }, okMark(s.webhook.ok), ' ', s.webhook.ok ? 'Webhook registrado en Zernio: ' : 'No se pudo registrar el webhook: ', s.webhook.ok ? h('code', {}, s.webhook_url) : s.webhook.error) : null,
       s.source !== 'env' ? h('div', { class: 'row', style: 'align-items:flex-end' },
         field(s.source === 'panel' ? 'Reemplazar llave' : 'Llave de Zernio', input),

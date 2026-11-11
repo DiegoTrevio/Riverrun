@@ -101,6 +101,9 @@ try {
     await p.getByRole('link', { name: 'Hacerlo ahora' }).click();
     await p.locator('.main h1').waitFor();
     assert.notEqual(new URL(p.url()).hash, '#/ajustes', '«Hacerlo ahora» lleva al paso que falta');
+    // Todo pasa por Zernio: Redes sociales no manda a «Conectar con Facebook».
+    await p.goto(`${base}/#/redes`); await p.getByRole('heading', { name: 'Conectar otra red' }).waitFor();
+    assert.equal(await p.getByText(/Conectar con Facebook/).count(), 0, 'Redes no guía hacia la app de Meta');
     await ctx.close();
     const sa = await contextFor('superadmin'); const sp = await sa.newPage();
     await sp.goto(`${base}/#/sistema`);
