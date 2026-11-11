@@ -25,6 +25,8 @@ Salidas posibles:
 | **SIN BLOQUEOS EN LO REVISADO** (código 0) | Lo revisado está bien, pero quedan comprobaciones `?` **sin verificar**. No es una aprobación completa. | Verifica a mano las comprobaciones `?` antes de publicar. |
 | **APROBADO** | Nada bloqueado, nada sin verificar. | — |
 
+En línea, `preflight` también abre (y cierra, sin enviar nada) una conexión al servidor de correo de `SMTP_URL`, o al de Resend con `RESEND_API_KEY`. Si no llega, avisa: DigitalOcean y otros proveedores bloquean los puertos 25, 465 y 587, y el correo dejaría de salir sin que nadie lo note. Con `RESEND_API_KEY`, Riverrun ya usa el puerto 2465. Guía completa para DigitalOcean: [publicar-digitalocean.md](publicar-digitalocean.md).
+
 Lo que `preflight` **no** comprueba aunque diga "sin bloqueos": último respaldo y su copia en la nube, migraciones pendientes, certificado HTTPS en modo `--offline`. Aparecen como `?`. Revísalos con `./riverrun status`.
 
 `preflight` no cambia nada: no arranca contenedores, no descarga imágenes y no escribe en la base.
