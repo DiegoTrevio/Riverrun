@@ -1,5 +1,5 @@
 import { needAccount } from './admin.js';
-import { api, area, check, confirmAction, dialog, field, fill, fmtDate, h, run, select, settingsSection, text, toast, named } from './core.js';
+import { api, area, check, confirmAction, dialog, field, fill, fmtDate, h, run, select, settingsSection, state, text, toast, named } from './core.js';
 import { render } from './main.js';
 import { isAdmin, isSuper, withAcct } from './session.js';
 
@@ -70,7 +70,7 @@ export async function viewQuotes(root, tab = 'precios', params = new URLSearchPa
   if (tab === 'ajustes') return viewSettings(body);
   if (tab === 'formatos') return viewTemplates(body);
   if (tab === 'calculadoras') return params.get('id') ? viewCalculator(body, params.get('id')) : viewCalculators(body);
-  if (tab === 'historial') return params.get('id') ? viewQuote(body, params.get('id')) : listQuotes(body, params);
+  if (tab === 'historial') return params.get('id') === 'new' ? newQuote(body, params.get('conversation')) : params.get('id') ? viewQuote(body, params.get('id')) : listQuotes(body, params);
   return viewPrices(body, params.get('id'));
 }
 
@@ -432,7 +432,10 @@ async function listQuotes(root, params) {
             h('td', { class: 'small' }, fmtDate(q.created_at))))))
       : h('p', { class: 'muted' }, 'Todavía no hay cotizaciones con estos filtros.'));
   };
-  root.append(h('div', { class: 'card' },
+  root.append(
+    isAdmin() ? h('div', { class: 'page-intro' }, h('a', { class: 'btn primary', href: '#/cotizaciones/historial?id=new' }, '+ Nueva cotización'),
+      h('p', { class: 'small muted' }, 'Para un cliente que te pidió precio por teléfono, en persona o por otro medio. Para un cliente que te escribe, ábrela desde su conversación.')) : null,
+    h('div', { class: 'card' },
     h('div', { class: 'row' },
       field('Estado', select(f, 'status', [['', 'Todos'], ...Object.entries(STATUS).map(([k, [, l]]) => [k, l])], load)),
       field('Tipo', select(f, 'kind', [['', 'Todos'], ['approximate', 'Aproximadas'], ['final', 'Finales']], load)),
@@ -454,7 +457,8 @@ async function viewQuote(root, id) {
           q.docx_path ? h('a', { class: 'btn', href: `/api/quotes/${q.id}/file?fmt=docx`, download: '' }, 'Descargar Word') : null,
           q.conversation_id ? h('a', { class: 'btn', href: `#/conversation/${q.conversation_id}` }, 'Ver conversación') : null,
           q.status === 'sent' && isAdmin() ? h('button', { class: 'primary', onclick: () => acceptDialog(q, () => render()) }, 'El cliente aceptó') : null)),
-      h('p', { class: 'small muted' }, `Creada ${fmtDate(q.created_at)} · Vigente hasta ${q.valid_until}`, q.source === 'bot' ? ' · Preparada por el asistente' : ''),
+      h('p', { class: 'small muted' }, `Creada ${fmtDate(q.created_at)} · Vigente hasta ${q.valid_until}`, q.source === 'bot' ? ' · Preparada por el asistente' : ' · Hecha por el equipo'),
+      saysAccepted(q) ? saysAcceptedNote(q) : null,
       Object.keys(q.customer_snapshot || {}).length
         ? h('dl', { class: 'small' }, Object.entries(q.customer_snapshot).map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)])) : null,
       h('table', {},
@@ -468,14 +472,51 @@ async function viewQuote(root, id) {
       q.notes ? h('p', { class: 'small' }, `Notas: ${q.notes}`) : null,
       q.rejected_reason ? h('p', { class: 'small' }, `Motivo del rechazo: ${q.rejected_reason}`) : null,
       q.status === 'accepted' ? h('p', { class: 'small' }, `Aceptada por el cliente${q.accepted_at ? ` el ${fmtDate(q.accepted_at)}` : ''}. `, h('a', { href: `#/cobros?status=` }, 'Ver sus cobros')) : null),
+    isAdmin() && ['draft', 'pending_approval', 'failed'].includes(q.status)
+      ? h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Revisar y enviar'), quoteEditor(q, () => render())) : null,
     h('div', { class: 'card' }, h('h3', { style: 'margin-top:0' }, 'Historial'),
       h('ul', { class: 'small' }, (q.events || []).map((e) => h('li', {}, `${fmtDate(e.created_at)} · ${EVENT[e.type] || e.type}${e.user_name ? ` · ${e.user_name}` : ''}`)))));
+}
+
+/** Nueva cotización hecha por el equipo: para el cliente de una conversación o para alguien que pidió precio por otro medio. */
+async function newQuote(root, conversationId) {
+  const conv = conversationId ? await api('GET', `/api/conversations/${conversationId}`).catch(() => null) : null;
+  const settings = await api('GET', withAcct('/api/quote-settings'));
+  const customer = { nombre: '', telefono: '', correo: '' };
+  const lines = [];
+  const m = { notes: '', kind: 'approximate' };
+  const editor = linesEditor(lines, m, { currency: settings.currency, accountId: state.accountId || '', touch: () => undefined });
+  const save = async () => {
+    if (!lines.length) return toast('Agrega al menos un concepto', true);
+    const q = await run(() => api('POST', '/api/quotes', { account_id: state.accountId || undefined, conversation_id: conv ? conversationId : null, customer, kind: m.kind, notes: m.notes, lines: linesBody(lines) }), 'Cotización guardada: revísala y envíala');
+    if (q) location.hash = `#/cotizaciones/historial?id=${q.id}`;
+  };
+  const who = conv?.contact ? (conv.contact.name || conv.contact.push_name || (conv.contact.phone ? `+${conv.contact.phone}` : 'el cliente')) : '';
+  root.append(
+    h('p', {}, h('a', { href: conv ? `#/conversation/${conversationId}` : '#/cotizaciones/historial' }, conv ? '← Volver a la conversación' : '← Todas las cotizaciones')),
+    h('div', { class: 'card' },
+      h('h2', { style: 'margin-top:0' }, 'Nueva cotización'),
+      conv ? h('p', { class: 'small muted' }, `Para ${who}. Sus datos salen de la conversación y se la envías por este chat con «Aprobar y enviar».`)
+        : [h('p', { class: 'small muted' }, 'Al terminar generas el PDF y se lo envías tú al cliente. Lleva el mismo folio, formato y vigencia que las del asistente.'),
+          h('div', { class: 'grid' },
+            field('Nombre del cliente', text(customer, 'nombre', { maxlength: 200, autocomplete: 'off' })),
+            field('Teléfono', text(customer, 'telefono', { maxlength: 200, type: 'tel', autocomplete: 'off' })),
+            field('Correo', text(customer, 'correo', { maxlength: 200, type: 'email', autocomplete: 'off' })))],
+      h('h3', {}, 'Conceptos'),
+      editor,
+      h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'primary', onclick: save }, 'Guardar cotización'))));
 }
 
 const EVENT = {
   created: 'Creada', edited: 'Editada por el equipo', pending_approval: 'Enviada a aprobación', approved: 'Aprobada', sent: 'Enviada al cliente',
   rejected: 'Rechazada', expired: 'Venció', failed: 'No se pudo generar o enviar', draft: 'Vuelve a preparación', accepted: 'El cliente la aceptó',
+  customer_accepted: 'El cliente dijo en el chat que la acepta', expiring: 'Aviso de seguimiento: está por vencer',
 };
+
+/** El cliente dijo en el chat que la acepta y falta que el equipo la confirme con su cobro. */
+const saysAccepted = (q) => q.status === 'sent' && !!q.customer_accepted_at;
+const saysAcceptedNote = (q) => h('p', { class: 'small', role: 'status' }, badge(['green', 'El cliente dice que la acepta']), ' ',
+  q.customer_accepted_text ? `«${q.customer_accepted_text}». ` : '', 'Confírmala con «El cliente aceptó» para crear su cobro.');
 
 /* ------------------------------ Aceptada por el cliente ------------------------------ */
 
@@ -559,12 +600,14 @@ export async function acceptDialog(q, reload) {
 /* ------------------------------ En la conversación ------------------------------ */
 
 /** Cotizaciones de una conversación: las por aprobar (o con error) se revisan, corrigen y envían desde aquí. */
-export function quotesCard(quotes, reload) {
-  if (!quotes?.length) return null;
-  const open = quotes.some((q) => ['pending_approval', 'failed'].includes(q.status));
+export function quotesCard(quotes, reload, conversationId) {
+  quotes ??= [];
+  const add = isAdmin() && conversationId ? h('a', { class: 'btn small', href: `#/cotizaciones/historial?id=new&conversation=${conversationId}` }, '+ Nueva cotización') : null;
+  if (!quotes.length) return add ? h('details', { class: 'card small', id: 'conversation-quotes' }, h('summary', {}, 'Cotizaciones (0)'), h('p', { class: 'muted' }, 'Arma una cotización con tu lista de precios y envíala por este chat.'), add) : null;
+  const open = quotes.some((q) => ['draft', 'pending_approval', 'failed'].includes(q.status) || saysAccepted(q));
   return h('details', { class: 'card small', id: 'conversation-quotes', open },
     h('summary', {}, `Cotizaciones (${quotes.length})${open ? ' · por revisar' : ''}`),
-    quotes.map((q) => quoteItem(q, reload)));
+    quotes.map((q) => quoteItem(q, reload)), add);
 }
 
 function quoteItem(q, reload) {
@@ -574,19 +617,15 @@ function quoteItem(q, reload) {
     admin && q.pdf_path ? h('a', { href: `/api/quotes/${q.id}/file`, target: '_blank', rel: 'noopener' }, 'Ver PDF') : null,
     admin ? h('a', { href: `#/cotizaciones/historial?id=${q.id}` }, 'Detalle') : null,
     admin && q.status === 'sent' ? h('button', { class: 'small', onclick: () => acceptDialog(q, reload) }, 'El cliente aceptó') : null);
-  if (!admin || !['pending_approval', 'failed'].includes(q.status)) return h('div', { class: 'quote-item', style: 'margin:8px 0' }, head);
+  if (!admin || !['draft', 'pending_approval', 'failed'].includes(q.status)) return h('div', { class: 'quote-item', style: 'margin:8px 0' }, head, saysAccepted(q) ? saysAcceptedNote(q) : null);
   return h('div', { class: 'quote-item card', style: 'margin:8px 0;padding:10px' }, head, quoteEditor(q, reload));
 }
 
-/** Conceptos editables (cantidad y precio), notas y las acciones: guardar, aprobar y enviar, rechazar. */
-function quoteEditor(q, reload) {
-  const lines = (q.lines || []).map((l) => ({ ...l, min: toPesos(l.price_min), max: toPesos(l.price_max) }));
-  const m = { notes: q.notes || '', kind: q.kind };
-  let dirty = false;
-  const touch = () => { dirty = true; };
+/** Conceptos editables (nombre, cantidad y precio), el tipo y las notas. `m` guarda tipo y notas; `touch` marca cambios. */
+function linesEditor(lines, m, { currency, accountId, touch }) {
   const box = h('div');
   const draw = () => fill(box,
-    h('table', { class: 'quote-lines' },
+    lines.length ? h('table', { class: 'quote-lines' },
       h('thead', {}, h('tr', {}, h('th', {}, 'Concepto'), h('th', {}, 'Cantidad'), h('th', {}, 'Precio'), h('th', {}, ''))),
       h('tbody', {}, lines.map((l, i) => h('tr', {},
         h('td', {}, text(l, 'name', { 'aria-label': `Concepto ${i + 1}`, maxlength: 200, oninput: touch })),
@@ -595,12 +634,13 @@ function quoteEditor(q, reload) {
           named(select(l, 'price_mode', Object.entries(PRICE_MODE), () => { touch(); draw(); }), `Tipo de precio de ${l.name || `concepto ${i + 1}`}`),
           l.price_mode === 'tbd' ? null : text(l, 'min', { type: 'number', min: 0, step: '0.01', 'aria-label': `${l.price_mode === 'range' ? 'Mínimo' : 'Precio'} de ${l.name}`, oninput: touch, style: 'max-width:110px' }),
           l.price_mode === 'range' ? text(l, 'max', { type: 'number', min: 0, step: '0.01', 'aria-label': `Máximo de ${l.name}`, oninput: touch, style: 'max-width:110px' }) : null)),
-        h('td', {}, lines.length > 1 ? h('button', { class: 'small', 'aria-label': `Quitar ${l.name}`, onclick: () => { lines.splice(i, 1); touch(); draw(); } }, 'Quitar') : null))))),
+        h('td', {}, lines.length > 1 ? h('button', { class: 'small', 'aria-label': `Quitar ${l.name}`, onclick: () => { lines.splice(i, 1); touch(); draw(); } }, 'Quitar') : null))))) 
+      : h('p', { class: 'muted' }, 'Todavía no hay conceptos: agrega uno de tu lista de precios o uno libre.'),
     h('div', { class: 'row', style: 'gap:6px' },
       h('button', { class: 'small', onclick: async () => {
-        const items = await api('GET', `/api/price-items?account_id=${q.account_id}&active=1`).catch(() => []);
+        const items = await api('GET', accountId ? `/api/price-items?account_id=${accountId}&active=1` : withAcct('/api/price-items?active=1')).catch(() => []);
         const pick = { id: '' };
-        const ok = await dialog('Agregar concepto', field('Concepto', select(pick, 'id', [['', 'Concepto libre (escribe nombre y precio)'], ...items.map((i) => [i.id, `${i.name} · ${unitPrice(i, q.currency)}`])])), 'Agregar');
+        const ok = await dialog('Agregar concepto', field('Concepto', select(pick, 'id', [['', 'Concepto libre (escribe nombre y precio)'], ...items.map((i) => [i.id, `${i.name} · ${unitPrice(i, currency)}`])])), 'Agregar');
         if (!ok) return;
         const it = items.find((i) => i.id === pick.id);
         lines.push(it
@@ -611,14 +651,28 @@ function quoteEditor(q, reload) {
       field('Tipo', select(m, 'kind', [['final', 'Final'], ['approximate', 'Aproximada']], touch))),
     field('Notas en la cotización', area(m, 'notes', { maxlength: 2000, oninput: touch })));
   draw();
-  const body = () => ({
-    kind: m.kind, notes: m.notes,
-    lines: lines.map((l) => ({
-      price_item_id: l.price_item_id || null, code: l.code || '', name: l.name, description: l.description || '', unit: l.unit || 'servicio', qty: Number(l.qty),
-      price_mode: l.price_mode, price_min: l.price_mode === 'tbd' ? null : toCents(l.min), price_max: l.price_mode === 'range' ? toCents(l.max) : null, iva_mode: l.iva_mode || 'plus',
-    })),
-  });
+  return box;
+}
+
+/** Los conceptos como los recibe el servidor (centavos enteros). */
+const linesBody = (lines) => lines.map((l) => ({
+  price_item_id: l.price_item_id || null, code: l.code || '', name: l.name, description: l.description || '', unit: l.unit || 'servicio', qty: Number(l.qty),
+  price_mode: l.price_mode, price_min: l.price_mode === 'tbd' ? null : toCents(l.min), price_max: l.price_mode === 'range' ? toCents(l.max) : null, iva_mode: l.iva_mode || 'plus',
+}));
+
+/** Conceptos editables, notas y las acciones: guardar, aprobar y enviar (o, sin conversación, generar el PDF), rechazar. */
+function quoteEditor(q, reload) {
+  const lines = (q.lines || []).map((l) => ({ ...l, min: toPesos(l.price_min), max: toPesos(l.price_max) }));
+  const m = { notes: q.notes || '', kind: q.kind };
+  let dirty = false;
+  const touch = () => { dirty = true; };
+  const box = linesEditor(lines, m, { currency: q.currency, accountId: q.account_id, touch });
+  const body = () => ({ kind: m.kind, notes: m.notes, lines: linesBody(lines) });
   const save = async () => { await api('PATCH', `/api/quotes/${q.id}`, body()); dirty = false; };
+  const markSent = async () => {
+    if (!(await confirmAction('Se generará el PDF y la cotización quedará como enviada. Descárgalo y envíaselo al cliente por correo o mensaje. ¿Continuar?'))) return;
+    if (await run(async () => { if (dirty) await save(); return api('POST', `/api/quotes/${q.id}/mark-sent`); }, 'PDF listo: la cotización quedó como enviada')) reload();
+  };
   const approve = async () => {
     const what = m.kind === 'final' ? 'COTIZACIÓN FINAL' : 'COTIZACIÓN APROXIMADA';
     if (!(await confirmAction(`Se enviará al cliente el PDF como ${what}, con su total. ¿Continuar?`))) return;
@@ -635,6 +689,8 @@ function quoteEditor(q, reload) {
     box,
     h('div', { class: 'row', style: 'gap:6px;margin-top:6px' },
       h('button', { class: 'small', onclick: async () => { if (await run(save, 'Cambios guardados')) reload(); } }, 'Guardar cambios'),
-      h('button', { class: 'small primary', onclick: approve }, q.status === 'failed' ? 'Reintentar envío' : 'Aprobar y enviar'),
+      q.conversation_id
+        ? h('button', { class: 'small primary', onclick: approve }, q.status === 'failed' ? 'Reintentar envío' : 'Aprobar y enviar')
+        : h('button', { class: 'small primary', onclick: markSent }, 'Generar PDF y marcar enviada'),
       q.status === 'pending_approval' ? h('button', { class: 'small danger', onclick: reject }, 'Rechazar') : null));
 }

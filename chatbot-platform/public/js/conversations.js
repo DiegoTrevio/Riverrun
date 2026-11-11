@@ -633,7 +633,7 @@ export async function viewConversation(root, id, opts = {}) {
           } }, 'Borrar todos sus datos'))) : null,
       flowCard(data.chatbot?.flow, c),
       autoBox,
-      quotesCard(data.quotes, () => load(true)),
+      quotesCard(data.quotes, () => load(true), c.id),
       h('details', { class: 'card', id: 'conversation-summary', tabindex: '-1', open: !!c.report_summary },
         h('summary', {}, h('strong', {}, 'Resumen de la conversación'), c.report_summary ? null : h('span', { class: 'muted small' }, ' · sin generar')),
         h('div', { class: 'row' },

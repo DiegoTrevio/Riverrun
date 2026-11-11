@@ -26,7 +26,9 @@ import { buildFromText, coverageCheck, draftItems, MAX_BUILT_ITEMS, SOURCE_TEXT_
 import { QUOTE_TEXT_TEMPLATES } from '../quotes/text-templates.js';
 import { parsePriceCsv, priceItemsCsv } from '../quotes/price-csv.js';
 import { IVA_MODES, MAX_LINES, MAX_PRICE_CENTS, MAX_QTY, PRICE_MODES } from '../quotes/pricing.js';
-import { renderPdf, renderQuote, sampleData } from '../quotes/render.js';
+import { localDate, renderPdf, renderQuote, sampleData } from '../quotes/render.js';
+import * as astore from '../automation/store.js';
+import * as pstore from '../store/pipelines.js';
 import type { ChatService } from '../service.js';
 import { exampleTemplate, inspectTemplate, KNOWN_TAGS, LINE_TAGS, REQUIRED_TAGS, TEMPLATE_MAX_BYTES } from '../quotes/template.js';
 import * as store from '../store/index.js';
@@ -95,6 +97,16 @@ const QuotePatch = z.object({
   lines: z.array(LineBody).min(1).max(MAX_LINES),
   notes: z.string().max(2000).optional(),
   kind: z.enum(['approximate', 'final']).optional(),
+});
+/** Cotización que arma el equipo desde el panel: para un cliente de una conversación o para cualquiera (por teléfono). */
+const Short = z.string().trim().max(200).default('');
+const NewQuoteBody = z.object({
+  account_id: z.string().optional(),
+  conversation_id: z.string().uuid().nullable().default(null),
+  customer: z.object({ nombre: Short, telefono: Short, correo: Short }).default({ nombre: '', telefono: '', correo: '' }),
+  lines: z.array(LineBody).min(1, 'Agrega al menos un concepto').max(MAX_LINES),
+  notes: z.string().max(2000).default(''),
+  kind: z.enum(['approximate', 'final']).default('approximate'),
 });
 const RejectBody = z.object({
   reason: z.string().trim().max(500).default(''),
@@ -377,6 +389,47 @@ export async function quoteRoutes(api: FastifyInstance, service: ChatService) {
   api.get('/api/quotes/:id', admins, async (req: any) => {
     const quote = await quoteFor(req.user, req.params.id);
     return { ...quote, events: await qstore.listQuoteEvents(quote.account_id, quote.id) };
+  });
+
+  /**
+   * El equipo arma una cotización desde el panel (mismo folio, formato y vigencia que las del asistente). Con conversación
+   * queda «En preparación» y se envía con «Aprobar y enviar»; sin conversación se genera el PDF y se marca como enviada
+   * cuando el equipo se la hace llegar al cliente.
+   */
+  api.post('/api/quotes', admins, async (req: any) => {
+    const body = parse(NewQuoteBody, req.body);
+    const accountId = await targetAccount(req.user, req.query.account_id ?? body.account_id);
+    const conv = body.conversation_id ? await store.getConversation(body.conversation_id) : null;
+    if (body.conversation_id && (!conv || conv.account_id !== accountId)) throw new HttpError(404, 'Conversación no encontrada');
+    const contact = conv ? await store.getContact(conv.contact_id) : null;
+    const bot = conv?.chatbot_id ? await store.getChatbot(conv.chatbot_id) : null;
+    const card = conv ? await pstore.openCardOf(conv.id).catch(() => null) : null;
+    const data = contact?.data ?? {};
+    const customer: Record<string, string> = conv ? { ...data } : {};
+    customer.nombre = body.customer.nombre || contact?.name || data.nombre || contact?.push_name || '';
+    customer.telefono = body.customer.telefono || data.telefono || (contact?.phone ? `+${contact.phone}` : '');
+    customer.correo = body.customer.correo || data.correo || '';
+    const settings = await astore.getSettings(accountId);
+    const quote = await friendly(() => qstore.createQuote({
+      accountId, kind: body.kind, status: 'draft', source: 'panel', lines: body.lines as qstore.NewQuote['lines'],
+      chatbotId: conv?.chatbot_id ?? null, conversationId: conv?.id ?? null, contactId: contact?.id ?? null,
+      pipelineCardId: card ? Number(card.id) : null, templateId: bot?.ai.quotes?.template_id || null,
+      notes: body.notes, customer, userId: req.user.id, today: localDate(new Date(), settings.timezone),
+    }));
+    await logEvent({ level: 'info', source: 'admin', message: `${req.user.email} armó la cotización ${quote.folio} desde el panel`, accountId, conversationId: conv?.id });
+    return quote;
+  });
+
+  /** Sin conversación: genera el PDF y la marca enviada (el equipo se la hizo llegar al cliente por su cuenta). */
+  api.post('/api/quotes/:id/mark-sent', admins, async (req: any) => {
+    const quote = await quoteFor(req.user, req.params.id);
+    if (quote.conversation_id) throw new HttpError(400, 'Esta cotización tiene conversación: envíala con «Aprobar y enviar»');
+    if (!['draft', 'pending_approval', 'failed'].includes(quote.status)) throw new HttpError(409, 'Esta cotización ya se envió o ya no está pendiente');
+    await renderQuote(quote.account_id, quote.id).catch((e) => { throw new HttpError(502, `No se pudo generar el PDF: ${e?.message ?? e}`); });
+    const done = await qstore.transitionQuote(quote.account_id, quote.id, 'sent', { userId: req.user.id, detail: { via: 'panel' } });
+    if (!done) throw new HttpError(409, 'Otra persona ya la marcó: actualiza la página');
+    await logEvent({ level: 'info', source: 'admin', message: `Cotización ${quote.folio} marcada como enviada por ${req.user.email}`, accountId: quote.account_id });
+    return done;
   });
 
   /** El equipo corrige los conceptos, cantidades o precios antes de aprobar (se recalcula todo). */

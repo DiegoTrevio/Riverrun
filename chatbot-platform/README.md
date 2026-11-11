@@ -86,7 +86,9 @@ Configuración única en Meta for Developers (la hace el administrador de la pla
 
 ## Instalación en un VPS (Docker)
 
-Requisitos: un VPS con Linux (2 GB de RAM alcanzan para empezar). Si no tiene Docker, el instalador ofrece instalarlo.
+Requisitos: un VPS con Linux. Recomendado: 4 GB de RAM y 2 CPU (con 2 GB cabe, pero queda justo con WhatsApp y el PDF de las cotizaciones). Si no tiene Docker, el instalador ofrece instalarlo.
+
+**Paso a paso en DigitalOcean** (servidor, dominio, correo, respaldos en Spaces, endurecer y revisar): [docs/publicar-digitalocean.md](docs/publicar-digitalocean.md).
 
 ```bash
 git clone <este repo> && cd Riverrun/chatbot-platform

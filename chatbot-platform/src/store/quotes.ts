@@ -93,6 +93,9 @@ export interface Quote {
   sent_at: Date | null;
   accepted_at?: Date | null;
   accepted_by?: string | null;
+  /** El cliente dijo en el chat que la acepta (falta que el equipo la marque aceptada). */
+  customer_accepted_at?: Date | null;
+  customer_accepted_text?: string;
   rejected_reason: string;
   created_at: Date;
   updated_at: Date;
@@ -541,14 +544,57 @@ export async function replaceQuoteLines(
 }
 
 /** Las cotizaciones enviadas o por aprobar cuya vigencia ya pasó se marcan vencidas. Devuelve cuántas. */
-export async function expireQuotes(today: string, accountId?: string): Promise<number> {
+export async function expireQuotes(today: string, accountId?: string, onExpired?: (q: Quote) => void): Promise<number> {
   const rows = await query(
     `UPDATE quotes SET status = 'expired', updated_at = now()
-      WHERE valid_until < $1 AND status IN ('pending_approval', 'approved', 'sent') AND ($2::uuid IS NULL OR account_id = $2) RETURNING id`,
+      WHERE valid_until < $1 AND status IN ('pending_approval', 'approved', 'sent') AND ($2::uuid IS NULL OR account_id = $2) RETURNING *`,
     [today, accountId ?? null],
   );
-  for (const r of rows) await addQuoteEvent(r.id, 'expired');
+  for (const r of rows) {
+    await addQuoteEvent(r.id, 'expired');
+    // Solo las que llegaron al cliente le interesan al seguimiento (una por aprobar que vence no la vio nadie), y no las
+    // que el cliente ya dijo que acepta (el equipo las está confirmando).
+    if (onExpired && r.conversation_id && r.sent_at && !r.customer_accepted_at) {
+      try { onExpired(quoteRow(r)); } catch { /* un aviso que falla no detiene el vencimiento de las demás */ }
+    }
+  }
   return rows.length;
+}
+
+/**
+ * Cotizaciones enviadas (sin aceptar, ni siquiera de palabra en el chat) a las que les quedan exactamente alguno de `days` días de vigencia y que todavía no
+ * avisaron con esos días: deja el aviso en su historial y las devuelve. Dos tareas al mismo tiempo no avisan dos veces.
+ */
+export async function claimExpiringQuotes(accountId: string, today: string, days: number[]): Promise<(Quote & { days_left: number })[]> {
+  if (!days.length) return [];
+  return withTransaction(async (client) => {
+    const rows = (await client.query(
+      `SELECT q.*, (q.valid_until - $2::date) AS days_left FROM quotes q
+        WHERE q.account_id = $1 AND q.status = 'sent' AND q.conversation_id IS NOT NULL AND q.customer_accepted_at IS NULL
+          AND (q.valid_until - $2::date) = ANY($3::int[])
+          AND NOT EXISTS (SELECT 1 FROM quote_events e WHERE e.quote_id = q.id AND e.type = 'expiring'
+                           AND e.detail->>'days_left' = (q.valid_until - $2::date)::text)
+        FOR UPDATE OF q SKIP LOCKED`,
+      [accountId, today, days],
+    )).rows;
+    for (const r of rows) await addQuoteEvent(r.id, 'expiring', { days_left: Number(r.days_left) }, null, client);
+    return rows.map((r) => ({ ...quoteRow(r), days_left: Number(r.days_left) }));
+  });
+}
+
+/**
+ * El cliente dijo en el chat que acepta la cotización: se anota una sola vez, con sus palabras. Solo una enviada (ni
+ * vencida ni ya aceptada). `null` si no aplica o ya estaba anotada.
+ */
+export async function markCustomerAccepted(accountId: string, id: string, words: string): Promise<Quote | null> {
+  const r = await queryOne(
+    `UPDATE quotes SET customer_accepted_at = now(), customer_accepted_text = $3, updated_at = now()
+      WHERE account_id = $1 AND id = $2 AND status = 'sent' AND customer_accepted_at IS NULL RETURNING *`,
+    [accountId, id, words.slice(0, 300)],
+  );
+  if (!r) return null;
+  await addQuoteEvent(id, 'customer_accepted', { text: words.slice(0, 300) });
+  return quoteRow(r);
 }
 
 /** Guarda dónde quedaron el Word y el PDF generados. */

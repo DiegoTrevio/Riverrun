@@ -186,6 +186,10 @@ export const TriggerSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('quote_rejected') }),
   /** El equipo marcó que el cliente aceptó la cotización. */
   z.object({ type: z.literal('quote_accepted') }),
+  /** Seguimiento: una cotización enviada vence en `days` días (0 = hoy es su último día) y sigue sin aceptarse. */
+  z.object({ type: z.literal('quote_expiring'), days: z.number().int().min(0).max(30).default(2) }),
+  /** Una cotización enviada pasó su vigencia sin aceptarse. */
+  z.object({ type: z.literal('quote_expired') }),
   /** Cobros: hoy vence (al enviarse el recordatorio del día), venció sin pagarse (al día siguiente) y el equipo lo marcó pagado. */
   z.object({ type: z.literal('payment_due') }),
   z.object({ type: z.literal('payment_overdue') }),
@@ -459,6 +463,8 @@ export interface AutomationEvent {
   quote?: { id: string; folio: string; kind: 'approximate' | 'final'; total: string; /** AAAA-MM-DD */ valid_until?: string };
   /** Cobro del evento (payment_*): sus variables {{pago.concepto}}, {{pago.monto}}… */
   payment?: Record<string, string>;
+  /** quote_expiring: días que le quedan de vigencia. */
+  daysLeft?: number;
   /** Lo provocó tu sistema por la API: el webhook lo dice (origin: "api") para que no le responda a su propio cambio. */
   origin?: 'api';
 }

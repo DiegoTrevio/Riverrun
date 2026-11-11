@@ -46,7 +46,7 @@ export interface EngineExtensions {
     cancel(appointmentId: string, reason: string, by: 'bot'): Promise<unknown>;
   };
   /** Cotizaciones en PDF con la lista de precios de la cuenta. */
-  quotes?: Pick<Quotes, 'contextFor' | 'prepare' | 'message' | 'link' | 'delivered'>;
+  quotes?: Pick<Quotes, 'contextFor' | 'prepare' | 'message' | 'link' | 'delivered' | 'customerAccepted'>;
   /** Lo que el cliente debe al negocio (cobros pendientes) y cómo pagar. */
   receivables?(conv: Conversation): Promise<ReceivableContext | null>;
   onEvent?(e: AutomationEvent): void;
@@ -325,6 +325,7 @@ export class Engine {
       open: !!quoteCatalog.open,
       allowFinal: quoteCatalog.allowFinal,
       calculator: quoteCatalog.calculator?.definition ?? null,
+      acceptable: quoteCatalog.lastSent?.status === 'sent' && !quoteCatalog.lastSent.customer_accepted_at ? { id: quoteCatalog.lastSent.id, folio: quoteCatalog.lastSent.folio } : null,
     } : null;
     const agendaVal: AgendaValidation | null = agendaCtx
       ? {
@@ -685,11 +686,17 @@ export class Engine {
       if (sentQuote) this.ext.onEvent?.({ type: 'quote_sent', conversationId: conv.id, quote: quoteEvent(sentQuote), text: customerText });
     }
     if (quoteOut?.pending) this.ext.onEvent?.({ type: 'quote_pending_approval', conversationId: conv.id, quote: quoteEvent(quoteOut.pending), text: customerText });
+    // El cliente dijo que acepta la cotización que ya tenía: el equipo recibe el aviso para confirmarla y armar el cobro.
+    let acceptNotified = false;
+    if (plan.quoteAccept && this.ext.quotes) {
+      acceptNotified = await this.ext.quotes.customerAccepted(conv, contact, plan.quoteAccept)
+        .catch(async (e) => { await log('error', 'engine', `No se pudo avisar que el cliente aceptó la cotización: ${e?.message ?? e}`); return false; });
+    }
     // Una persona tomó la conversación mientras se enviaba la respuesta: el asistente ya no se despide, no la cierra, no la
     // pausa ni la transfiere, y las fotos pendientes no salen después del mensaje de esa persona.
     const tookOver = plan.action !== 'handoff' && (await store.getConversation(conv.id))?.status !== 'bot';
     // Si el asistente dijo que el equipo dará seguimiento, el equipo se entera: no depende de que alguien lo recuerde.
-    if (plan.action !== 'handoff' && plan.messages.some((m) => promisesFollowUp(m))) {
+    if (plan.action !== 'handoff' && !acceptNotified && plan.messages.some((m) => promisesFollowUp(m))) {
       await this.notify(conv, channel, '🕒 Seguimiento prometido al cliente', `${customerLabel(contact)} (${channel.name}): el asistente dijo "${plan.messages.join(' ').slice(0, 200)}"`, 'follow_up');
     }
     let summarized = false;

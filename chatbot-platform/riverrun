@@ -710,7 +710,7 @@ cmd_install() {
   [[ -n "$hb" ]] && env_set HEARTBEAT_URL "$hb"
   [[ -n "$hook" ]] && env_set ALERT_WEBHOOK_URL "$hook"
   if [[ -z "$(env_get HEARTBEAT_URL)" ]]; then warn "Sin HEARTBEAT_URL nadie te avisa si el servidor completo se cae (configúralo después en .env)."; fi
-  if [[ -z "$(env_get SMTP_URL)" ]]; then
+  if [[ -z "$(env_get SMTP_URL)" && -z "$(env_get RESEND_API_KEY)" ]]; then
     env_set SIGNUP_REQUIRE_EMAIL false
     warn "Sin SMTP_URL no se envían correos: la confirmación de correo queda desactivada (puedes activarla después)."
   fi
@@ -1206,8 +1206,42 @@ pf_block()      { PF_BLOCK=$((PF_BLOCK + 1)); printf '%s✕%s %s\n' "$R" "$N" "$
 pf_rec()        { printf '%s·%s Recomendación: %s\n' "$B" "$N" "$*"; }
 pf_unverified() { PF_UNVERIFIED=$((PF_UNVERIFIED + 1)); printf '%s?%s No verificado: %s\n' "$Y" "$N" "$*"; }
 
+# Servidor y puerto del correo saliente (host:puerto), como lo arma src/config.ts: SMTP_URL manda; si no, el SMTP de
+# Resend con RESEND_API_KEY. Sin puerto, el de nodemailer: 465 con smtps, 587 con smtp. Vacío si no hay correo.
+smtp_endpoint() {
+  local url rest host port
+  url="$(env_get SMTP_URL)"
+  if [[ -z "$url" ]]; then [[ -n "$(env_get RESEND_API_KEY)" ]] && echo "smtp.resend.com:2465"; return 0; fi
+  rest="${url#*://}"; rest="${rest%%\?*}"; rest="${rest%%#*}"; rest="${rest##*@}"; rest="${rest%%/*}"
+  [[ "$rest" == \[* ]] && return 0   # IPv6 entre corchetes: no se revisa (queda sin verificar).
+  host="${rest%%:*}"; port=""; [[ "$rest" == *:* ]] && port="${rest##*:}"
+  [[ -n "$port" ]] || { [[ "$url" == smtps://* ]] && port=465 || port=587; }
+  [[ -n "$host" && "$port" =~ ^[0-9]+$ ]] && echo "$host:$port"
+  return 0
+}
+
+# Muchos proveedores de servidores (DigitalOcean, por ejemplo) bloquean la salida a los puertos 25, 465 y 587: el correo
+# no sale y nada lo dice hasta que alguien no recibe su enlace. Solo abre la conexión TCP y la cierra; no envía nada.
+pf_smtp_reach() {
+  local ep host port
+  ep="$(smtp_endpoint)"
+  if [[ -z "$ep" ]]; then
+    if [[ -n "$(env_get SMTP_URL)" ]]; then pf_unverified "salida al servidor de correo (no se pudo leer el servidor de SMTP_URL)"
+    else pf_unverified "salida al servidor de correo (no hay SMTP_URL ni RESEND_API_KEY)"; fi
+    return 0
+  fi
+  if ! command -v timeout >/dev/null 2>&1; then pf_unverified "salida al servidor de correo (falta el comando timeout)"; return 0; fi
+  host="${ep%:*}"; port="${ep##*:}"
+  if timeout "${RIVERRUN_SMTP_TIMEOUT:-5}" bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "$host" "$port" 2>/dev/null; then
+    pf_ok "Correo: el servidor llega a $host:$port"
+  else
+    pf_warn "Correo: no se pudo conectar a $host:$port. Si el servidor está en DigitalOcean u otro proveedor que bloquea los puertos 25, 465 y 587, usa el puerto alterno de tu proveedor de correo (Resend: 2465 o 2587; Brevo, Mailgun o SendGrid: 2525) en SMTP_URL."
+  fi
+}
+
 pf_online() {
   local domain="$1" snap code
+  pf_smtp_reach
   if need_docker && [[ -n "$(dc ps -q backend 2>/dev/null)" ]]; then
     snap="$(health_snapshot)"
     if [[ -z "$snap" ]]; then pf_block "El backend no responde a su comprobación de salud (./riverrun logs backend)."
@@ -1290,9 +1324,10 @@ cmd_preflight() {
   if [[ "$mode" == "sandbox" ]]; then pf_warn "OUTBOUND_MODE=sandbox: los envíos reales están bloqueados (correcto en pruebas; en producción debe ser live)."
   else pf_ok "Envíos reales habilitados (OUTBOUND_MODE=${mode:-live})"; fi
   # Alertas fuera del panel: sin ellas una falla de noche pasa inadvertida.
-  if [[ -n "$(env_get SMTP_URL)" && -n "$(env_get SUPERADMIN_EMAIL)" ]]; then pf_ok "Alertas por correo (SMTP_URL y SUPERADMIN_EMAIL)"
-  elif [[ -n "$(env_get ALERT_WEBHOOK_URL)" ]]; then pf_warn "Sin correo (SMTP_URL): las alertas salen solo por ALERT_WEBHOOK_URL y los avisos al equipo solo por el panel y WhatsApp."
-  else pf_warn "Ninguna alerta sale del servidor: define SMTP_URL (correo) o ALERT_WEBHOOK_URL (Slack, Discord, ntfy)."; fi
+  local mail_on=""; [[ -n "$(env_get SMTP_URL)" || -n "$(env_get RESEND_API_KEY)" ]] && mail_on=1
+  if [[ -n "$mail_on" && -n "$(env_get SUPERADMIN_EMAIL)" ]]; then pf_ok "Alertas por correo (SMTP_URL o RESEND_API_KEY, y SUPERADMIN_EMAIL)"
+  elif [[ -n "$(env_get ALERT_WEBHOOK_URL)" ]]; then pf_warn "Sin correo (SMTP_URL o RESEND_API_KEY): las alertas salen solo por ALERT_WEBHOOK_URL y los avisos al equipo solo por el panel y WhatsApp."
+  else pf_warn "Ninguna alerta sale del servidor: define RESEND_API_KEY o SMTP_URL (correo) o ALERT_WEBHOOK_URL (Slack, Discord, ntfy)."; fi
   if [[ -n "$(env_get HEARTBEAT_URL)" ]]; then pf_ok "Latido externo configurado (HEARTBEAT_URL)"
   else pf_warn "Sin HEARTBEAT_URL: si el servidor completo se cae, nadie avisa (crea un chequeo en healthchecks.io)."; fi
   local pb; pb="$(panel_bind_warning)"

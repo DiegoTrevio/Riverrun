@@ -79,7 +79,7 @@ test('RESEND_API_KEY arma el SMTP de Resend (y SMTP_URL, si existe, manda)', () 
   };
   const resend = mailWith({ RESEND_API_KEY: 're_abc/123' });
   assert.equal(resend.provider, 'resend');
-  assert.equal(resend.smtpUrl, 'smtps://resend:re_abc%2F123@smtp.resend.com:465');
+  assert.equal(resend.smtpUrl, 'smtps://resend:re_abc%2F123@smtp.resend.com:2465');
   const smtp = mailWith({ RESEND_API_KEY: 're_abc', SMTP_URL: 'smtps://u:p@smtp.otro.mx:465' });
   assert.deepEqual([smtp.provider, smtp.smtpUrl], ['smtp', 'smtps://u:p@smtp.otro.mx:465']);
 });

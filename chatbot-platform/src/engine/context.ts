@@ -557,6 +557,14 @@ export function agendaSection(a: AgendaContext): string {
 
 const IVA_NOTE = { plus: 'más IVA', included: 'IVA incluido', exempt: 'sin IVA' } as const;
 
+/** Si ya recibió una cotización: cómo la acepta en el chat (el equipo la confirma y arma el cobro). */
+function acceptLine(q: QuoteCatalog): string | null {
+  const last = q.lastSent;
+  if (!last || last.status !== 'sent') return null;
+  if (last.customer_accepted_at) return `El cliente ya dijo que acepta la cotización ${last.folio}: el equipo le confirma el siguiente paso (pago, fecha). No la vuelvas a marcar y no confirmes pagos ni fechas tú.`;
+  return `Si el cliente dice claramente que ACEPTA la cotización ${last.folio} o que quiere contratarla o seguir con ella (p. ej. «va, la acepto», «¿cómo le hago para apartar?»), usa quote.action = "accept" y copia en accept_quote sus palabras exactas. Dile que le avisas al equipo para confirmar el siguiente paso; no confirmes pagos, fechas ni apartados tú. Si solo pregunta o lo está pensando, no la marques.`;
+}
+
 /** Lista de precios y reglas para cotizar. Los precios cuentan como información del negocio; los totales, no. */
 export function quoteSection(q: QuoteCatalog, contact?: Contact): string {
   if (q.calculator) return calculatorSection(q, contact);
@@ -578,6 +586,8 @@ export function quoteSection(q: QuoteCatalog, contact?: Contact): string {
   if (q.lastSent) {
     const t = formatTotals({ ...q.lastSent, lines: q.lastSent.lines ?? [], can_be_final: false }, q.lastSent.currency).total;
     s.push(`Ya se le envió la cotización ${q.lastSent.folio} (${q.lastSent.kind === 'final' ? 'FINAL' : 'APROXIMADA'}, total ${t}, vigente hasta el ${formatDay(q.lastSent.valid_until)}). Si pide cambios (otra cantidad, otro concepto), prepara una nueva.`);
+    const accept = acceptLine(q);
+    if (accept) s.push(accept);
   }
   s.push(
     [
@@ -625,6 +635,8 @@ function calculatorSection(q: QuoteCatalog, contact?: Contact): string {
   }
   if (q.lastSent) {
     s.push(`Ya se le envió la cotización ${q.lastSent.folio}. Si cambia un dato (otra medida, otra opción), vuelve a calcular con los datos nuevos.`);
+    const accept = acceptLine(q);
+    if (accept) s.push(accept);
   }
   s.push(
     [
