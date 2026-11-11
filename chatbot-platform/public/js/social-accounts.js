@@ -78,14 +78,15 @@ export async function viewSocialAccounts(root, params = new URLSearchParams()) {
       'aria-label': `Quién contesta los mensajes de ${n.label}`,
       onchange: async (e) => { if (await run(() => api('PUT', withAcct(`/api/social-accounts/${a.id}`), { chatbot_id: e.target.value || null }), 'Guardado')) render(); },
     }, h('option', { value: '' }, 'Nadie: solo se guardan'), bots.map((b) => h('option', { value: b.id, selected: a.chatbot_id === b.id }, b.name))) : null;
-    return h('div', { class: 'list-item' },
-      h('div', { class: 'row', style: 'gap:12px;align-items:center' }, avatar,
-        h('div', { style: 'flex:1;min-width:0' },
-          h('strong', {}, a.display_name || a.username || n.label),
+    // Una fila por red (sin cajas dentro de la tarjeta): ícono, nombre con su estado y, a la derecha, sus acciones. En el
+    // celular las acciones bajan a su propia línea para que el nombre nunca se parta letra por letra.
+    return h('li', { class: 'social-account' },
+      h('div', { class: 'social-account-head' }, avatar,
+        h('div', { class: 'social-account-name' },
+          h('div', { class: 'social-account-title' }, h('strong', {}, a.display_name || a.username || n.label), h('span', { class: `badge ${color}` }, label)),
           h('div', { class: 'small muted' }, n.label, a.username ? ` · @${a.username}` : ''),
-          h('span', { class: `badge ${color}` }, label),
           a.status === 'active' && a.health?.problem ? h('div', { class: 'small stats-warn' }, icon('alert', 14), ' ', a.health.problem) : null),
-        h('div', { class: 'row' },
+        h('div', { class: 'social-account-actions' },
           a.status !== 'active' || a.health?.reconnect ? h('button', { class: 'small primary', onclick: () => connect(a.platform, a.chatbot_id, a.id) }, 'Reconectar') : null,
           a.platform === 'whatsapp' ? h('a', { class: 'btn small', href: `#/redes/whatsapp/${a.id}` }, 'Plantillas') : null,
           a.platform === 'whatsapp' ? h('button', { class: 'small', title: 'Si tu número tiene verificación en dos pasos y no salen los mensajes', onclick: async () => {
@@ -97,8 +98,9 @@ export async function viewSocialAccounts(root, params = new URLSearchParams()) {
             if (!(await confirmAction(`¿Desconectar ${n.label}${a.username ? ` (@${a.username})` : ''}? Dejarás de recibir sus mensajes y comentarios aquí.`))) return;
             if (await run(() => api('POST', withAcct(`/api/social-accounts/${a.id}/disconnect`)), 'Desconectada')) render();
           } }, 'Desconectar'))),
-      a.dm ? field('Contesta sus mensajes', agent, a.chatbot_id ? 'Tu agente responde los mensajes directos de esta cuenta.' : 'Elige un agente para que conteste los mensajes directos.') : null,
-      n.comments || n.reviews ? commentSettings(a, n) : null);
+      a.dm || n.comments || n.reviews ? h('div', { class: 'social-account-body' },
+        a.dm ? field('Contesta sus mensajes', agent, a.chatbot_id ? 'Tu agente responde los mensajes directos de esta cuenta.' : 'Elige un agente para que conteste los mensajes directos.') : null,
+        n.comments || n.reviews ? commentSettings(a, n) : null) : null);
   };
 
   /** Comentarios y reseñas de la cuenta: qué hace la IA y cómo avisa al equipo. */
@@ -125,7 +127,7 @@ export async function viewSocialAccounts(root, params = new URLSearchParams()) {
     notice,
     h('div', { class: 'card' },
       h('h2', { style: 'margin-top:0' }, 'Tus redes conectadas'),
-      data.accounts.length ? data.accounts.map(accountCard) : h('p', { class: 'muted' }, 'Todavía no conectas ninguna red.'),
+      data.accounts.length ? h('ul', { class: 'social-accounts' }, data.accounts.map(accountCard)) : h('p', { class: 'muted' }, 'Todavía no conectas ninguna red. Elige una abajo: se conecta en un minuto, sin copiar llaves.'),
       data.limit?.max ? h('p', { class: 'small muted', style: 'margin-bottom:0' }, `Usas ${data.limit.used} de ${data.limit.max} redes que incluye tu plan.`) : null,
       data.accounts.length ? h('p', { class: 'small', style: 'margin-bottom:0' }, h('a', { href: '#/estadisticas/redes' }, 'Ver sus estadísticas →')) : null),
     h('div', { class: 'card' },
@@ -133,9 +135,9 @@ export async function viewSocialAccounts(root, params = new URLSearchParams()) {
       // Todas las redes se conectan aquí, por Zernio. Si la instalación todavía tiene la app de Meta, solo se avisa que sus
       // mensajes de Facebook e Instagram llegan por otro lado (sin mandar a la persona a ese camino).
       data.meta_direct ? h('p', { class: 'small muted' }, 'En esta instalación, los mensajes de Facebook e Instagram todavía llegan por otra conexión; aquí se usan para comentarios, publicaciones y estadísticas.') : null,
-      h('div', { class: 'grid' }, networks.map((n) => h('button', { class: 'social-network', onclick: () => connect(n.id) },
+      h('div', { class: 'social-catalog' }, networks.map((n) => h('button', { class: 'social-network', onclick: () => connect(n.id) },
         h('span', { class: 'net-icon' }, networkIcon(n.id, 22)),
-        h('span', {}, h('strong', {}, n.label), h('br'), h('span', { class: 'small muted' }, can(n, data.meta_direct))))))),
+        h('span', { class: 'social-network-text' }, h('strong', {}, n.label), h('span', { class: 'small muted' }, can(n, data.meta_direct))))))),
     isSuper() ? h('p', { class: 'small muted' }, 'Como superadmin también puedes administrar los perfiles de todos los negocios en Sistema → Zernio.') : null,
   );
   if (code) history.replaceState(null, '', '#/redes');

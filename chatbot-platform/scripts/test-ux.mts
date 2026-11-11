@@ -105,6 +105,16 @@ try {
     await p.goto(`${base}/#/redes`); await p.getByRole('heading', { name: 'Conectar otra red' }).waitFor();
     assert.equal(await p.getByText(/Conectar con Facebook/).count(), 0, 'Redes no guía hacia la app de Meta');
     await ctx.close();
+    // En el celular, el nombre de cada red conectada no se parte letra por letra (las acciones bajan a su línea).
+    const phoneCtx = await contextFor('admin', { viewport: { width: 390, height: 844 } }); const pp = await phoneCtx.newPage();
+    await pp.goto(`${base}/#/redes`); await pp.getByRole('heading', { name: 'Tus redes conectadas' }).waitFor();
+    const narrowest = await pp.locator('.social-account-title strong').evaluateAll((els) => Math.min(...els.map((e) => e.getBoundingClientRect().width)));
+    assert.ok(narrowest > 80, `nombre de red demasiado angosto en el celular: ${narrowest}px`);
+    // Crear agente: en el celular los tres pasos caben en una línea.
+    await pp.goto(`${base}/#/agentes/nuevo`); await pp.locator('ol.steps').waitFor();
+    const tops = await pp.locator('ol.steps li').evaluateAll((els) => new Set(els.map((e) => Math.round(e.getBoundingClientRect().top))).size);
+    assert.equal(tops, 1, 'los pasos de Crear agente caben en una línea a 390 px');
+    await phoneCtx.close();
     const sa = await contextFor('superadmin'); const sp = await sa.newPage();
     await sp.goto(`${base}/#/sistema`);
     await sp.getByRole('heading', { name: /cosas? por revisar/ }).waitFor();

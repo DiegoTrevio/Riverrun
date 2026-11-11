@@ -14,7 +14,7 @@ export const STEPS = ['Tu negocio', 'Qué hará', 'Pruébalo y conéctalo'];
 export function stepsBar(current) {
   return h('ol', { class: 'steps', 'aria-label': 'Pasos para crear tu agente' }, STEPS.map((label, i) =>
     h('li', { class: i < current ? 'done' : i === current ? 'current' : '', 'aria-current': i === current ? 'step' : null },
-      h('span', { class: 'step' }, h('span', { class: 'num', 'aria-hidden': 'true' }, i < current ? icon('check', 14) : i + 1), label))));
+      h('span', { class: 'step' }, h('span', { class: 'num', 'aria-hidden': 'true' }, i < current ? icon('check', 14) : i + 1), h('span', { class: 'label' }, label)))));
 }
 
 const ROLES = [
@@ -159,7 +159,7 @@ function screenBusiness(w) {
   }
 
   const types = (state.meta.business_types || []).map((b) => [b.key, b.label]);
-  return h('div', { class: 'card stack wizard-step' },
+  const form = h('div', { class: 'card stack wizard-step' },
     accountPicker(w),
     h('div', { class: 'grid' },
       field('Nombre de tu negocio', text(w.company, 'name', { placeholder: 'Clínica Sonrisa', maxlength: 120, autocomplete: 'organization' })),
@@ -170,6 +170,14 @@ function screenBusiness(w) {
       SOURCES.map(([mode, title, help]) => radioCard('teach-mode', w.teach.mode === mode, () => { w.teach.mode = mode; drawSource(); }, title, help)),
       sourceBox),
     h('div', { class: 'row between' }, status, next));
+  // Al lado del formulario, lo que va a pasar con lo que escriba (en el celular queda abajo).
+  return h('div', { class: 'wizard-layout' }, form,
+    h('aside', { class: 'wizard-aside', 'aria-labelledby': 'wizard-aside-title' },
+      h('h2', { id: 'wizard-aside-title' }, 'Qué hace tu agente con esto'),
+      h('ul', {},
+        h('li', {}, h('strong', {}, 'Lo ordena por ti. '), 'Separa tus productos y precios, horario, ubicación y preguntas frecuentes; en el siguiente paso lo revisas.'),
+        h('li', {}, h('strong', {}, 'No inventa. '), 'Solo contesta precios, horarios y enlaces que estén en tu información; si falta algo, dice que lo confirma con tu equipo.'),
+        h('li', {}, h('strong', {}, 'Lo pruebas antes. '), 'Le escribes como si fueras un cliente y, cuando te guste, lo conectas a tu WhatsApp.'))));
 }
 
 /* ------------------------------ Pantalla 2: qué hará (y personalizar, opcional) ------------------------------ */
