@@ -167,6 +167,25 @@ Rechaza los archivos con macros, controles ActiveX, objetos incrustados o conten
   - el equipo recibe un aviso y la reintenta desde la conversación.
 - **Valor de la oportunidad:** al enviarse, la tarjeta del pipeline toma el total mínimo si todavía no tenía valor.
 
+## El cliente acepta en el chat
+
+Si el cliente escribe que acepta la cotización que recibió («va, la acepto», «¿cómo le hago para apartar?»), el agente le dice que avisa al equipo y:
+
+- la cotización queda marcada con **«El cliente dice que la acepta»** y sus palabras, en la conversación y en el detalle;
+- el equipo recibe un aviso (una sola vez por cotización);
+- la aceptación formal sigue siendo del equipo: en la conversación, **«El cliente aceptó»** la confirma y arma sus cobros (total, anticipo y resto, o parcialidades).
+
+El sistema revisa que esas palabras estén en el mensaje del cliente. Una cotización vencida o ya aceptada no se marca.
+
+## Hacer una cotización desde el panel
+
+Para un cliente que pidió precio por teléfono, en persona o por correo:
+
+- **Cotizaciones → Cotizaciones → «+ Nueva cotización»**: escribe nombre, teléfono y correo del cliente, agrega conceptos de tu lista (o libres) y guarda. Revísala y toca **«Generar PDF y marcar enviada»**: descarga el PDF y envíaselo tú. Desde ahí vence, se acepta y genera cobros como cualquier otra.
+- **Desde una conversación**: en la tarjeta *Cotizaciones*, **«+ Nueva cotización»** toma los datos del contacto; se envía por el chat con **«Aprobar y enviar»**.
+
+Llevan el mismo folio, formato y vigencia que las del asistente. Solo los administradores las hacen.
+
 ## Aprobación
 
 En la conversación, la tarjeta **Cotizaciones** muestra las que están por aprobar o tienen error. El equipo puede:
@@ -181,11 +200,16 @@ Las cotizaciones se vencen solas cuando pasa su vigencia, con la fecha del negoc
 
 ## Automatizaciones
 
-Hay tres disparadores nuevos:
+Disparadores de cotizaciones:
 
 - **Se envía una cotización** (cualquiera, solo aproximadas o solo finales);
 - **Una cotización final queda por aprobar**;
-- **El equipo rechaza una cotización**.
+- **El equipo rechaza una cotización**;
+- **El cliente acepta una cotización** (cuando el equipo la marca aceptada);
+- **Una cotización enviada está por vencer**: eliges cuántos días antes (0 = su último día). Solo para las enviadas que el cliente no ha aceptado, una vez por cotización. Sirve para el seguimiento: hay una regla de ejemplo, *«Cotización por vencer → recordar al cliente»*;
+- **Una cotización enviada vence sin aceptarse**: por ejemplo, para avisar al equipo (regla de ejemplo *«Cotización vencida → avisar al equipo»*).
+
+Los mensajes pueden usar `{{cotizacion.folio}}`, `{{cotizacion.total}}` y `{{cotizacion.vigencia}}`. En WhatsApp, si el cliente no ha escrito en las últimas 24 horas, el recordatorio necesita una plantilla aprobada. La revisión corre cada 6 horas con la fecha del negocio.
 
 ## Privacidad
 

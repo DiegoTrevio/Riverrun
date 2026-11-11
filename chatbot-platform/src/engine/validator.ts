@@ -41,6 +41,8 @@ export interface ExecutionPlan {
   newRequest?: boolean;
   /** Cotización ya validada (conceptos existentes y cantidades que dio el cliente); los montos los calcula el sistema. */
   quote?: { lines: { itemId: string; code: string; qty: number }[]; calculate?: { inputs: Record<string, string> }; notes: string; final: boolean } | null;
+  /** El cliente dijo en este mensaje que acepta la cotización enviada (con sus palabras): se avisa al equipo. */
+  quoteAccept?: { quoteId: string; folio: string; words: string } | null;
 }
 
 export interface ValidationResult {
@@ -57,6 +59,20 @@ export interface ValidationResult {
   quoteIssue?: boolean;
 }
 
+/**
+ * ¿El cliente escribió esas palabras (completas, no dentro de otra palabra) sin negarlas? «no la acepto» o «todavía no,
+ * la acepto después» no cuentan. Ambos textos ya vienen normalizados (minúsculas, sin acentos ni signos).
+ */
+export function acceptedIn(text: string, words: string): boolean {
+  if (words.length < 2) return false;
+  const padded = ` ${text} `;
+  const at = padded.indexOf(` ${words} `);
+  if (at < 0) return false;
+  if (/(^| )(no|nunca|tampoco|ni|aun no|todavia no)( |$)/.test(words)) return false;
+  const before = padded.slice(0, at).trim().split(' ').slice(-3).join(' ');
+  return !/(^| )(no|nunca|tampoco|ni|todavia|aun)$/.test(before);
+}
+
 /** Lo que el validador necesita saber para cotizar. */
 export interface QuoteValidation {
   /** Conceptos activos de la lista de precios, por clave en mayúsculas. */
@@ -68,6 +84,8 @@ export interface QuoteValidation {
   allowFinal: boolean;
   /** Calculadora del agente (datos que pide); `null` = lista simple. */
   calculator?: CalculatorDefinition | null;
+  /** Cotización enviada que el cliente todavía puede aceptar en el chat (ni vencida, ni aceptada, ni ya anotada). */
+  acceptable?: { id: string; folio: string } | null;
 }
 
 /** Lo que el validador necesita saber de la agenda. */
@@ -1096,6 +1114,18 @@ export function validateDecision(input: ValidationInput): ValidationResult {
     }
   }
 
+  // ---------- El cliente acepta la cotización que ya recibió: sus palabras deben estar en lo que acaba de escribir ----------
+  let quoteAccept: ExecutionPlan['quoteAccept'] = null;
+  if (q.action === 'accept') {
+    const target = input.quotes?.acceptable;
+    const words = q.accept_quote.trim();
+    const norm = (x: string) => normalize(x).replace(/[^\p{L}\p{N} ]/gu, ' ').replace(/\s+/g, ' ').trim();
+    if (!target) fixes.push('Aceptación ignorada: no hay una cotización enviada que el cliente pueda aceptar');
+    else if (action === 'no_reply') fixes.push('Aceptación ignorada: la respuesta no llega al cliente');
+    else if (!acceptedIn(norm(input.customerText), norm(words))) fixes.push(`Aceptación ignorada: el cliente no escribió «${words.slice(0, 80)}» en su mensaje (o lo dijo en negativo)`);
+    else quoteAccept = { quoteId: target.id, folio: target.folio, words: words.slice(0, 300) };
+  }
+
   // ---------- Recorrido: etapa y objetivo ----------
   const flow = bot.flow;
   const flowStep = flow.steps.length ? Math.min(Math.max(0, Math.trunc(d.flow_step)), flow.steps.length) : 0;
@@ -1219,6 +1249,7 @@ export function validateDecision(input: ValidationInput): ValidationResult {
       questionsCompleted,
       newRequest: d.new_request,
       quote,
+      quoteAccept,
     },
     retryable,
     fixes,

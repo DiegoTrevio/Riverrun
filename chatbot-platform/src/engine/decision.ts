@@ -30,13 +30,14 @@ export const DecisionSchema = z.object({
     .default({ action: 'none', service_id: '', slot: '', appointment_id: '', person: '' }),
   quote: z
     .object({
-      action: z.enum(['none', 'prepare', 'calculate']).default('none'),
+      action: z.enum(['none', 'prepare', 'calculate', 'accept']).default('none'),
       items: z.array(z.object({ item_code: z.string().default(''), qty: z.number().default(1), qty_quote: z.string().default('') })).max(100).default([]),
       inputs: z.array(z.object({ key: z.string().default(''), value: z.string().default(''), quote: z.string().default('') })).max(40).default([]),
       notes: z.string().default(''),
       wants_final: z.boolean().default(false),
+      accept_quote: z.string().default(''),
     })
-    .default({ action: 'none', items: [], inputs: [], notes: '', wants_final: false }),
+    .default({ action: 'none', items: [], inputs: [], notes: '', wants_final: false, accept_quote: '' }),
 });
 export type Decision = z.infer<typeof DecisionSchema>;
 
@@ -121,10 +122,10 @@ export const DECISION_JSON_SCHEMA = {
     quote: {
       type: 'object',
       additionalProperties: false,
-      required: ['action', 'items', 'inputs', 'notes', 'wants_final'],
-      description: 'Cotización: "calculate" si la sección Cotizaciones tiene calculadora y ya tienes todos sus datos obligatorios (llena inputs); "prepare" si la sección lista conceptos y ya sabes cuáles y cuántos quiere el cliente (llena items); si no, "none". El sistema calcula los montos y los envía.',
+      required: ['action', 'items', 'inputs', 'notes', 'wants_final', 'accept_quote'],
+      description: 'Cotización: "calculate" si la sección Cotizaciones tiene calculadora y ya tienes todos sus datos obligatorios (llena inputs); "prepare" si la sección lista conceptos y ya sabes cuáles y cuántos quiere el cliente (llena items); "accept" si el cliente dice claramente que acepta la cotización que ya se le envió (llena accept_quote); si no, "none". El sistema calcula los montos y los envía.',
       properties: {
-        action: { type: 'string', enum: ['none', 'prepare', 'calculate'] },
+        action: { type: 'string', enum: ['none', 'prepare', 'calculate', 'accept'] },
         inputs: {
           type: 'array',
           description: 'Solo con "calculate": un elemento por dato de la calculadora que dio el cliente. Vacío en otro caso.',
@@ -155,6 +156,7 @@ export const DECISION_JSON_SCHEMA = {
         },
         notes: { type: 'string', description: 'Notas para la cotización con detalles que dio el cliente (fecha, lugar…); sin precios.' },
         wants_final: { type: 'boolean', description: 'true solo si el cliente pide una cotización final o formal.' },
+        accept_quote: { type: 'string', description: 'Solo con "accept": palabras exactas del cliente donde acepta la cotización (p. ej. "va, la acepto"). Vacío en otro caso.' },
       },
     },
   },

@@ -39,6 +39,8 @@ export function describeTrigger(t: any, full = false): string {
     case 'quote_pending_approval': return 'una cotización espera aprobación';
     case 'quote_rejected': return 'se rechaza una cotización';
     case 'quote_accepted': return 'el cliente acepta una cotización';
+    case 'quote_expiring': return t.days ? `faltan ${t.days} día(s) para que venza una cotización` : 'una cotización vence hoy';
+    case 'quote_expired': return 'una cotización vence sin aceptarse';
     case 'payment_due': return 'vence un cobro hoy';
     case 'payment_overdue': return 'un cobro venció sin pagarse';
     case 'payment_paid': return 'se marca un cobro como pagado';
