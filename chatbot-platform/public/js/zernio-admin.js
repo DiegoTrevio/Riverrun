@@ -81,7 +81,7 @@ export async function viewZernioAdmin(root) {
 
   const table = h('div');
   const tableOf = (list) => list.length
-    ? h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Negocio'), h('th', {}, 'Perfil'), h('th', {}, 'Redes'), h('th', { class: 'num' }, 'Mensajes salientes (mes)'), h('th', {}, 'Acciones'))), h('tbody', {}, list.map(row)))
+    ? h('div', { class: 'table-scroll' }, h('table', { class: 'zernio-tenants' }, h('thead', {}, h('tr', {}, h('th', {}, 'Negocio'), h('th', {}, 'Perfil'), h('th', {}, 'Redes'), h('th', { class: 'num' }, 'Enviados este mes'), h('th', {}, 'Acciones'))), h('tbody', {}, list.map(row))))
     : h('p', { class: 'muted' }, 'No hay negocios.');
   const refresh = async () => fill(table, tableOf(await api('GET', '/api/system/zernio/tenants')));
   fill(table, tableOf(tenants));

@@ -2,6 +2,7 @@
  * Alta sin ayuda: la lista de pendientes de la cuenta (qué le falta para que su agente atienda y quede contratado) y los
  * correos de seguimiento si se queda a medias (conectar su WhatsApp, probar su agente, reactivar tras la prueba).
  */
+import { DEFAULT_HOURS, WeeklyHoursSchema, type WeeklyHours } from './automation/types.js';
 import { billingEnabled } from './billing/service.js';
 import { mailBrand } from './brands.js';
 import { config } from './config.js';
@@ -70,6 +71,74 @@ export async function accountChecklist(accountId: string, userId: string | null)
   });
   const required = items.filter((i) => !i.optional);
   return { items, done_count: required.filter((i) => i.done).length, total: required.length, complete: required.every((i) => i.done) };
+}
+
+/* ------------------------------ Estado de la configuración (Ajustes) ------------------------------ */
+
+/** ok: listo · todo: falta y hace falta para atender · warn: estaba listo y hay que revisarlo · optional: falta, pero no es obligatorio. */
+export type SetupState = 'ok' | 'todo' | 'warn' | 'optional';
+export type SetupKey = 'agents' | 'hours' | 'prices' | 'social' | 'team' | 'plan';
+export interface SetupSection {
+  key: SetupKey;
+  state: SetupState;
+  /** Una línea en palabras del negocio: qué hay o qué falta. */
+  detail: string;
+  /** Adónde lleva resolverlo. */
+  href: string;
+}
+
+/** Mismo horario semanal (sin importar el orden de las llaves). */
+function sameHours(a: unknown, b: WeeklyHours): boolean {
+  const parsed = WeeklyHoursSchema.safeParse(a);
+  return parsed.success && (Object.keys(b) as (keyof WeeklyHours)[]).every((d) => JSON.stringify(parsed.data[d]) === JSON.stringify(b[d]));
+}
+
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/**
+ * Estado de cada parte de la configuración para «Ajustes»: qué está listo, qué falta y adónde ir. Sale de lo que ya
+ * guarda la cuenta (agentes, canales, horario, lista de precios, redes, equipo y plan); no se marca nada a mano.
+ */
+export async function accountSetupStatus(accountId: string, userId: string | null) {
+  const s = await onboardingSignals(accountId, userId);
+  const extra = (await queryOne<{ bots: number; hours_saved: boolean; business_hours: unknown; prices: number; social_ok: number; social_down: number }>(
+    `SELECT
+       (SELECT count(*)::int FROM chatbots WHERE account_id = $1) AS bots,
+       COALESCE((SELECT (onboarding->>'hours')::boolean FROM accounts WHERE id = $1), false) AS hours_saved,
+       (SELECT settings->'business_hours' FROM accounts WHERE id = $1) AS business_hours,
+       (SELECT count(*)::int FROM price_items WHERE account_id = $1 AND active) AS prices,
+       (SELECT count(*)::int FROM social_accounts WHERE account_id = $1 AND status = 'active') AS social_ok,
+       (SELECT count(*)::int FROM social_accounts WHERE account_id = $1 AND status = 'needs_reconnect') AS social_down`,
+    [accountId],
+  ))!;
+  // El horario cuenta como listo si la persona lo guardó o si ya no es el de ejemplo (cuentas de antes de esta marca).
+  const hours = extra.hours_saved || (extra.business_hours != null && !sameHours(extra.business_hours, DEFAULT_HOURS));
+  const relink = !s.connected ? s.relink : null;
+  const agents: SetupSection = !s.bot_id ? { key: 'agents', state: 'todo', detail: 'Todavía no tienes un agente.', href: '#/agentes/nuevo' }
+    : relink ? { key: 'agents', state: 'warn', detail: `Tu WhatsApp se desconectó: ${reasonText(relink.reason)}`, href: `#/channel/${relink.channel_id}?conectar=1` }
+      : !s.connected ? { key: 'agents', state: 'todo', detail: 'Falta conectar tu WhatsApp u otro canal.', href: '#/empezar' }
+        : !s.switched_on ? { key: 'agents', state: 'todo', detail: 'Está en pausa: no contesta a tus clientes.', href: `#/bot/${s.bot_id}/instrucciones` }
+          : { key: 'agents', state: 'ok', detail: `${plural(extra.bots, 'agente', 'agentes')} atendiendo.`, href: '#/agentes' };
+  const sections: SetupSection[] = [
+    agents,
+    hours ? { key: 'hours', state: 'ok', detail: 'Horario de atención guardado.', href: '#/automation/settings' }
+      : { key: 'hours', state: 'todo', detail: 'Falta tu horario: sin él, tu agente no sabe cuándo atiende tu equipo.', href: '#/automation/settings' },
+    extra.prices ? { key: 'prices', state: 'ok', detail: `${plural(extra.prices, 'concepto', 'conceptos')} en tu lista de precios.`, href: '#/cotizaciones' }
+      : { key: 'prices', state: 'optional', detail: 'Agrega tus precios para que tu agente pueda cotizar.', href: '#/cotizaciones' },
+    extra.social_down ? { key: 'social', state: 'warn', detail: `${plural(extra.social_down, 'red necesita', 'redes necesitan')} volver a conectarse.`, href: '#/redes' }
+      : extra.social_ok ? { key: 'social', state: 'ok', detail: `${plural(extra.social_ok, 'red conectada', 'redes conectadas')}.`, href: '#/redes' }
+        : { key: 'social', state: 'optional', detail: 'Conecta Instagram, Facebook y más para contestar comentarios y publicar.', href: '#/redes' },
+    s.users > 1 ? { key: 'team', state: 'ok', detail: `${plural(s.users, 'persona', 'personas')} en tu equipo.`, href: '#/users' }
+      : { key: 'team', state: 'optional', detail: s.invited ? `${plural(s.invited, 'invitación', 'invitaciones')} por aceptar.` : 'Invita a quien atiende contigo.', href: '#/users' },
+  ];
+  if (await billingEnabled()) {
+    sections.push(s.paid ? { key: 'plan', state: 'ok', detail: 'Plan activo.', href: '#/plan' }
+      : { key: 'plan', state: 'todo', detail: 'Elige tu plan para que tu agente siga atendiendo al terminar la prueba.', href: '#/plan' });
+  }
+  const required = sections.filter((x) => x.state !== 'optional');
+  // Lo siguiente que conviene hacer: primero lo que dejó de funcionar, luego lo que falta, en el orden de la lista.
+  const next = sections.find((x) => x.state === 'warn') ?? sections.find((x) => x.state === 'todo') ?? null;
+  return { sections, done_count: required.filter((x) => x.state === 'ok').length, total: required.length, next };
 }
 
 /* ------------------------------ Correos de seguimiento ------------------------------ */

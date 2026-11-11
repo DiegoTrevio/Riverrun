@@ -182,7 +182,7 @@ Las facturas se emiten en la revisión periódica (cada 10 minutos), nunca dos v
 - **Revisión cada minuto** de: base de datos, servicio de Evolution (responde, acepta la llave, versión compatible), **WhatsApp real** (sesiones desconectadas o perdidas, webhooks incorrectos, envíos fallidos y desconexiones tras actualizar Evolution), tareas programadas atrasadas, IA (clave y errores recientes), **antigüedad y éxito del último respaldo** (y su copia en la nube) y espacio en disco. Cada 15 minutos, una revisión más profunda (sesión y webhook de cada WhatsApp, credenciales de IA y correo).
 - **Alertas:** un fallo avisa al segundo minuto seguido (evita falsas alarmas), se repite cada 6 h y avisa cuando se recupera. Llegan por correo (`SUPERADMIN_EMAIL` + SMTP) y, si quieres, a un webhook (`ALERT_WEBHOOK_URL`: Slack, Discord, ntfy.sh…).
 - **Latido externo (`HEARTBEAT_URL`):** el sistema visita esa dirección cada 5 minutos mientras está sano (healthchecks.io tiene plan gratuito; Uptime Kuma también). Si dejan de llegar, *ellos* te avisan, incluso si el servidor completo cayó, algo que el sistema no puede avisar por sí mismo.
-- **Panel → Sistema** (superadmin): todo lo anterior en una pantalla, con versión, tiempo encendido, errores de 24 h, WhatsApp por estado y suscripciones; además **Configuración** (críticos, avisos y opcionales con cómo corregirlos), **Servicios** por niveles (configurado → accesible → credenciales válidas → funcional → listo; sin mostrar nunca claves) y **Evolution API** (versión esperada, imagen configurada, versión detectada o "No verificada", compatibilidad y última verificación).
+- **Panel → Sistema** (superadmin): arriba, **lo que hay que revisar** (lo que falla o pide atención, con su detalle, en una sola lista; no aparece si todo está bien); luego todo lo anterior en una pantalla, con versión, tiempo encendido, errores de 24 h, WhatsApp por estado y suscripciones; además **Configuración** (críticos, avisos y opcionales con cómo corregirlos), **Servicios** por niveles (configurado → accesible → credenciales válidas → funcional → listo; sin mostrar nunca claves) y **Evolution API** (versión esperada, imagen configurada, versión detectada o "No verificada", compatibilidad y última verificación).
 
 ## Actualizaciones
 
@@ -488,6 +488,8 @@ Menú **Cotizaciones** (administradores). Detalle en [docs/cotizaciones.md](docs
 - **Exportar a CSV**: menú **Exportar** en Conversaciones (contactos, conversaciones y mensajes; solo administradores, queda en el registro).
 
 ### Datos de tus clientes
+
+**Ajustes** (`#/ajustes`) dice, para cada parte de la configuración, si está **Lista**, si **Falta**, si hay que **Revisarla** (por ejemplo, el WhatsApp se desconectó o una red pide reconectarse) o si es **Opcional**: agentes y conexiones, horario, lista de precios, redes sociales, equipo y plan. Arriba muestra cuántos pasos faltan para atender y un botón al siguiente. Todo sale de lo que ya guardó la cuenta (`GET /api/onboarding/setup`, solo administradores); el horario cuenta como listo en cuanto se guarda una vez.
 
 **Ajustes → Datos de tus clientes** (`#/datos-clientes`): los datos que el negocio guarda de cada cliente (cumpleaños, número de cliente, plan…), cada uno con etiqueta, clave y tipo (texto, número, fecha, lista de opciones, correo o teléfono). Solo un administrador los agrega, edita, ordena o borra; borrar un campo no borra lo que ya tienen guardado los clientes.
 

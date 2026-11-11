@@ -174,21 +174,68 @@ export async function goMainBot(root, tab) {
 }
 
 /** Ajustes: todo lo que no es el día a día, con una explicación de una línea. */
+/** Cómo se ve el estado de cada parte de la configuración (lo calcula el servidor en /api/onboarding/setup). */
+const SETUP_BADGE = { ok: ['green', 'Listo'], todo: ['orange', 'Falta'], warn: ['red', 'Revisar'], optional: ['', 'Opcional'] };
+
+/** Nombre de cada parte de la configuración, igual que su fila. */
+const SETUP_TITLES = { agents: 'Agentes y conexiones', hours: 'Horario y avisos', prices: 'Lista de precios', social: 'Redes sociales', team: 'Mi equipo', plan: 'Mi plan y pagos' };
+
+/** Tarjeta de arriba de «Ajustes»: cuánto falta y el siguiente paso, con su botón. */
+function setupSummary(setup) {
+  if (!setup) return null;
+  if (!setup.next) {
+    return h('p', { class: 'banner ok setup-summary', role: 'status' }, icon('check', 16), ' Lo necesario para atender está listo. Lo marcado como opcional lo puedes agregar cuando quieras.');
+  }
+  const pending = setup.total - setup.done_count;
+  return h('section', { class: 'card checklist setup-summary', 'aria-labelledby': 'setup-title' },
+    h('h2', { id: 'setup-title', style: 'margin:0' }, setup.next.state === 'warn' ? 'Algo dejó de funcionar' : pending === 1 ? 'Te falta 1 paso para atender' : `Te faltan ${pending} pasos para atender`),
+    h('progress', { max: setup.total, value: setup.done_count, 'aria-label': `${setup.done_count} de ${setup.total} pasos listos` }),
+    h('div', { class: 'row between' },
+      h('p', { style: 'margin:0' }, h('strong', {}, `${SETUP_TITLES[setup.next.key]}: `), setup.next.detail),
+      h('a', { class: 'btn primary', href: setup.next.href }, setup.next.state === 'warn' ? 'Arreglarlo' : 'Hacerlo ahora')));
+}
+
+/** El maestro no paga el plan de la cuenta que revisa ni ve su fila: no se le cuenta como paso pendiente. */
+function withoutPlan(setup) {
+  const sections = setup.sections.filter((x) => x.key !== 'plan');
+  const required = sections.filter((x) => x.state !== 'optional');
+  const next = sections.find((x) => x.state === 'warn') ?? sections.find((x) => x.state === 'todo') ?? null;
+  return { sections, done_count: required.filter((x) => x.state === 'ok').length, total: required.length, next };
+}
+
 export async function viewSettingsHub(root) {
-  // Filas (ícono de línea, título, una línea y una flecha): cada una abre su propia vista.
-  const tile = (href, iconName, title, desc) => h('a', { class: 'tile', href }, icon(iconName), h('strong', {}, title), h('span', { class: 'desc' }, desc), h('span', { class: 'chev' }, icon('chevron-right', 16)));
+  // El maestro con «Todos los perfiles» no tiene una cuenta que revisar: solo ve las filas.
+  // Si no se puede leer el estado, las filas siguen funcionando sin insignias (no es motivo para romper la página).
+  const raw = isSuper() && !state.accountId ? null : await api('GET', `/api/onboarding/setup${acct()}`).catch(() => null);
+  const setup = raw && isSuper() ? withoutPlan(raw) : raw;
+  const status = Object.fromEntries((setup?.sections ?? []).map((s) => [s.key, s]));
+  // Filas (ícono de línea, título, una línea y una flecha): cada una abre su propia vista. Las que son parte de la
+  // configuración dicen si están listas y, si no, qué les falta.
+  const tile = (href, iconName, title, desc, key) => {
+    const st = key && status[key];
+    const badge = st ? h('span', { class: `badge ${SETUP_BADGE[st.state][0]}` }, SETUP_BADGE[st.state][1]) : null;
+    return h('a', { class: `tile${st ? ` setup-${st.state}` : ''}`, href: st && st.state !== 'ok' ? st.href : href },
+      icon(iconName), h('span', { class: 'tile-title' }, h('strong', {}, title), badge),
+      h('span', { class: 'desc' }, st && st.state !== 'ok' ? st.detail : desc), h('span', { class: 'chev' }, icon('chevron-right', 16)));
+  };
   root.append(
     h('h1', {}, 'Ajustes'),
     h('p', { class: 'muted', style: 'margin:0 0 24px' }, 'Todo lo que no es el día a día: tu negocio, tu equipo, tu plan y tu cuenta.'),
+    setupSummary(setup),
+    h('h2', { class: 'settings-group' }, 'Para atender a tus clientes'),
     h('div', { class: 'settings-index' },
-      tile('#/agentes', 'bot', 'Agentes y conexiones', 'Crea, configura y prueba tus agentes; conecta sus teléfonos y otros canales.'),
-      tile('#/automation/settings', 'clock', 'Horario y avisos', 'Tu horario de atención, zona horaria y a quién avisar.'),
+      tile('#/agentes', 'bot', SETUP_TITLES.agents, 'Crea, configura y prueba tus agentes; conecta sus teléfonos y otros canales.', 'agents'),
+      tile('#/automation/settings', 'clock', SETUP_TITLES.hours, 'Tu horario de atención, zona horaria y a quién avisar.', 'hours'),
+      tile('#/cotizaciones', 'quote', SETUP_TITLES.prices, 'Lo que tu agente puede cotizar, con sus precios y formatos.', 'prices'),
+      tile('#/redes', 'megaphone', SETUP_TITLES.social, 'Instagram, Facebook, TikTok y más: comentarios, publicaciones y mensajes.', 'social'),
       tile('#/agenda/servicios', 'calendar', 'Servicios y citas', 'Qué servicios agenda tu asistente y cuánto dura cada uno.'),
-      tile('#/automation', 'zap', 'Respuestas automáticas', 'Recordatorios, seguimientos y campañas a tus clientes.'),
-      tile('#/integraciones', 'plug', 'Integraciones', 'Google Calendar, webhooks para Zapier o Make y llaves de la API.'),
-      tile('#/users', 'contacts', 'Mi equipo', 'Usuarios para quienes atienden las conversaciones contigo.'),
+      tile('#/automation', 'zap', 'Respuestas automáticas', 'Recordatorios, seguimientos y campañas a tus clientes.')),
+    h('h2', { class: 'settings-group' }, 'Tu equipo y tu cuenta'),
+    h('div', { class: 'settings-index' },
+      tile('#/users', 'contacts', SETUP_TITLES.team, 'Usuarios para quienes atienden las conversaciones contigo.', 'team'),
+      !isSuper() ? tile('#/plan', 'card', SETUP_TITLES.plan, 'Tu plan, próximo cobro, forma de pago y facturas.', 'plan') : null,
       tile('#/datos-clientes', 'user', 'Datos de tus clientes', 'Lo que guardas de cada cliente (cumpleaños, número de cliente…), para su ficha y tus mensajes.'),
-      !isSuper() ? tile('#/plan', 'card', 'Mi plan y pagos', 'Tu plan, próximo cobro, forma de pago y facturas.') : null,
+      tile('#/integraciones', 'plug', 'Integraciones', 'Google Calendar, webhooks para Zapier o Make y llaves de la API.'),
       tile('#/consumo', 'chart', 'Consumo', 'Cuánto ha usado tu asistente este mes.'),
       tile('#/logs', 'wrench', 'Registros', 'Si algo falla, aquí se ve qué pasó.'),
       tile('#/password', 'key', 'Mi perfil', 'Tu nombre, correo y contraseña.')),
