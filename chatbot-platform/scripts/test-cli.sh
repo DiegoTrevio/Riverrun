@@ -464,9 +464,41 @@ mv -f .env.keep .env; unset RIVERRUN_PREFLIGHT_MEM_KB RIVERRUN_PREFLIGHT_DISK_KB
 echo "== preflight en línea sin servicios levantados: lo que no se comprueba se dice; opción desconocida se rechaza"
 set +e; ./riverrun preflight > "$work/out" 2>&1; rc=$?; set -e
 grep -q "servicios en marcha (no están levantados" "$work/out" && grep -q "HTTPS público" "$work/out" || { cat "$work/out"; echo "ERROR: la revisión en línea no marcó lo no verificado"; exit 1; }
+grep -q "No verificado: salida al servidor de correo" "$work/out" || { cat "$work/out"; echo "ERROR: sin correo configurado no dijo que la salida al correo queda sin verificar"; exit 1; }
 set +e; ./riverrun preflight --raro > "$work/out" 2>&1; rc=$?; set -e
 [[ "$rc" != 0 ]] && grep -q "Opción desconocida" "$work/out" || { echo "ERROR: aceptó una opción desconocida"; exit 1; }
 ./riverrun help | grep -q "preflight" || { echo "ERROR: la ayuda no menciona preflight"; exit 1; }
+
+echo "== preflight en línea: comprueba que el servidor llega al puerto del correo (DigitalOcean bloquea 25, 465 y 587)"
+# Un solo proceso tiene dos puertos en 127.0.0.1: uno escucha y otro solo está reservado (rechaza la conexión), así
+# ningún otro proceso puede tomarlo a media prueba. La revisión abre la conexión TCP y no envía nada.
+python3 -c 'import socket,sys,time,os
+a=socket.socket(); a.bind(("127.0.0.1",0)); a.listen(5)
+b=socket.socket(); b.bind(("127.0.0.1",0))
+open(sys.argv[1]+".tmp","w").write("%d %d\n" % (a.getsockname()[1], b.getsockname()[1]))
+os.rename(sys.argv[1]+".tmp", sys.argv[1]); time.sleep(120)' "$work/puertos" &
+escucha=$!; trap 'kill "$escucha" 2>/dev/null || true; rm -rf "$work"' EXIT
+for _ in $(seq 50); do [[ -s "$work/puertos" ]] && break; sleep 0.1; done
+read -r abierto cerrado < "$work/puertos"
+cp .env .env.smtp
+printf 'SMTP_URL=smtp://avisos:cl%%40ve@127.0.0.1:%s\n' "$abierto" >> .env
+set +e; ./riverrun preflight > "$work/out" 2>&1; set -e
+grep -q "Correo: el servidor llega a 127.0.0.1:$abierto" "$work/out" || { cat "$work/out"; echo "ERROR: no reconoció que el puerto del correo responde"; exit 1; }
+printf 'SMTP_URL=smtps://avisos:clave@127.0.0.1:%s\n' "$cerrado" >> .env
+set +e; ./riverrun preflight > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" == 0 ]] && grep -q "Correo: no se pudo conectar a 127.0.0.1:$cerrado" "$work/out" && grep -q "Resend: 2465 o 2587" "$work/out" || { cat "$work/out"; echo "ERROR: un puerto de correo bloqueado debía avisar"; exit 1; }
+# Sin SMTP_URL, con RESEND_API_KEY: el atajo usa smtp.resend.com:2465, como src/config.ts. Sin puerto, el de nodemailer.
+mv -f .env.smtp .env; cp .env .env.smtp
+printf 'RESEND_API_KEY=re_prueba\n' >> .env
+set +e; RIVERRUN_SMTP_TIMEOUT=1 ./riverrun preflight > "$work/out" 2>&1; set -e
+grep -q "smtp.resend.com:2465" "$work/out" || { cat "$work/out"; echo "ERROR: con RESEND_API_KEY no revisó smtp.resend.com:2465"; exit 1; }
+printf 'SMTP_URL=smtps://u:p@127.0.0.1\n' >> .env
+set +e; RIVERRUN_SMTP_TIMEOUT=1 ./riverrun preflight > "$work/out" 2>&1; set -e
+grep -q "127.0.0.1:465" "$work/out" || { cat "$work/out"; echo "ERROR: smtps sin puerto debía revisar el 465"; exit 1; }
+printf 'SMTP_URL=smtp://u:p@[::1]:587\n' >> .env
+set +e; ./riverrun preflight > "$work/out" 2>&1; set -e
+grep -q "No verificado: salida al servidor de correo (no se pudo leer" "$work/out" || { cat "$work/out"; echo "ERROR: una dirección IPv6 debía quedar sin verificar"; exit 1; }
+mv -f .env.smtp .env; kill "$escucha" 2>/dev/null || true; wait "$escucha" 2>/dev/null || true; trap 'rm -rf "$work"' EXIT
 
 echo "== preflight: si la herramienta de configuración no puede correr, no se afirma que la configuración está revisada"
 touch CONFIG_NO_CORRE
