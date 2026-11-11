@@ -26,7 +26,7 @@ El cliente recibe un PDF. Tanto el archivo como el mensaje del chat dicen si es 
    - el IVA: se suma, ya viene incluido o es exento. Con **IVA incluido**, la cotización muestra cada precio **antes de IVA** (p. ej. $1,160 con IVA se ve como $1,000.00) para que cantidad × precio = importe y subtotal + IVA = total; el total es siempre tu precio de lista × cantidad.
 
    Cualquier concepto que no sea exacto hace que la cotización sea **aproximada**.
-2. **Formato** (*Cotizaciones → Formatos*). Diseña tu documento en Word (logo, colores, condiciones) y escribe marcas donde va cada dato. Hay un formato de ejemplo para descargar y una vista previa en PDF. Si no subes ninguno, se usa el del sistema.
+2. **Formato** (*Cotizaciones → Formatos*). Diseña tu documento en Word (logo, colores, condiciones) y escribe marcas donde va cada dato. Hay un formato de ejemplo para descargar y una vista previa en PDF. Si no subes ninguno, se usa el del sistema: si la cotización ocupa varias páginas repite los títulos de la tabla, y si el cliente no dio su teléfono o correo no deja etiquetas vacías. En tu formato puedes hacer lo mismo con `{{#telefono}}Teléfono: {{telefono}}{{/telefono}}` (solo aparece si hay dato).
 3. **Ajustes** (*Cotizaciones → Ajustes*):
    - IVA, moneda, vigencia y prefijo del folio;
    - las leyendas de aproximada y de final;

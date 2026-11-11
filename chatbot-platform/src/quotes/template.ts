@@ -304,18 +304,20 @@ const para = (runs: string, align?: 'right' | 'center') => `<w:p>${align ? `<w:p
 const WIDTHS = [3600, 1200, 1300, 1700, 1700];
 const cell = (content: string, width: number, header: boolean) =>
   `<w:tc><w:tcPr><w:tcW w:w="${width}" w:type="dxa"/>${header ? '<w:shd w:val="clear" w:color="auto" w:fill="E8EEF4"/>' : ''}</w:tcPr>${para(content)}</w:tc>`;
-const row = (cells: string[], header = false) => `<w:tr>${cells.map((c, i) => cell(run(c, { bold: header }), WIDTHS[i], header)).join('')}</w:tr>`;
+/** El renglón de títulos se repite en cada página y ningún renglón se parte entre dos páginas. */
+const row = (cells: string[], header = false) => `<w:tr><w:trPr><w:cantSplit/>${header ? '<w:tblHeader/>' : ''}</w:trPr>${cells.map((c, i) => cell(run(c, { bold: header }), WIDTHS[i], header)).join('')}</w:tr>`;
 
 /** Un formato sencillo con todas las marcas, para descargar y adaptar en Word. */
 export function exampleTemplate(): Buffer {
   const borders = ['top', 'left', 'bottom', 'right', 'insideH', 'insideV'].map((b) => `<w:${b} w:val="single" w:sz="4" w:space="0" w:color="BFBFBF"/>`).join('');
   const body = [
     para(run('{{negocio.nombre}}', { bold: true, size: 32 })),
-    para(run('{{negocio.direccion}} · {{negocio.telefono}}', { size: 18, color: '555555' })),
+    // Lo que el negocio o el cliente no tengan no deja etiquetas ni separadores sueltos.
+    para(run('{{#negocio.direccion}}{{negocio.direccion}}{{#negocio.telefono}} · {{/negocio.telefono}}{{/negocio.direccion}}{{negocio.telefono}}', { size: 18, color: '555555' })),
     para(run('{{tipo}}', { bold: true, size: 28, color: '1F4E79' }), 'right'),
     para(run('Folio: ', { bold: true }) + run('{{folio}}') + run('    Fecha: ', { bold: true }) + run('{{fecha}}'), 'right'),
     para(run('Cliente: ', { bold: true }) + run('{{nombre}}')),
-    para(run('Teléfono: ', { bold: true }) + run('{{telefono}}') + run('    Correo: ', { bold: true }) + run('{{correo}}')),
+    para(run('{{#telefono}}') + run('Teléfono: ', { bold: true }) + run('{{telefono}}    {{/telefono}}{{#correo}}') + run('Correo: ', { bold: true }) + run('{{correo}}{{/correo}}')),
     `<w:tbl><w:tblPr><w:tblW w:w="9500" w:type="dxa"/><w:tblBorders>${borders}</w:tblBorders></w:tblPr>`
       + `<w:tblGrid>${WIDTHS.map((w) => `<w:gridCol w:w="${w}"/>`).join('')}</w:tblGrid>`
       + row(['Concepto', 'Cantidad', 'Unidad', 'Precio', 'Importe'], true)

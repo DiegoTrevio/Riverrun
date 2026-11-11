@@ -32,6 +32,25 @@ test('formato: el de ejemplo trae todas las marcas obligatorias y ninguna descon
   for (const t of ['tipo', 'total', 'leyenda', 'folio', 'conceptos', 'conceptos.precio_unitario']) assert.ok(r.found.includes(t), t);
 });
 
+test('formato de ejemplo: sin teléfono ni correo del cliente no quedan etiquetas vacías; con ellos sí se ven', () => {
+  const text = (d: Partial<TemplateData>) => docxText(fillTemplate(exampleTemplate(), { ...DATA, ...d }));
+  const sin = text({ telefono: '', correo: '', negocio: { nombre: 'Salón', direccion: '', telefono: '' } });
+  assert.doesNotMatch(sin, /Teléfono:|Correo:/);
+  assert.doesNotMatch(sin, /·/, 'sin dirección ni teléfono del negocio no queda el separador suelto');
+  const con = text({ telefono: '55 1234 5678', correo: 'ana@ejemplo.mx', negocio: { nombre: 'Salón', direccion: 'Av. Juárez 10', telefono: '81 0000 0000' } });
+  assert.match(con, /Teléfono: 55 1234 5678/);
+  assert.match(con, /Correo: ana@ejemplo\.mx/);
+  assert.match(con, /Av\. Juárez 10 · 81 0000 0000/);
+  assert.match(text({ telefono: '', correo: 'ana@ejemplo.mx' }), /Correo: ana@ejemplo\.mx/);
+});
+
+test('formato de ejemplo: en cotizaciones de varias páginas el encabezado de la tabla se repite y un renglón no se parte', () => {
+  const xml = new PizZip(exampleTemplate()).file('word/document.xml')!.asText();
+  const rows = [...xml.matchAll(/<w:tr>(.*?)<\/w:tr>/g)].map((m) => m[1]);
+  assert.match(rows[0], /<w:tblHeader\/>/);
+  for (const r of rows) assert.match(r, /<w:cantSplit\/>/);
+});
+
 test('formato: marcas partidas por Word, datos del cliente, desconocidas y obligatorias faltantes', () => {
   // Word suele partir «{{cliente.evento}}» en varios fragmentos al corregir ortografía.
   const r = inspectTemplate(docx(REQUIRED + p('{{clie', 'nte.evento}}') + p('{{descuento}}') + p('{{#es_final}}', 'Precio final', '{{/es_final}}')));
