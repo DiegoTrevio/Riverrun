@@ -7,6 +7,7 @@ import { conversationAlert } from '../automation/alert-format.js';
 import { attachmentAbsolutePath } from '../attachments.js';
 import { signedQuoteUrl } from '../channels/media.js';
 import * as astore from '../automation/store.js';
+import type { AutomationEvent } from '../automation/types.js';
 import { query, queryOne } from '../db.js';
 import { logEvent } from '../logs.js';
 import * as pstore from '../store/pipelines.js';
@@ -222,6 +223,24 @@ export class Quotes {
     return { status: 'handoff', text: r.message || ADVISOR_MESSAGE, reason: `Cotización: ${r.detail}` };
   }
 
+  /**
+   * El cliente dijo en el chat que acepta la cotización que recibió: queda anotado (una vez) y el equipo recibe el aviso
+   * para marcarla aceptada con su plan de cobro desde la conversación. `true` solo si el aviso salió (si no, el motor
+   * deja pasar su aviso general de «seguimiento prometido»).
+   */
+  async customerAccepted(conv: Conversation, contact: Contact, a: { quoteId: string; folio: string; words: string }): Promise<boolean> {
+    const q = await qstore.markCustomerAccepted(conv.account_id, a.quoteId, a.words);
+    if (!q) return false;
+    const total = formatTotals({ ...q, lines: q.lines ?? [], can_be_final: false }, q.currency).total;
+    await this.log(conv, 'info', `El cliente dijo que acepta la cotización ${q.folio}: «${a.words.slice(0, 120)}»`);
+    if (!this.hooks.alertTeam) return false;
+    return this.hooks.alertTeam(conv.account_id, {
+      title: `✅ ${customerLabel(contact)} acepta la cotización ${q.folio}`,
+      body: conversationAlert({ contact, reason: 'dijo que acepta la cotización', extra: `Folio ${q.folio} por ${total}. Escribió: «${a.words.slice(0, 200)}». Confírmala con «El cliente aceptó» en la conversación para crear su cobro.` }),
+      link: `#/conversation/${conv.id}`, kind: 'quote', conversationId: conv.id,
+    }).then(() => true, () => false);
+  }
+
   /** Enlace firmado al PDF (7 días), para los canales que no envían archivos. */
   link(quote: qstore.Quote) {
     return signedQuoteUrl(quote.id);
@@ -250,13 +269,36 @@ export class Quotes {
   }
 }
 
-/** Cotizaciones vencidas, con la fecha de hoy de cada negocio (tarea diaria). */
-export async function expireDueQuotes(): Promise<number> {
+type Emit = (e: AutomationEvent) => void;
+
+/** Cotizaciones vencidas, con la fecha de hoy de cada negocio (tarea diaria). Las reglas «cotización vencida» se enteran. */
+export async function expireDueQuotes(emit?: Emit): Promise<number> {
   const accounts = await query<{ account_id: string; timezone: string | null }>(
     `SELECT DISTINCT q.account_id, a.settings->>'timezone' AS timezone FROM quotes q JOIN accounts a ON a.id = q.account_id
       WHERE q.status IN ('pending_approval', 'approved', 'sent') AND q.valid_until < current_date + 1`,
   );
   let n = 0;
-  for (const a of accounts) n += await qstore.expireQuotes(localDate(new Date(), a.timezone || 'America/Mexico_City'), a.account_id);
+  const onExpired = emit ? (q: qstore.Quote) => emit({ type: 'quote_expired', conversationId: q.conversation_id!, quote: quoteEvent(q) }) : undefined;
+  for (const a of accounts) n += await qstore.expireQuotes(localDate(new Date(), a.timezone || 'America/Mexico_City'), a.account_id, onExpired);
+  return n;
+}
+
+/**
+ * Seguimiento (tarea de cada pocas horas): las cuentas con reglas «cotización por vencer» activas reciben un evento por
+ * cada cotización enviada a la que le quedan esos días, una sola vez por cotización y número de días.
+ */
+export async function remindExpiringQuotes(emit: Emit): Promise<number> {
+  const accounts = await query<{ account_id: string; timezone: string | null; days: number[] }>(
+    `SELECT r.account_id, a.settings->>'timezone' AS timezone, array_agg(DISTINCT COALESCE((r.trigger->>'days')::int, 2)) AS days
+       FROM automations r JOIN accounts a ON a.id = r.account_id
+      WHERE r.active AND r.trigger->>'type' = 'quote_expiring'
+      GROUP BY r.account_id, a.settings->>'timezone'`,
+  );
+  let n = 0;
+  for (const a of accounts) {
+    const due = await qstore.claimExpiringQuotes(a.account_id, localDate(new Date(), a.timezone || 'America/Mexico_City'), a.days);
+    for (const q of due) emit({ type: 'quote_expiring', conversationId: q.conversation_id!, quote: quoteEvent(q), daysLeft: q.days_left });
+    n += due.length;
+  }
   return n;
 }

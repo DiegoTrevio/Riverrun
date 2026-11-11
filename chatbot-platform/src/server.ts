@@ -101,8 +101,11 @@ async function main() {
   setInterval(() => {
     // Retención y limpieza en lotes, en una sola instancia (las demás se saltan esta vuelta).
     runMaintenance().catch((e) => logEvent({ level: 'error', source: 'system', message: `Mantenimiento de la base: ${e?.message ?? e}` }));
-    // Cotizaciones cuya vigencia ya pasó (con la fecha de cada negocio).
-    void import('./quotes/agent.js').then(({ expireDueQuotes }) => expireDueQuotes()).catch((e) => logEvent({ level: 'error', source: 'system', message: `Vencimiento de cotizaciones: ${e?.message ?? e}` }));
+    // Cotizaciones cuya vigencia ya pasó (con la fecha de cada negocio) y seguimiento de las que están por vencer (reglas
+    // «cotización por vencer»). Las dos son seguras con varias instancias: cada aviso sale una sola vez.
+    const emit = (e: Parameters<typeof service.automator.emit>[0]) => service.automator.emit(e);
+    void import('./quotes/agent.js').then(({ expireDueQuotes }) => expireDueQuotes(emit)).catch((e) => logEvent({ level: 'error', source: 'system', message: `Vencimiento de cotizaciones: ${e?.message ?? e}` }));
+    void import('./quotes/agent.js').then(({ remindExpiringQuotes }) => remindExpiringQuotes(emit)).catch((e) => logEvent({ level: 'error', source: 'system', message: `Cotizaciones por vencer: ${e?.message ?? e}` }));
   }, 6 * 3600 * 1000).unref();
   }
   // Vigilante: si la cola, las recepciones o las tareas programadas dejan de avanzar, o el proceso se bloquea, sale para

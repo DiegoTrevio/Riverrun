@@ -82,6 +82,8 @@ const TRIGGERS = {
   quote_pending_approval: 'Una cotización final queda por aprobar',
   quote_rejected: 'El equipo rechaza una cotización',
   quote_accepted: 'El cliente acepta una cotización',
+  quote_expiring: 'Una cotización enviada está por vencer',
+  quote_expired: 'Una cotización enviada vence sin aceptarse',
   payment_due: 'Hoy vence un pago de un cliente',
   payment_overdue: 'Un pago vence sin pagarse',
   payment_paid: 'El equipo marca un pago como pagado',
@@ -152,6 +154,8 @@ const RULE_TEMPLATES = [
   { name: 'Objetivo cumplido → reporte al equipo', trigger: { type: 'goal_completed' }, actions: [{ type: 'send_report', roles: ['admin'], note: 'Objetivo cumplido' }] },
   { name: 'Objetivo cumplido → resumen a mi app', trigger: { type: 'goal_completed' }, actions: [{ type: 'send_conversation', content: 'summary', endpoint_id: '' }] },
   { name: 'Marcada por el equipo → conversación completa a mi app', trigger: { type: 'tag_added', tag: 'enviar-a-mi-app' }, actions: [{ type: 'send_conversation', content: 'full', endpoint_id: '' }] },
+  { name: 'Cotización por vencer → recordar al cliente', trigger: { type: 'quote_expiring', days: 2 }, actions: [{ type: 'send_message', text: 'Hola {{nombre}}, tu cotización {{cotizacion.folio}} por {{cotizacion.total}} vence el {{cotizacion.vigencia}}. ¿Tienes alguna duda o te ayudo a confirmarla?' }] }, // taste-skill-ignore: texto que llega al WhatsApp del cliente
+  { name: 'Cotización vencida → avisar al equipo', trigger: { type: 'quote_expired' }, actions: [{ type: 'alert_team', message: 'La cotización {{cotizacion.folio}} de {{cliente}} venció sin aceptarse. {{link}}' }] }, // taste-skill-ignore: texto que llega al WhatsApp del equipo
   { name: 'Agradecer cita agendada', trigger: { type: 'appointment_booked' }, actions: [{ type: 'send_message', text: 'Te esperamos el {{cita.fecha}} a las {{cita.hora}} 🙌', delay_minutes: 1 }] }, // taste-skill-ignore: texto que llega al WhatsApp del cliente o del equipo
 ];
 
@@ -166,6 +170,7 @@ export function triggerSummary(t) {
     case 'stage_reached': return t.step ? `Llega a la etapa ${t.step}` : 'Llega a cualquier etapa';
     case 'pipeline_stage': return t.stage_id ? `Entra a la columna «${t.stage_id}» del pipeline` : 'Cambia de columna en el pipeline';
     case 'quote_sent': return t.kind === 'final' ? 'Se envía una cotización final' : t.kind === 'approximate' ? 'Se envía una cotización aproximada' : TRIGGERS.quote_sent;
+    case 'quote_expiring': return t.days ? `Faltan ${t.days} día${t.days === 1 ? '' : 's'} para que venza una cotización` : 'Hoy es el último día de una cotización';
     default: return TRIGGERS[t.type];
   }
 }
@@ -418,6 +423,9 @@ async function editRule(root, id) {
     } else if (t.type === 'quote_sent') {
       t.kind ??= '';
       f.push(field('Tipo de cotización', select(t, 'kind', [['', 'Cualquiera'], ['approximate', 'Aproximada'], ['final', 'Final']])));
+    } else if (t.type === 'quote_expiring') {
+      t.days ??= 2;
+      f.push(field('Días antes de que venza', num(t, 'days', { min: 0, max: 30 }), '0 = el último día de vigencia. Solo para cotizaciones enviadas que el cliente no ha aceptado; se envía una vez por cotización.'));
     } else if (t.type === 'appointment_booked' || t.type === 'appointment_cancelled') {
       t.service_id ??= '';
       f.push(field('Servicio', select(t, 'service_id', [['', 'Cualquiera'], ...refs.services.map((s) => [s.id, s.name])])));
