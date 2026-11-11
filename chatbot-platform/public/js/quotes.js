@@ -22,12 +22,23 @@ export function money(cents, currency = 'MXN') {
   return moneyFormats.get(currency).format(cents / 100);
 }
 
-/** Precio de un concepto tal como lo ve el cliente. */
-export function unitPrice(i, currency) {
+/** Precio sin IVA de un precio con IVA incluido, al centavo (igual que el servidor, `unitBeforeIva`). */
+function beforeIva(cents, mode, rate) {
+  const bp = BigInt(Math.round(rate * 10000));
+  if (mode !== 'included' || bp === 0n) return cents;
+  return Number((BigInt(cents) * 10000n + (10000n + bp) / 2n) / (10000n + bp));
+}
+
+/**
+ * Precio de un concepto. En la lista, tal como lo fijó el negocio; en una cotización (`rate`), antes de IVA como el
+ * importe, para que cantidad × precio = importe también con «IVA incluido».
+ */
+export function unitPrice(i, currency, rate) {
+  const m = (c) => money(rate === undefined ? c : beforeIva(c, i.iva_mode, rate), currency);
   if (i.price_mode === 'tbd') return 'Por confirmar';
-  if (i.price_mode === 'from') return `desde ${money(i.price_min, currency)}`;
-  if (i.price_mode === 'range') return `${money(i.price_min, currency)} a ${money(i.price_max, currency)}`;
-  return money(i.price_min, currency);
+  if (i.price_mode === 'from') return `desde ${m(i.price_min)}`;
+  if (i.price_mode === 'range') return `${m(i.price_min)} a ${m(i.price_max)}`;
+  return m(i.price_min);
 }
 
 /** Total de una cotización: exacto, rango, «desde» y si quedan conceptos por confirmar. */
@@ -270,7 +281,7 @@ function calcTry(c, def, currency) {
       const r = await api('POST', `/api/quote-calculators/${c.id}/preview`, { inputs: values });
       out.replaceChildren(r.ok
         ? h('div', { class: 'table-wrap' }, h('table', { class: 'small' },
-            h('tbody', {}, r.priced.lines.map((l) => h('tr', {}, h('td', {}, `${l.qty} ×`), h('td', {}, l.name), h('td', {}, unitPrice(l, currency)), h('td', { class: 'num' }, lineAmount(l, currency))))),
+            h('tbody', {}, r.rows.map((l) => h('tr', {}, h('td', {}, `${l.qty} ×`), h('td', {}, l.name), h('td', {}, l.unit_price), h('td', { class: 'num' }, l.amount)))),
             h('tfoot', {}, h('tr', {}, h('td', { colspan: 3 }, 'Subtotal'), h('td', { class: 'num' }, r.totals.subtotal)), h('tr', {}, h('td', { colspan: 3 }, 'IVA'), h('td', { class: 'num' }, r.totals.iva)),
               h('tr', {}, h('td', { colspan: 3 }, h('strong', {}, 'Total')), h('td', { class: 'num' }, h('strong', {}, r.totals.total))))))
         : h('p', { class: 'small' }, '→ ', r.message, r.detail ? h('span', { class: 'muted' }, ` (${r.detail})`) : null));
@@ -451,7 +462,7 @@ async function viewQuote(root, id) {
         h('tbody', {}, (q.lines || []).map((l) => h('tr', {},
           h('td', {}, l.name, l.edited_by_team ? h('span', { class: 'small muted' }, ' (editado por el equipo)') : null),
           h('td', {}, `${l.qty} ${l.unit}`),
-          h('td', {}, unitPrice(l, c)),
+          h('td', {}, unitPrice(l, c, q.iva_rate)),
           h('td', {}, lineAmount(l, c)))))),
       h('p', {}, h('strong', {}, `Total: ${totalText(q)}`), h('span', { class: 'small muted' }, ` (IVA ${Math.round(q.iva_rate * 100)} %)`)),
       q.notes ? h('p', { class: 'small' }, `Notas: ${q.notes}`) : null,

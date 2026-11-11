@@ -2,7 +2,7 @@
  * Cómo se escriben los montos, cantidades y fechas de una cotización. Lo usan el archivo y el mensaje del chat, para que
  * el cliente lea exactamente lo mismo en ambos.
  */
-import type { PricedLine, PricedQuote } from './pricing.js';
+import { unitBeforeIva, type PricedLine, type PricedQuote } from './pricing.js';
 
 const money = new Map<string, Intl.NumberFormat>();
 
@@ -22,13 +22,18 @@ export function formatMoney(cents: number, currency = 'MXN'): string {
 const qtyFormat = new Intl.NumberFormat('es-MX', { maximumFractionDigits: 3 });
 export const formatQty = (qty: number) => qtyFormat.format(qty);
 
-/** Precio unitario tal como lo fijó el negocio: «$1,200.00», «desde $1,200.00», «$1,000.00 a $1,500.00», «Por confirmar». */
-export function formatUnitPrice(l: Pick<PricedLine, 'price_mode' | 'price_min' | 'price_max'>, currency = 'MXN'): string {
+/**
+ * Precio unitario del renglón: «$1,200.00», «desde $1,200.00», «$1,000.00 a $1,500.00», «Por confirmar». Va antes de IVA
+ * como el importe (para «IVA incluido», el precio de lista sin su IVA), así cantidad × precio = importe. Sin `ivaRate`
+ * (la lista de precios) se muestra el precio tal como lo fijó el negocio.
+ */
+export function formatUnitPrice(l: Pick<PricedLine, 'price_mode' | 'price_min' | 'price_max'> & { iva_mode?: PricedLine['iva_mode'] }, currency = 'MXN', ivaRate?: number): string {
+  const unit = (c: number) => formatMoney(ivaRate === undefined || !l.iva_mode ? c : unitBeforeIva(c, l.iva_mode, ivaRate), currency);
   switch (l.price_mode) {
     case 'tbd': return 'Por confirmar';
-    case 'exact': return formatMoney(l.price_min!, currency);
-    case 'from': return `desde ${formatMoney(l.price_min!, currency)}`;
-    case 'range': return `${formatMoney(l.price_min!, currency)} a ${formatMoney(l.price_max!, currency)}`;
+    case 'exact': return unit(l.price_min!);
+    case 'from': return `desde ${unit(l.price_min!)}`;
+    case 'range': return `${unit(l.price_min!)} a ${unit(l.price_max!)}`;
   }
 }
 

@@ -80,17 +80,38 @@ function times(priceCents: number, qty: number): bigint {
   return (BigInt(priceCents) * milli + 500n) / 1000n;
 }
 
-/** Separa un importe en base e IVA según el modo. */
-function split(amount: bigint, mode: IvaMode, rateBp: bigint): { base: bigint; iva: bigint } {
-  if (mode === 'exempt' || rateBp === 0n) return { base: amount, iva: 0n };
-  if (mode === 'plus') return { base: amount, iva: (amount * rateBp + 5000n) / 10000n };
-  const base = (amount * 10000n + (10000n + rateBp) / 2n) / (10000n + rateBp);
-  return { base, iva: amount - base };
+const basisPoints = (rate: number) => BigInt(Math.round(rate * 10000));
+
+/** Precio sin IVA de un precio que ya lo incluye, redondeado al centavo (mitad hacia arriba). */
+function withoutIva(priceCents: bigint, rateBp: bigint): bigint {
+  return (priceCents * 10000n + (10000n + rateBp) / 2n) / (10000n + rateBp);
+}
+
+/**
+ * Precio unitario antes de IVA, el que se muestra en el desglose: para «IVA incluido» es el precio de lista sin su IVA;
+ * para los demás, el mismo precio. Así cantidad × precio unitario = importe en cada renglón.
+ */
+export function unitBeforeIva(priceCents: number, mode: IvaMode, rate: number): number {
+  const rateBp = basisPoints(rate);
+  if (mode !== 'included' || rateBp === 0n) return priceCents;
+  return Number(withoutIva(BigInt(priceCents), rateBp));
+}
+
+/**
+ * Importe y su IVA de un renglón. Con «IVA incluido» el importe es cantidad × precio unitario sin IVA (lo que ve el
+ * cliente en el renglón) y el IVA es lo que falta para llegar a cantidad × precio de lista: el total siempre es el precio
+ * escrito y cada renglón cuadra.
+ */
+function lineAmounts(priceCents: number, qty: number, mode: IvaMode, rateBp: bigint): { base: bigint; iva: bigint } {
+  const gross = times(priceCents, qty);
+  if (mode === 'exempt' || mode === 'plus' || rateBp === 0n) return { base: gross, iva: 0n };
+  const base = times(Number(withoutIva(BigInt(priceCents), rateBp)), qty);
+  return { base, iva: gross - base };
 }
 
 export function priceQuote(input: LineInput[], settings: PricingSettings): PricedQuote {
   if (input.length > MAX_LINES) throw new Error(`Una cotización admite hasta ${MAX_LINES} conceptos`);
-  const rateBp = BigInt(Math.round(settings.iva_rate * 10000));
+  const rateBp = basisPoints(settings.iva_rate);
   let subMin = 0n, subMax = 0n, ivaMin = 0n, ivaMax = 0n;
   // Los conceptos que «suman IVA» se juntan y el IVA se calcula una vez sobre su suma (subtotal × tasa, redondeado al
   // centavo), como lo escribe el negocio. Redondear el IVA de cada renglón y sumarlo podía dar un centavo de diferencia.
@@ -104,8 +125,8 @@ export function priceQuote(input: LineInput[], settings: PricingSettings): Price
       return { ...l, amount_min: null, amount_max: null };
     }
     if (l.price_mode === 'from') openEnded = true;
-    const lo = split(times(l.price_min!, l.qty), l.iva_mode, rateBp);
-    const hi = l.price_mode === 'range' ? split(times(l.price_max!, l.qty), l.iva_mode, rateBp) : lo;
+    const lo = lineAmounts(l.price_min!, l.qty, l.iva_mode, rateBp);
+    const hi = l.price_mode === 'range' ? lineAmounts(l.price_max!, l.qty, l.iva_mode, rateBp) : lo;
     subMin += lo.base;
     subMax += hi.base;
     if (l.iva_mode === 'plus') {
@@ -117,8 +138,8 @@ export function priceQuote(input: LineInput[], settings: PricingSettings): Price
     }
     return { ...l, amount_min: Number(lo.base), amount_max: Number(hi.base) };
   });
-  ivaMin += split(plusMin, 'plus', rateBp).iva;
-  ivaMax += split(plusMax, 'plus', rateBp).iva;
+  ivaMin += (plusMin * rateBp + 5000n) / 10000n;
+  ivaMax += (plusMax * rateBp + 5000n) / 10000n;
   return {
     lines,
     subtotal_min: Number(subMin),

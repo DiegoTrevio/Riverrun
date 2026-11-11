@@ -105,6 +105,8 @@ t('calculadoras: crear, versionar, probar con datos, exportar e importar', async
   // 16 × $950 + 40 × $150 = $21,200.00; IVA 16 % = $3,392.00.
   assert.equal(r.priced.total_min, 2_459_200);
   assert.match(r.totals.total, /24,592\.00/);
+  // Los renglones ya vienen escritos como los verá el cliente (el panel los muestra tal cual).
+  assert.deepEqual(r.rows[0], { name: 'Panel recto B', qty: '16', unit: r.lines[0].unit, unit_price: '$950.00', amount: '$15,200.00' });
 
   const stop = (await h.authed('POST', `/api/quote-calculators/${calc.id}/preview`, { inputs: { metros: 150, producto: 'recta' } })).json();
   assert.deepEqual([stop.ok, stop.reason], [false, 'stop']);
