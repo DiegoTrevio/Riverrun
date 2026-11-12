@@ -27,7 +27,7 @@ export type SecurityKind =
   | 'login.google_rejected'
   | `session.${string}` | `user.${string}` | `invite.${string}` | `password_reset.${string}`
   | 'ip.blocked' | 'ip.unblocked'
-  | 'contact.erased' | 'account.deleted'
+  | 'contact.erased' | 'account.deleted' | 'account.entered'
   | 'apikey.created' | 'apikey.revoked' | 'webhook_secret.rotated'
   | 'copilot.code_confirmed'
   | `alert.${string}`;

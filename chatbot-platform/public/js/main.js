@@ -1,4 +1,5 @@
 import { $app, errorCard, fill, h, recordUX, state } from './core.js';
+import { enterAccount } from './account-switch.js';
 import { brand, ensureBrand } from './brand.js';
 import { loadWhatsappStatus } from './connect.js';
 import { clearTimers, copilotAvailable, isAdmin, isSuper, loadSession } from './session.js';
@@ -54,7 +55,8 @@ export async function render() {
     if(!state.accounts.some(a=>a.id===accountId)){
       fill($app,h('main',{class:'main'},errorCard(new Error('Perfil no encontrado'),render)));return;
     }
-    state.accountId=accountId;try{localStorage.setItem('cp-account',accountId);}catch{/* optional storage */}
+    if(!(await enterAccount(accountId,{redraw:false}))){if(current())fill($app,h('main',{class:'main'},errorCard(new Error('No se pudo abrir ese perfil'),render)));return;}
+    if(!current())return;
   }
   await ensureBrand('mine');
   if (!current()) return;

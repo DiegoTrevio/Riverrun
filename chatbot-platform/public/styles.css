@@ -126,6 +126,20 @@ h3 { font-size: 14px; line-height: 1.4; margin: 16px 0 8px; font-weight: 600; }
 .account-switch strong { color: var(--text); font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .account-switch span { color: var(--muted); font-size: 12px; }
 .account-switch select { background: transparent; color: var(--text); border: 0; min-height: 32px; padding: 4px 0; margin: 0; box-shadow: none; font-weight: 600; } /* taste-skill-ignore: sin sombra (anula la del control) */
+/* Selector de perfil de la cuenta maestra: botón con el perfil actual y, al abrirlo, búsqueda y lista. */
+.account-switch.picker { padding: 4px; gap: 4px; }
+.account-switch.picker.inside { border-color: var(--notice-line); background: var(--pill-warning-bg); }
+.account-switch-button { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-height: 40px; padding: 4px 6px; margin: 0; background: transparent; color: var(--text); border: 0; box-shadow: none; text-align: left; cursor: pointer; } /* taste-skill-ignore: sin sombra (anula la del control) */
+.account-switch-text { display: flex; flex-direction: column; min-width: 0; }
+.account-switch.picker.inside .account-switch-text span { color: var(--pill-warning-ink); }
+.account-switch-panel { display: flex; flex-direction: column; gap: 6px; padding: 2px; }
+.account-switch-panel input { margin: 0; }
+.account-switch-list { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow-y: auto; }
+.account-switch-list li { display: flex; align-items: center; gap: 6px; padding: 7px 8px; border-radius: 6px; cursor: pointer; font-size: 14px; color: var(--text); }
+.account-switch-list li .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-switch-list li.active, .account-switch-list li:hover { background: var(--active); }
+.account-switch-list li[aria-selected="true"] { font-weight: 600; }
+.account-switch-empty { margin: 4px 6px; }
 .nav-list { display: flex; flex-direction: column; gap: 2px; }
 .sidebar .nav-item { display: flex; align-items: center; gap: 10px; color: var(--muted); padding: 0 10px; min-height: 34px; border-radius: var(--radius-control); font-weight: 500; position: relative; }
 .sidebar .nav-item .icon { color: var(--muted); }
@@ -455,6 +469,9 @@ details.card:not([open]) { padding-top: 6px; padding-bottom: 6px; }
 .account-notices .banner .text { flex: 1 1 320px; min-width: 0; }
 .banner.warn { background: var(--pill-warning-bg); color: var(--pill-warning-ink); border-color: var(--notice-line); }
 .banner.danger { background: var(--pill-negative-bg); color: var(--pill-negative-ink); border-color: color-mix(in srgb, var(--negative) 25%, transparent); }
+.banner.master { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin-bottom: 16px; padding: 8px 8px 8px 14px; background: var(--pill-warning-bg); color: var(--pill-warning-ink); border-color: var(--notice-line); }
+.banner.master .text { flex: 1 1 320px; min-width: 0; }
+.banner.master > .btn { margin-left: 0; min-height: 30px; padding: 4px 12px; font-size: 13px; background: var(--surface); color: var(--text); border-color: var(--control); }
 .banner.ok { background: var(--pill-positive-bg); color: var(--pill-positive-ink); border-color: color-mix(in srgb, var(--positive) 25%, transparent); font-weight: 600; }
 .banner a:not(.btn) { color: inherit; font-weight: 600; }
 .banner .btn, .banner button { margin-left: 4px; vertical-align: middle; }

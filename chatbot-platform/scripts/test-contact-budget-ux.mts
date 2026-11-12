@@ -5,6 +5,7 @@ import {createRequire} from 'node:module';
 import fs from 'node:fs';
 import pg from 'pg';
 import {chromium} from 'playwright';
+import {pickProfile} from './profile-picker.mts';
 const url=new URL(process.env.TEST_DATABASE_URL??'postgres://chatbot:chatbot@127.0.0.1:5433/chatbot_test');
 assert.ok(['localhost','127.0.0.1','[::1]'].includes(url.hostname),'Solo PostgreSQL local');url.pathname='/postgres';
 const admin=new pg.Client({connectionString:url.href});await admin.connect();const name='contact_budget_ux_'+randomUUID().replaceAll('-','');await admin.query(`CREATE DATABASE "${name}" TEMPLATE template0`);
@@ -39,7 +40,7 @@ try{
  const held=(await pool.query("INSERT INTO ai_spend(account_id,kind,models,state,cost_source) VALUES($1,'decision',ARRAY['sin-tarifa'],'unknown','unknown') RETURNING id",[h.accountId])).rows[0];
  await page.reload();await page.getByText('sin-tarifa',{exact:true}).waitFor();await page.getByLabel('Importe confirmado (USD)',{exact:true}).fill('0.001');await page.getByLabel('Motivo de la confirmación',{exact:true}).fill('Revisado en la factura del proveedor');await page.getByRole('button',{name:'Confirmar importe',exact:true}).click();await page.getByText('Importe confirmado',{exact:true}).waitFor();await page.getByRole('heading',{name:'Presupuesto de este perfil'}).waitFor();assert.equal((await pool.query('SELECT state FROM ai_spend WHERE id=$1',[held.id])).rows[0].state,'settled');checks.push('Un importe desconocido requiere confirmación explícita y conserva auditoría');
  await page.goto(`${base}/#/consumo?account_id=${other.id}`);await page.getByRole('heading',{name:'Presupuesto de este perfil'}).waitFor();assert.equal(await page.getByLabel('Límite mensual (USD)',{exact:true}).inputValue(),'30');
- await page.locator('#profile-switch').selectOption(h.accountId);await page.waitForFunction(()=>!location.hash.includes('account_id'));await page.getByRole('heading',{name:'Presupuesto de este perfil'}).waitFor();assert.equal(await page.getByLabel('Límite mensual (USD)',{exact:true}).inputValue(),'0');
+ await pickProfile(page,h.accountId);await page.waitForFunction(()=>!location.hash.includes('account_id'));await page.getByRole('heading',{name:'Presupuesto de este perfil'}).waitFor();assert.equal(await page.getByLabel('Límite mensual (USD)',{exact:true}).inputValue(),'0');
  checks.push('El aviso abre el perfil correcto y permite cambiar de perfil sin quedarse fijado');
  for(const route of ['contacts',`contact/${records[0].c.id}`,'consumo'])for(const width of [1366,768,390]){
   await page.setViewportSize({width,height:1000});await page.goto(`${base}/#/${route}`);await page.locator('.main h1').waitFor();await page.evaluate(axe);

@@ -254,6 +254,8 @@ Internet ──HTTPS──> Caddy (app.tudominio.com)
 
 En **Configuración → Perfiles**, el maestro crea el perfil e invita a su dueño (elige su contraseña al aceptar y queda como dueño). En **Usuarios y permisos**, selecciona el perfil de cada usuario o concede acceso maestro. Cada usuario tiene un único perfil; varios usuarios pueden compartirlo. La reasignación se aplica a las sesiones ya abiertas en la siguiente petición y retira al usuario como propietario del perfil anterior para evitar sus alertas. Las rutas y las APIs conservan `account_id` por compatibilidad.
 
+**Cambiar de perfil (cuenta maestra).** Arriba del menú lateral está el perfil en el que estás; al tocarlo se abre una búsqueda (sin importar acentos ni mayúsculas) con «Todos los perfiles» y los últimos cinco que abriste primero. Flechas e Intro para elegir, Escape para cerrar. Mientras estás dentro de un negocio, un aviso amarillo arriba de cada pantalla dice cuál es, con «Cambiar de perfil» y «Ver todos los perfiles». Cada entrada a un perfil queda en la bitácora de seguridad como «La cuenta maestra entró a este perfil» (una vez por persona y perfil cada media hora). La anota el servidor en cualquier petición del maestro que traiga `account_id`, aunque no pase por el selector: la ves en **Sistema → Seguridad** y los administradores de ese negocio en su **Actividad de seguridad**. La API es `POST /api/accounts/:id/switch` (solo maestro).
+
 La migración `009_master_access.sql` asigna una sola vez acceso maestro al usuario existente y verificado **diegoa.trevio@gmail.com**, conservando su contraseña. Si ese usuario aún no existe o su correo no está confirmado, no lo crea ni le concede acceso. Después de registrar y verificar el correo, el operador del servidor puede ejecutar:
 
 ```bash
