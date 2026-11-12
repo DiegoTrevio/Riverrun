@@ -807,7 +807,7 @@ select.compact { width: auto; max-width: 260px; min-height: 30px; padding: 3px 2
 }
 
 /* Redes sociales: botón de cada red para conectar. */
-.social-network { display: flex; gap: 10px; align-items: center; text-align: left; white-space: normal; width: 100%; min-width: 0; padding: 12px; min-height: 64px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-card); color: inherit; }
+.social-network { display: flex; gap: 12px; align-items: center; justify-content: flex-start; text-align: left; white-space: normal; width: 100%; min-width: 0; padding: 12px; min-height: 64px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-card); color: inherit; }
 .social-network:hover { border-color: var(--accent-track); background: var(--accent-soft); }
 
 /* Publicaciones: calendario del mes (7 columnas que se encogen; sin desbordar en el celular). */
@@ -987,3 +987,35 @@ details.system-security > .card { border: 0; padding: 12px 0 0; margin: 0; box-s
 /* Sistema → Zernio: el nombre del negocio y el perfil no se parten letra por letra. */
 .zernio-tenants td:first-child { min-width: 10rem; }
 .zernio-tenants td:nth-child(2) { white-space: nowrap; }
+
+/* Redes sociales: las conectadas son una lista con líneas (no cajas dentro de la tarjeta); el catálogo, una rejilla
+   que se ajusta al ancho. En el celular las acciones de cada red bajan a su propia línea. */
+.social-accounts { list-style: none; padding: 0; margin: 0; }
+.social-account { padding: 16px 0; border-top: 1px solid var(--line); }
+.social-account:first-child { border-top: 0; padding-top: 4px; }
+.social-account-head { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 4px 12px; align-items: center; }
+.social-account-head .net-icon, .social-account-head img { justify-self: center; }
+.social-account-title { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.social-account-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.social-account-body { margin: 12px 0 0 56px; max-width: 560px; }
+.social-account-body .field { margin-bottom: 0; }
+.social-catalog { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; }
+.social-network-text { display: grid; gap: 2px; min-width: 0; }
+@media (max-width: 560px) {
+  .social-account-head { grid-template-columns: 44px minmax(0, 1fr); }
+  .social-account-actions { grid-column: 2; justify-content: flex-start; margin-top: 8px; }
+  .social-account-body { margin-left: 0; }
+}
+
+/* Crear agente: el formulario y, al lado, lo que el agente hará con esa información. */
+.wizard-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: var(--gap); align-items: start; }
+.wizard-aside { padding: 4px 4px 0; }
+.wizard-aside h2 { font-size: 15px; margin: 0 0 12px; }
+.wizard-aside ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 14px; font-size: 14px; color: var(--muted); }
+.wizard-aside strong { color: var(--text); font-weight: 600; }
+@media (max-width: 1100px) { .wizard-layout { grid-template-columns: minmax(0, 1fr); } .wizard-aside { padding: 8px 4px 0; } }
+/* En el celular los pasos caben en una línea: el actual con su nombre, los demás solo con su número. */
+@media (max-width: 480px) {
+  ol.steps { flex-wrap: nowrap; gap: 12px; }
+  ol.steps li:not(.current) .label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+}
