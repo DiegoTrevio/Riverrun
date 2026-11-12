@@ -321,3 +321,29 @@ t('monedas sin centavos: Stripe recibe unidades enteras', async () => {
   assert.equal(unitAmount(49900, 'MXN'), 49900);
   assert.equal(unitAmount(1_000_000, 'clp'), 10000);
 });
+
+t('el dueño de una cuenta solo ve en /api/plans los planes que puede contratar, sin datos internos', async () => {
+  // Un plan privado asignado a otra cuenta, con su id de precio y su tope interno de IA.
+  assert.equal((await h.authed('POST', '/api/plans', { key: 'vip-otra', name: 'VIP de otra cuenta', price: 99, public: false, stripe_price_id: 'price_secreto', ai_usd_per_month: 7 })).statusCode, 200);
+  const r = await signup({ email: 'mira@planes.mx', company: 'Mira Planes' });
+  assert.equal(r.statusCode, 200, r.body);
+  const api = await as(r);
+  const res = await api('GET', '/api/plans');
+  assert.equal(res.statusCode, 200, res.body);
+  const keys = res.json().map((p: any) => p.key);
+  assert.ok(keys.includes('pro'), 'los planes públicos sí se ven');
+  assert.ok(!keys.includes('vip-otra'), 'el plan privado de otra cuenta no se ve');
+  // Pero el plan privado asignado a esta cuenta sí lo ve.
+  await pool.query(`UPDATE accounts SET plan = 'vip-otra' WHERE id = $1`, [r.json().account.id]);
+  assert.ok((await api('GET', '/api/plans')).json().some((p: any) => p.key === 'vip-otra'), 'su propio plan privado sí se ve');
+  await pool.query(`UPDATE accounts SET plan = '' WHERE id = $1`, [r.json().account.id]);
+  for (const p of res.json()) {
+    assert.equal(p.stripe_price_id, undefined, 'sin ids del proveedor (PAY-16)');
+    assert.equal(p.ai_usd_per_month, undefined, 'sin el tope interno de IA');
+  }
+  // El superadministrador sigue viendo todo para administrar los planes.
+  const all = (await h.authed('GET', '/api/plans')).json();
+  const vip = all.find((p: any) => p.key === 'vip-otra');
+  assert.equal(vip?.stripe_price_id, 'price_secreto');
+  assert.equal(vip?.ai_usd_per_month, 7);
+});

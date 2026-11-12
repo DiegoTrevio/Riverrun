@@ -153,7 +153,10 @@ export async function billingRoutes(api: FastifyInstance) {
   const supersStepUp = { ...supers, ...stepUp };
 
   /* ------------------------------ Planes ------------------------------ */
-  api.get('/api/plans', admins, async (req) => (await listPlans(req.user.role === 'superadmin')).map(planOut));
+  // El superadmin ve todo (ids del proveedor, tope de IA, privados e inactivos) para administrarlos; el dueño de una
+  // cuenta, solo lo que puede contratar y sin datos internos, igual que en Mi plan (PAY-16).
+  api.get('/api/plans', admins, async (req) =>
+    req.user.role === 'superadmin' ? (await listPlans(true)).map(planOut) : offeredPlans(req.user.account_id ?? undefined));
 
   const savePlan = async (b: z.infer<typeof PlanBody>) => {
     const cents = Math.round(b.price * 100);

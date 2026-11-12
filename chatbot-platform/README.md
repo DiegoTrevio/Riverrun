@@ -773,7 +773,7 @@ Panel (bajo `/api`, con sesión por cookie; todo se limita a la cuenta del usuar
 - Notificaciones: `/api/notifications`, `/api/notifications/read`
 - Contactos: `/api/contacts/:id`
 - Registros, uso de IA y estadísticas: `/api/logs`, `/api/ai-runs`, `/api/stats`
-- Cobro: `GET /api/billing`, `POST /api/billing/{checkout,confirm,portal,cancel}`, `/api/plans` (crear/editar: superadmin), `GET /api/billing/overview` (superadmin)
+- Cobro: `GET /api/billing`, `POST /api/billing/{checkout,confirm,portal,cancel}`, `/api/plans` (crear/editar: superadmin; al dueño de una cuenta solo le muestra los planes que puede contratar, sin ids del proveedor ni el tope de IA), `GET /api/billing/overview` (superadmin)
 - Sistema: `GET /api/system/status` (superadmin)
 
 Públicas:
