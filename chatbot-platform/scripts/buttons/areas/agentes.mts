@@ -8,6 +8,41 @@ const advanced = async (page: any) => {
 };
 
 export const checks = {
+  'Crear un agente: el horario viene elegido y cada opción muestra u oculta «Abre» y «Cierra»': async ({ h, pool, open, go }: AreaContext) => {
+    await pool.query(`UPDATE accounts SET settings = settings - 'business_hours', onboarding = onboarding - 'hours' WHERE id = $1`, [h.accountId]);
+    const { page } = await open('admin');
+    await page.route('**/api/onboarding/import**', (route: any) => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ description: 'Café en el centro.', sections: { catalog: 'Café americano — $40\nPastel de chocolate — $60\nCapuchino — $55', hours: '', location: '', faq: '', other: '' }, source: 'lo que escribiste', truncated: false, hours: null }) }));
+    await go(page, 'agentes/nuevo');
+    await page.getByText('Lo escribo yo', { exact: true }).click();
+    await page.getByLabel('Tu información').fill('Café en el centro. Café americano $40, pastel $60.');
+    await page.getByRole('button', { name: 'Siguiente →' }).click(); await page.waitForURL('**/#/agentes/nuevo?paso=2');
+    const opens = page.getByLabel('Abre', { exact: true });
+    for (const [name, times] of [[/^Lunes a viernes/, true], [/^Las 24 horas/, false], [/^Todos los días/, true], [/^Lo ajusto después/, false], [/^Lunes a sábado/, true]] as const) {
+      await page.getByRole('radio', { name }).check();
+      assert.equal(await opens.isVisible(), times, `${name}: abre y cierra ${times ? 'visibles' : 'ocultos'}`);
+    }
+    await page.unrouteAll({ behavior: 'wait' });
+  },
+  '«Para atender mejor»: Ocultar lo quita y sigue oculto al volver': async ({ h, pool, open, go }: AreaContext) => {
+    // Solo aparece cuando el agente ya atiende: encendido y con su WhatsApp conectado. Al terminar, todo como estaba.
+    const before = (await pool.query(`SELECT b.active, (SELECT json_agg(json_build_object('id', id, 'state', connection_state)) FROM channels WHERE chatbot_id = b.id AND type = 'whatsapp') AS wa FROM chatbots b WHERE b.id = $1`, [h.botId])).rows[0];
+    await pool.query(`UPDATE chatbots SET active = true WHERE id = $1`, [h.botId]);
+    await pool.query(`UPDATE channels SET connection_state = 'open' WHERE chatbot_id = $1 AND type = 'whatsapp'`, [h.botId]);
+    try {
+    const { page } = await open('admin');
+    await go(page, `bot/${h.botId}/instrucciones`);
+    const box = page.getByLabel('Para atender mejor (opcional)');
+    await box.waitFor();
+    await page.getByRole('button', { name: 'Ocultar sugerencias para atender mejor' }).click();
+    await box.waitFor({ state: 'detached' });
+    await go(page, `bot/${h.botId}/conocimiento`);
+    await page.locator('.main h1').waitFor();
+    assert.equal(await box.count(), 0, 'sigue oculto');
+    } finally {
+      await pool.query(`UPDATE chatbots SET active = $2 WHERE id = $1`, [h.botId, before.active]);
+      for (const c of before.wa || []) await pool.query(`UPDATE channels SET connection_state = $2 WHERE id = $1`, [c.id, c.state]);
+    }
+  },
   'Encender y pausar el agente cambia si responde, y pausar pide confirmación': async ({ h, pool, open, go }: AreaContext) => {
     const { page } = await open('admin');
     await go(page, `bot/${h.botId}/instrucciones`);
