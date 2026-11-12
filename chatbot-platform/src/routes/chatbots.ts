@@ -5,6 +5,7 @@ import { agentVersionRoutes } from './agent-versions.js';
 import type { PoolClient } from 'pg';
 import { buildAgent, withTemplateDefaults, WizardSchema } from '../templates/agent-builder.js';
 import * as astore from '../automation/store.js';
+import { DEFAULT_HOURS, type WeeklyHours } from '../automation/types.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -160,6 +161,29 @@ function visibleBot(user: User, bot: Chatbot) {
   return bot;
 }
 
+/**
+ * El horario del asistente se guarda en la cuenta solo si nadie lo había guardado antes: ni marcado como revisado ni
+ * cambiado del de ejemplo. Es un solo UPDATE condicional, así que dos creaciones a la vez (o una con «Horario y
+ * ajustes») no pisan un horario ya ajustado. Si falla, el agente ya quedó creado: se registra y se sigue.
+ */
+async function saveWizardHours(accountId: string, hours: WeeklyHours | null): Promise<boolean> {
+  if (!hours) return false;
+  try {
+    const saved = await query(
+      `UPDATE accounts SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{business_hours}', $2::jsonb),
+         onboarding = COALESCE(onboarding, '{}'::jsonb) || '{"hours": true}'::jsonb, updated_at = now()
+       WHERE id = $1 AND NOT COALESCE((onboarding->>'hours')::boolean, false)
+         AND (settings->'business_hours' IS NULL OR settings->'business_hours' = $3::jsonb)
+       RETURNING id`,
+      [accountId, JSON.stringify(hours), JSON.stringify(DEFAULT_HOURS)],
+    );
+    return saved.length > 0;
+  } catch (error) {
+    await logEvent({ level: 'warn', source: 'admin', message: `No se guardó el horario elegido al crear el agente: ${(error as Error).message}`, accountId });
+    return false;
+  }
+}
+
 export async function chatbotRoutes(api: FastifyInstance, service: ChatService) {
   const admins = { preHandler: requireRole('admin') };
 
@@ -213,8 +237,9 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
       const s = await astore.saveService(accountId, built.service);
       service = { id: s!.id, name: s!.name };
     }
-    await logEvent({ level: 'info', source: 'admin', message: `Agente creado con el asistente: ${result.name} (${w.scope.role}${service ? `, servicio "${service.name}"` : ''}${w.start_on_connect ? '; se encenderá al conectar su WhatsApp' : ''})`, accountId, chatbotId: result.id });
-    return { ...result, service_created: service };
+    const hoursSaved = await saveWizardHours(accountId, w.hours);
+    await logEvent({ level: 'info', source: 'admin', message: `Agente creado con el asistente: ${result.name} (${w.scope.role}${service ? `, servicio "${service.name}"` : ''}${w.start_on_connect ? '; se encenderá al conectar su WhatsApp' : ''}${hoursSaved ? '; horario de atención guardado' : ''})`, accountId, chatbotId: result.id });
+    return { ...result, service_created: service, hours_saved: hoursSaved };
   });
 
   api.post('/api/chatbots', admins, async (req: any) => {

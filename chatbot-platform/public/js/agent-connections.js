@@ -32,6 +32,47 @@ export function pendingConnections(channels, bots) {
     }));
 }
 
+/** Redes que se conectan por Zernio (con la app de Meta de la plataforma, Facebook e Instagram van por su botón). */
+export function socialNetworks() {
+  if (!state.meta.zernio_enabled) return [];
+  const metaDirect = !!state.meta.meta_connect_enabled;
+  return (state.meta.social_networks || []).filter((n) => !(metaDirect && ['facebook', 'instagram'].includes(n.id)));
+}
+
+/**
+ * «¿También atiendes por redes?»: un botón por red que todavía no atiende este agente. Crea la conexión ya asignada a
+ * él y abre la autorización de la red, sin pasar por la lista de plataformas.
+ */
+export function socialConnectCard(bot, channels) {
+  const zernio = channels.filter((c) => c.type === 'zernio' && (c.chatbot_id === bot.id || !c.chatbot_id));
+  const connected = new Set(zernio.filter((c) => c.chatbot_id === bot.id && c.config?.connected).map((c) => c.config?.platform));
+  const networks = socialNetworks().filter((n) => !connected.has(n.id));
+  const metaDirect = !!state.meta.meta_connect_enabled;
+  if (!networks.length && !metaDirect) return null;
+  const buttons = h('div', { class: 'row', style: 'flex-wrap:wrap;gap:8px' });
+  const connect = async (n) => {
+    // Una conexión de esa red que quedó sin autorizar (o sin agente) se reutiliza: un segundo clic no crea otra.
+    const pending = zernio.find((c) => c.config?.platform === n.id && !c.config?.connected);
+    for (const b of buttons.querySelectorAll('button')) b.disabled = true;
+    try {
+      const target = pending
+        ? (pending.chatbot_id ? pending : await run(() => api('PUT', `/api/channels/${pending.id}`, { chatbot_id: bot.id })))
+        : await run(() => api('POST', '/api/channels', {
+          type: 'zernio', config: { platform: n.id }, name: n.label, chatbot_id: bot.id, ...(isSuper() ? { account_id: bot.account_id } : {}),
+        }), 'Conexión creada');
+      if (target) location.hash = connectionHref({ ...target, chatbot_id: bot.id });
+    } finally {
+      for (const b of buttons.querySelectorAll('button')) b.disabled = false;
+    }
+  };
+  fill(buttons, networks.map((n) => h('button', { type: 'button', onclick: () => connect(n) }, channelIcon('zernio', n.id), ' ', n.label)));
+  return h('section', { class: 'card' },
+    h('h2', { style: 'margin-top:0' }, '¿También atiendes por redes sociales?'),
+    h('p', { class: 'muted' }, 'El mismo agente contesta los mensajes directos. Elige la red e inicia sesión en ella; no necesitas configurar nada más.'),
+    metaDirect ? metaConnectButton({ chatbotId: bot.id, accountId: bot.account_id }) : null,
+    networks.length ? buttons : null);
+}
+
 /** La cuenta y el agente vienen de la ficha: no se vuelven a pedir al crear el canal. */
 export async function tabConnections(root, bot, params = new URLSearchParams()) {
   const channels = await api('GET', `/api/channels${isSuper() ? `?account_id=${bot.account_id}` : ''}`);
@@ -42,7 +83,7 @@ export async function tabConnections(root, bot, params = new URLSearchParams()) 
   // Con la app de Meta de la plataforma, Facebook e Instagram se conectan con el botón (sin tokens ni Zernio); los
   // tokens manuales quedan solo para el superadministrador.
   const metaDirect = !!state.meta.meta_connect_enabled;
-  const social = state.meta.zernio_enabled ? (state.meta.social_networks || []).filter((n) => !(metaDirect && ['facebook', 'instagram'].includes(n.id))).map((n) => ({ type: `zernio:${n.id}`, label: n.label })) : [];
+  const social = socialNetworks().map((n) => ({ type: `zernio:${n.id}`, label: n.label }));
   const types = [...state.meta.channel_types.filter((t) => t.type !== 'playground' && t.type !== 'zernio' && !(metaDirect && !isSuper() && ['messenger', 'instagram'].includes(t.type))), ...social];
   const limit = state.meta.max_whatsapp_profiles || 4;
   const count = accountChannels.filter((c) => c.type === 'whatsapp').length;

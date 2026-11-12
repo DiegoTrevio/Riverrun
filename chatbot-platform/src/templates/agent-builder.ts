@@ -5,7 +5,7 @@
  * predecible, gratis y se puede probar.
  */
 import { z } from 'zod';
-import type { ServiceBody } from '../automation/types.js';
+import { WeeklyHoursSchema, type ServiceBody } from '../automation/types.js';
 import { DataFieldSchema, FlowSchema, PersonalitySchema, RulesSchema, type DataField } from '../types.js';
 import { isSensitiveField } from '../engine/safety.js';
 import { businessTemplate, FIXED_MESSAGES } from './business.js';
@@ -89,6 +89,11 @@ export const WizardSchema = z.object({
   request_id: z.string().regex(/^[A-Za-z0-9-]{8,64}$/, 'request_id inválido').optional(),
   /** Nace apagado y se enciende solo la primera vez que se conecta su WhatsApp (o canal). */
   start_on_connect: z.boolean().default(true),
+  /**
+   * Horario de atención elegido en el asistente. Se guarda en la cuenta solo si todavía no tenía uno guardado: crear
+   * un segundo agente no pisa el horario que ya se ajustó en «Horario y ajustes».
+   */
+  hours: WeeklyHoursSchema.nullable().default(null),
 });
 export type Wizard = z.infer<typeof WizardSchema>;
 

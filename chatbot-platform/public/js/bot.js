@@ -1,6 +1,6 @@
 import { agentTestsCard, pendingChanges, versionHistory } from './agent-versions.js';
 import { semanticActivation } from './semantic-activation.js';
-import { tabConnections } from './agent-connections.js';
+import { socialNetworks, tabConnections } from './agent-connections.js';
 import { ACTIONS, triggerSummary } from './automation.js';
 import { varsHelp } from './vars-help.js';
 import { channelIcon, channelStatusCell } from './channels.js';
@@ -90,12 +90,40 @@ async function setupSteps(bot) {
     [connected, 'Conecta WhatsApp u otro canal', (bot.channels || []).some((c) => c.type === 'whatsapp') ? `#/bot/${bot.id}/conexiones?new=1` : `#/bot/${bot.id}/empezar`],
     [!!bot.active, bot.start_on_connect ? 'Se enciende solo al conectar WhatsApp' : 'Enciéndelo', null],
   ];
-  if (steps.every(([ok]) => ok)) return null;
+  if (steps.every(([ok]) => ok)) return extraSteps(bot);
   return h('div', { class: 'card setup-steps', 'aria-label': 'Para empezar a atender' },
     h('strong', {}, 'Para empezar a atender:'),
     h('ol', {}, steps.map(([ok, label, href], i) => h('li', { class: ok ? 'ok' : '' },
       h('span', { class: 'mark', 'aria-hidden': 'true' }, ok ? icon('check', 14) : String(i + 1)),
       ok || !href ? h('span', {}, label, ok ? h('span', { class: 'sr-only' }, ' (listo)') : '') : h('a', { href }, label)))));
+}
+
+const extrasHiddenKey = (bot) => `riverrun:extras-hidden:${bot.id}`;
+
+/**
+ * Ya atiende: lo que lo hace atender mejor, cada cosa a un clic (horario, cotizaciones en PDF y redes sociales).
+ * Es opcional: se oculta cuando todo está hecho o si la persona lo cierra.
+ */
+async function extraSteps(bot) {
+  try { if (localStorage.getItem(extrasHiddenKey(bot))) return null; } catch { /* sin almacenamiento */ }
+  const setup = await api('GET', `/api/onboarding/setup${isSuper() ? `?account_id=${bot.account_id}` : ''}`).catch(() => null);
+  const hoursOk = setup?.sections?.find((x) => x.key === 'hours')?.state === 'ok';
+  const quotesOk = !!bot.ai?.quotes?.enabled;
+  const socialOk = (!socialNetworks().length && !state.meta.meta_connect_enabled) || (bot.channels || []).some((c) => (c.type === 'zernio' && c.config?.connected) || !!c.config?.connected_via);
+  const items = [
+    [hoursOk, 'Pon tu horario', 'Para que diga bien cuándo abres', '#/automation/settings'],
+    [quotesOk, 'Envía cotizaciones en PDF', 'Con tus precios y tu formato', `#/bot/${bot.id}/cotizaciones`],
+    [socialOk, 'Contesta también en redes', 'Instagram, Facebook, TikTok y más', `#/bot/${bot.id}/empezar`],
+  ].filter(([ok]) => !ok);
+  if (!items.length) return null;
+  const box = h('div', { class: 'card setup-steps', 'aria-label': 'Para atender mejor (opcional)' },
+    h('div', { class: 'row between' },
+      h('strong', {}, 'Para atender mejor (opcional):'),
+      h('button', { class: 'small', type: 'button', 'aria-label': 'Ocultar sugerencias para atender mejor', onclick: () => { try { localStorage.setItem(extrasHiddenKey(bot), '1'); } catch { /* sin almacenamiento */ } box.remove(); document.querySelector('.agent-tabs a[aria-current]')?.focus(); } }, 'Ocultar')),
+    h('ul', {}, items.map(([, label, hint, href]) => h('li', {},
+      h('span', { class: 'mark', 'aria-hidden': 'true' }, '+'),
+      h('span', {}, h('a', { href }, label), h('span', { class: 'small muted' }, ` · ${hint}`))))));
+  return box;
 }
 
 /** Tras actualizar el agente: sus conversaciones empiezan de cero con los cambios (la bienvenida y sus fotos vuelven a salir). */
