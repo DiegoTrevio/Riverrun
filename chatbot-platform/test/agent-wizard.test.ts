@@ -200,3 +200,27 @@ t('crear: queda listo para encenderse al conectar, y la misma solicitud repetida
   assert.equal(manual.json().start_on_connect, false);
   assert.equal((await h.authed('POST', '/api/chatbots/wizard', { account_id: h.accountId, ...base(), request_id: 'mal id!' })).statusCode, 400);
 });
+
+t('horario del asistente: se guarda en la cuenta la primera vez y no pisa uno ya guardado', async () => {
+  await pool.query(`UPDATE accounts SET onboarding = onboarding - 'hours' WHERE id = $1`, [h.accountId]);
+  const hours = { mon: [['10:00', '19:00']], tue: [['10:00', '19:00']], wed: [], thu: [], fri: [['10:00', '19:00']], sat: [['10:00', '14:00']], sun: [] };
+  const first = await h.authed('POST', '/api/chatbots/wizard', { account_id: h.accountId, ...base(), hours });
+  assert.equal(first.statusCode, 200, first.body);
+  assert.equal(first.json().hours_saved, true);
+  const saved = async () => (await h.authed('GET', `/api/settings?account_id=${h.accountId}`)).json().business_hours;
+  assert.deepEqual(await saved(), hours);
+  const setup = (await h.authed('GET', `/api/onboarding/setup?account_id=${h.accountId}`)).json();
+  assert.equal(setup.sections.find((s: any) => s.key === 'hours').state, 'ok');
+  // Un segundo agente con otro horario no cambia el que ya quedó guardado.
+  const second = await h.authed('POST', '/api/chatbots/wizard', { account_id: h.accountId, ...base(), hours: { ...hours, sun: [['09:00', '13:00']] } });
+  assert.equal(second.json().hours_saved, false);
+  assert.deepEqual(await saved(), hours);
+  // Sin horario («lo ajusto después») no se toca nada; uno imposible se rechaza.
+  assert.equal((await h.authed('POST', '/api/chatbots/wizard', { account_id: h.accountId, ...base() })).json().hours_saved, false);
+  assert.equal((await h.authed('POST', '/api/chatbots/wizard', { account_id: h.accountId, ...base(), hours: { ...hours, mon: [['19:00', '10:00']] } })).statusCode, 400);
+  // Una cuenta de antes de la marca, con su horario ya cambiado del de ejemplo, tampoco se pisa.
+  await pool.query(`UPDATE accounts SET onboarding = onboarding - 'hours' WHERE id = $1`, [h.accountId]);
+  const legacy = await h.authed('POST', '/api/chatbots/wizard', { account_id: h.accountId, ...base(), hours: { ...hours, sun: [['09:00', '13:00']] } });
+  assert.equal(legacy.json().hours_saved, false);
+  assert.deepEqual(await saved(), hours);
+});

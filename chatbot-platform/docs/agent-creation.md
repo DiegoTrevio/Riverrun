@@ -11,6 +11,7 @@ Las tres pantallas muestran el indicador **1 Tu negocio · 2 Qué hará · 3 Pru
 2. **Qué hará** (`#/agentes/nuevo?paso=2`)
    - **Esto aprendió de {negocio}**: la descripción y lo que encontró (✓ Precios, ✓ Horarios…). En *Revisar o corregir* están las secciones, *Agregar otra fuente* y *Algo más que deba saber*.
    - Cuatro tarjetas con ejemplo: **Resolver dudas** · **Agendar citas** · **Tomar pedidos** · **Solo tomar datos y pasarte al cliente**. La que conviene a su tipo de negocio ya viene elegida y marcada como *Recomendado para tu tipo de negocio*.
+   - **¿Cuándo atiende tu negocio?** (solo si la cuenta aún no guarda su horario): ya viene elegido. Si al leer la información se entendió el horario («Lunes a viernes de 9 a 7. Sábados de 9 a 2»), aparece *Como lo leímos de tu información* con el resumen; si no, el típico de su tipo de negocio (restaurante todos los días de 12 a 22, hotel las 24 horas, tienda de lunes a sábado de 10 a 20, los demás de lunes a sábado de 9 a 18). Con un clic se cambia por *Lunes a sábado* (el sábado hasta las 14:00), *Lunes a viernes*, *Todos los días* o *Las 24 horas*, con *Abre* y *Cierra* ahí mismo, o *Lo ajusto después*. Al crear el agente se guarda como el horario de la cuenta (el que el agente dice y usa para saber cuándo hay alguien del equipo) y en **Ajustes** queda como listo. Si la cuenta ya tenía horario guardado, la tarjeta no aparece y crear otro agente no lo cambia.
    - **Personalizar (opcional)**, plegado y ya ajustado al tipo de negocio: cómo habla (con qué nombre se presenta, trato, tono, emojis, largo), qué datos pide, límites (precios, qué hace si no sabe, temas que no toca, cuándo pasar con una persona), dirección y *Ver las instrucciones que se generarán* (se piden a `/api/chatbots/draft` solo al abrirlo y se pueden editar).
    - **Crear mi agente** lo crea **apagado** y lleva a la pantalla 3. Si el plan ya no permite más agentes, se avisa desde antes con un enlace a **Plan**.
    - Lo escrito se guarda como borrador en el navegador; al volver se ve "Retomamos lo que llevabas de tu agente" con *Empezar de nuevo*.
@@ -18,7 +19,14 @@ Las tres pantallas muestran el indicador **1 Tu negocio · 2 Qué hará · 3 Pru
    - Una línea dice en qué estado está: "Todavía no contesta a tus clientes: se encenderá solo en cuanto conectes tu WhatsApp", con *Prefiero encenderlo yo después* para quien quiera hacerlo a mano.
    - **Pruébalo como si fueras tu cliente**: el simulador de siempre (no envía nada a clientes).
    - **Conecta tu WhatsApp**: si el correo no está confirmado, primero lo pide (*Reenviar correo* · *Ya lo confirmé*; la página se actualiza sola al confirmarlo en otra pestaña). Después, **Conectar mi WhatsApp** muestra el QR en la misma pantalla ("Con mi número" queda como alternativa). Si la cuenta ya conectó un WhatsApp en otro agente, se puede pasar a este.
+   - **¿También atiendes por redes sociales?**: un botón por red (Instagram, Facebook, TikTok y las demás que ofrece Zernio) que este agente todavía no atiende. Crea la conexión ya asignada al agente y abre la autorización de la red; no hay que elegir plataforma ni escribir nombres.
    - Al conectarse: **¡Listo! Tu agente ya responde en tu WhatsApp (+52…)**, con lo que sigue: ver conversaciones, enseñarle más, ajustar cómo atiende o pausarlo, revisar el horario (si agenda), conectar Facebook o Instagram e invitar al equipo.
+
+Ya atendiendo, la ficha del agente muestra **Para atender mejor (opcional)** con lo que falte, cada cosa a un clic: *Pon tu horario*, *Envía cotizaciones en PDF* y *Contesta también en redes*. Se va sola cuando todo está hecho, o con *Ocultar*.
+
+### Cómo se lee el horario
+
+`hoursFromText` (`src/automation/hours-text.ts`) lee la sección de horarios que ordenó la IA, sin otra llamada a la IA. Entiende rangos de días (*lunes a viernes*, *lun a vie*, *viernes a lunes*), listas (*lunes, miércoles y viernes*), *entre semana*, *fines de semana*, *todos los días* y *diario*; horas como *9 a 7*, *9:30-18:00 hrs*, *10am a 2pm*, *de 4 a 11 pm*, dos franjas por día y *24 horas*; y *cerrado*. Si no entiende algo, no adivina: devuelve `null` y el asistente propone el horario típico. La persona siempre ve el resultado antes de crear el agente.
 
 **Empezar** (`#/empezar`) lleva siempre a lo que falta: sin agentes, a crear uno; con un agente que aún no responde, a su pantalla 3; si todo está listo, a **Agentes**. Los enlaces viejos (`#/inicio`, `#/agentes?new=1`) llevan al recorrido nuevo.
 

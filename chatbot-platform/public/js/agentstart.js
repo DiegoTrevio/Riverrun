@@ -4,6 +4,7 @@ import { render } from './main.js';
 import { tabPlayground } from './playground.js';
 import { acct, isSuper } from './session.js';
 import { whatsappConnector } from './whatsapp.js';
+import { socialConnectCard } from './agent-connections.js';
 
 /* ------------------------------ Crear un agente: 3. Pruébalo y conéctalo ------------------------------ */
 
@@ -46,6 +47,7 @@ export async function viewAgentStart(root, id) {
       h('p', { class: 'muted', style: 'margin:0' }, 'Pregúntale precios, horarios o algo que no le enseñaste: debe decir que lo confirma con tu equipo en lugar de inventar. Si algo no te gusta, ', h('a', { href: `#/bot/${bot.id}/conocimiento` }, 'enséñale más'), ' o ', h('a', { href: `#/bot/${bot.id}/instrucciones` }, 'ajusta cómo atiende'), '.')),
     simulator,
     connected ? null : connectCard,
+    socialConnectCard(bot, all.filter((c) => c.account_id === bot.account_id)),
   );
   drawConnect(connectCard, bot, { phones, mine, connected, live });
   await tabPlayground(simulator, bot);
