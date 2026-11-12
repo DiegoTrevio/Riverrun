@@ -220,7 +220,11 @@ export const ajustesAvanzados = defineTool({
     reanudar_tras_minutos: z.number().int().min(0).max(10080).optional().describe('0 = no se reanuda solo'),
   }).refine((a) => Object.keys(AVANZADOS).some((k) => (a as any)[k] !== undefined), 'Indica qué ajustar'),
   label: () => 'Ajustando el agente…',
-  risk: () => 'reversible',
+  // Apagar la revisión de precios, datos o afirmaciones deja que el agente diga lo que no está en su información: eso
+  // siempre lo confirma la persona, aunque no se haya leído texto de clientes.
+  risk: (a) => (a.revisar_datos === false || a.revisar_afirmaciones === 'apagado'
+    ? { level: 'confirm', reasons: ['Apaga una revisión: el agente podría decir precios, datos o afirmaciones que no están en su información.'] }
+    : 'reversible'),
   targets: (a) => [{ kind: 'bot', id: a.agente_id }],
   execute: (a, ctx) => applyChanges(ctx, a.agente_id, 'ajustes_avanzados_del_agente',
     () => Object.fromEntries(Object.entries(AVANZADOS).filter(([k]) => (a as any)[k] !== undefined).map(([k, [p]]) => [p, (a as any)[k]])),
@@ -246,7 +250,10 @@ export const mensajesGuardados = defineTool({
     })).max(40),
   }),
   label: () => 'Cambiando los mensajes guardados…',
-  risk: () => 'reversible',
+  // Se mandan tal cual, sin pasar por la revisión de datos: la persona ve los textos antes de guardarlos.
+  risk: (a) => (a.mensajes.length
+    ? { level: 'confirm', reasons: ['El agente manda estos textos tal cual, sin revisar precios ni enlaces.'] }
+    : 'reversible'),
   targets: (a) => [{ kind: 'bot', id: a.agente_id }],
   execute: (a, ctx) => applyChanges(ctx, a.agente_id, 'mensajes_guardados', (live) => {
     const old = new Map<string, any>((live.saved_messages ?? []).map((m: any) => [m.code, m]));

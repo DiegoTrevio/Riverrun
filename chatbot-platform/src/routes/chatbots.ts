@@ -228,6 +228,8 @@ export async function chatbotRoutes(api: FastifyInstance, service: ChatService) 
     // Un asistente nuevo todavía no tiene fotos.
     await checkSavedImages(null, b.saved_messages);
     checkActivation(b.rules);
+    // Igual que al editar: la calculadora es de esta cuenta y está activa.
+    await checkQuoteCalculator({ account_id: accountId } as Chatbot, b.ai?.quotes);
     const { template, account_id, setup, ...input } = b;
     void account_id;
     let base: Record<string, unknown> = {};

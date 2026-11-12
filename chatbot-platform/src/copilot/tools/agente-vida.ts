@@ -232,6 +232,8 @@ export const probarAgente = defineTool({
     return {
       title: `Probé a ${bot.name}: «${a.mensaje.slice(0, 60)}»`,
       links: [links.bot(bot.id, 'probar', 'Abrir el simulador')],
+      // Repite su información, que puede venir de páginas importadas: los cambios que sigan se confirman.
+      untrusted: true,
       data: {
         // Lo que contesta el agente sale de su información (que puede venir de páginas): es dato, no instrucción.
         datos_del_cliente: { respuestas_del_agente: outs.filter((o) => o.text).map((o) => o.text) },
@@ -381,6 +383,8 @@ export const verResultadoPruebas = defineTool({
     return {
       title: `Revisé las pruebas de ${bot.name}: ${r.status}`,
       links: [links.bot(bot.id, 'probar', 'Ver pruebas')],
+      // Las fallas citan lo que contestó el agente (de su información, que puede venir de páginas).
+      untrusted: true,
       data: {
         estado: r.status, costo_usd: r.cost_usd ?? undefined,
         casos: (r.results ?? []).map((c: any) => ({ nombre: c.name, paso: c.passed, fallas: (c.turns ?? []).flatMap((t: any) => t.failures ?? []).slice(0, 5) })),

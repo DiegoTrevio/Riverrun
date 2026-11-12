@@ -473,6 +473,32 @@ harden_firewalld() { # puertos-ssh puertos…
   firewall-cmd --reload >/dev/null
 }
 
+# Memoria de intercambio (swap) de 2 GB si no hay ninguna y el servidor tiene 8 GB o menos: los topes de los servicios
+# suman más que un VPS de 4 GB, y sin swap un pico (PDF, respaldo y WhatsApp a la vez) hace que el sistema mate a uno.
+# swappiness=10: solo se usa en un apuro, no para lo de todos los días.
+harden_swap() { # raíz del sistema
+  local root="$1" etc="$1/etc" meminfo="${RIVERRUN_MEMINFO:-/proc/meminfo}" mem_kb swap_kb free_kb
+  mem_kb="$(awk '/^MemTotal:/ { print $2 }' "$meminfo" 2>/dev/null || true)"
+  swap_kb="$(awk '/^SwapTotal:/ { print $2 }' "$meminfo" 2>/dev/null || true)"
+  [[ "$mem_kb" =~ ^[0-9]+$ && "$swap_kb" =~ ^[0-9]+$ ]] || { warn "No se pudo leer la memoria: no se tocó el swap."; return 0; }
+  if (( swap_kb > 0 )); then ok "Memoria de intercambio (swap): ya hay $(( swap_kb / 1024 )) MB"; return 0; fi
+  (( mem_kb <= 8388608 )) || return 0
+  free_kb="${RIVERRUN_HARDEN_FREE_KB:-$(df -Pk "$root/" 2>/dev/null | awk 'NR == 2 { print $4 }')}"
+  if [[ ! "$free_kb" =~ ^[0-9]+$ ]] || (( free_kb < 10485760 )); then warn "Menos de 10 GB libres: no se creó el swap (créalo a mano, docs/publicar-digitalocean.md)."; return 0; fi
+  if [[ ! -e "$root/swapfile" ]]; then
+    fallocate -l 2G "$root/swapfile" 2>/dev/null || dd if=/dev/zero of="$root/swapfile" bs=1M count=2048 status=none \
+      || { rm -f "$root/swapfile"; warn "No se pudo crear /swapfile: el servidor sigue sin swap."; return 0; }
+    chmod 600 "$root/swapfile"
+    mkswap "$root/swapfile" >/dev/null || { rm -f "$root/swapfile"; warn "mkswap falló: el servidor sigue sin swap."; return 0; }
+  fi
+  swapon "$root/swapfile" || { warn "swapon falló: revisa /swapfile."; return 0; }
+  grep -qs '^/swapfile[[:space:]]' "$etc/fstab" || printf '/swapfile none swap sw 0 0\n' >> "$etc/fstab"
+  install -d -m 0755 "$etc/sysctl.d"
+  printf '# ./riverrun harden: el swap solo para un apuro.\nvm.swappiness = 10\n' > "$etc/sysctl.d/60-riverrun-swap.conf"
+  sysctl -q -p "$etc/sysctl.d/60-riverrun-swap.conf" >/dev/null 2>&1 || true
+  ok "Memoria de intercambio (swap): 2 GB en /swapfile"
+}
+
 cmd_harden() {
   local yes=0 fw=1 ssh=1 a
   for a in "$@"; do
@@ -512,6 +538,7 @@ cmd_harden() {
   say "${B}Endurecer el servidor${N}"
   if [[ "$fam" == deb ]]; then say "  · Actualizaciones de seguridad automáticas (unattended-upgrades)."
   else say "  · Actualizaciones de seguridad automáticas (dnf-automatic, solo las de seguridad)."; fi
+  say "  · Memoria de intercambio (swap) de 2 GB si el servidor no tiene y tiene 8 GB o menos."
   say "  · fail2ban: bloquea una hora las IP que fallan 5 veces al entrar por SSH (puerto $sshp)."
   if (( ssh && keyok )); then say "  · SSH solo con llave: sin contraseñas, root solo con llave, 3 intentos por conexión."
   elif (( ssh )); then warn "  · SSH: se deja como está. La cuenta $me no tiene una llave válida en authorized_keys: apagar las contraseñas te dejaría fuera."
@@ -599,6 +626,7 @@ cmd_harden() {
     ufw reload >/dev/null
     ok "Firewall activo: entra SSH ($sshp)${ports[*]:+ y ${ports[*]}}; lo demás que Docker publique queda cerrado hacia afuera"
   fi
+  harden_swap "$root"
   printf 'harden %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$etc/riverrun-harden"
   say; ok "Servidor endurecido. Antes de cerrar esta sesión, prueba entrar por SSH desde otra terminal."
 }
@@ -1200,6 +1228,22 @@ cmd_rotate_data_key() {
 # No cambia nada y no arranca nada. --offline no sale a internet. Lo que no se puede comprobar aquí (respaldos,
 # migraciones, HTTPS) se informa como "no verificado": nunca como aprobado.
 PF_BLOCK=0; PF_WARN=0; PF_UNVERIFIED=0
+# Suma, en MB, de los topes de memoria de los servicios que siempre corren (los *_MEM_LIMIT de .env o los de
+# docker-compose.yml). restore queda fuera: solo corre al restaurar.
+mem_limits_mb() {
+  local total=0 pair key def v n
+  for pair in POSTGRES_MEM_LIMIT:1g REDIS_MEM_LIMIT:512m EVOLUTION_MEM_LIMIT:1g BACKEND_MEM_LIMIT:1536m PDF_MEM_LIMIT:1g BACKUP_MEM_LIMIT:512m CADDY_MEM_LIMIT:256m; do
+    key="${pair%%:*}"; def="${pair#*:}"
+    [[ "$key" == CADDY_MEM_LIMIT && "$(env_get COMPOSE_PROFILES)" != *https* ]] && continue
+    v="$(env_get "$key")"; v="${v:-$def}"
+    # Como Docker: 1.5g, 1536m, 1536M, 1610612736 (bytes). Lo que no se entiende no se suma.
+    n="$(printf '%s' "$v" | awk '{ v = tolower($0); sub(/b$/, "", v); u = substr(v, length(v)); if (u ~ /[kmg]/) v = substr(v, 1, length(v) - 1); else u = "";
+      if (v !~ /^[0-9]+(\.[0-9]+)?$/) exit; f = (u == "g") ? 1024 : (u == "m") ? 1 : (u == "k") ? 1 / 1024 : 1 / 1048576; printf "%d", v * f }')"
+    [[ "$n" =~ ^[0-9]+$ ]] || continue
+    total=$(( total + 10#$n ))
+  done
+  printf '%s' "$total"
+}
 pf_ok()         { ok "$*"; }
 pf_warn()       { PF_WARN=$((PF_WARN + 1)); warn "$*"; }
 pf_block()      { PF_BLOCK=$((PF_BLOCK + 1)); printf '%s✕%s %s\n' "$R" "$N" "$*"; }
@@ -1282,6 +1326,18 @@ cmd_preflight() {
     else pf_ok "Memoria: ${mem_mb} MB"; fi
   else
     pf_unverified "memoria (no se pudo leer /proc/meminfo)"
+  fi
+  # Sin swap, un pico a la vez de PDF, respaldo y WhatsApp agota la memoria y el sistema mata un servicio al azar
+  # (PostgreSQL o Evolution). Los topes de memoria de los servicios suman más que un VPS de 4 GB: el swap es el colchón.
+  local swap_kb limits_mb
+  swap_kb="${RIVERRUN_PREFLIGHT_SWAP_KB:-$(awk '/^SwapTotal:/ { print $2 }' /proc/meminfo 2>/dev/null || true)}"
+  if [[ "${swap_kb:-}" =~ ^[0-9]+$ && "${mem_kb:-}" =~ ^[0-9]+$ ]]; then
+    if (( swap_kb == 0 && mem_kb <= 8388608 )); then pf_warn "Sin memoria de intercambio (swap): con ${mem_mb:-?} MB, un pico puede tumbar PostgreSQL o WhatsApp. sudo ./riverrun harden crea 2 GB."
+    elif (( swap_kb > 0 )); then pf_ok "Memoria de intercambio (swap): $(( swap_kb / 1024 )) MB"; fi
+    limits_mb="$(mem_limits_mb)"
+    if (( limits_mb > (mem_kb + swap_kb) / 1024 )); then
+      pf_warn "Los topes de memoria de los servicios suman ${limits_mb} MB y el servidor tiene $(( (mem_kb + swap_kb) / 1024 )) MB con swap. Ajusta los *_MEM_LIMIT en .env (valores para 4 GB en docs/publicar-digitalocean.md)."
+    fi
   fi
   if [[ "${disk_kb:-0}" =~ ^[0-9]+$ ]] && (( ${disk_kb:-0} > 0 )); then
     disk_gb=$(( disk_kb / 1048576 ))

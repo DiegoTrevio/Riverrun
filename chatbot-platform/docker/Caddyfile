@@ -4,11 +4,25 @@
 	on_demand_tls {
 		ask http://backend:3000/internal/domain-ok
 	}
+	# Quien abre conexiones y manda los encabezados letra por letra (slowloris) no las retiene: 15 s para los
+	# encabezados y 2 min sin actividad. El cuerpo no tiene tope de tiempo aquí (una subida lenta de 16 MB es válida);
+	# el backend corta a los 5 min.
+	servers {
+		timeouts {
+			read_header 15s
+			idle 2m
+		}
+	}
 }
 
 # Siempre por HTTPS (un año) y sin anunciar el servidor. Sin includeSubDomains: DOMAIN puede ser el dominio del negocio y
 # sus otros subdominios no son nuestros. Los demás encabezados (CSP, iframes, nosniff) los pone el backend.
 (seguridad) {
+	# Tope del cuerpo de cada petición: cabe una subida de varios archivos (cada uno de hasta 16 MB); lo enorme ni llega
+	# al backend.
+	request_body {
+		max_size 64MB
+	}
 	header {
 		Strict-Transport-Security "max-age=31536000"
 		-Server

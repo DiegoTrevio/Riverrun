@@ -55,3 +55,11 @@ test('fórmulas: no ejecuta código ni acepta cosas raras', () => {
   assert.throws(() => compile('1+'.repeat(400) + '1'), FormulaError, 'tope de longitud');
   assert.throws(() => compile('('.repeat(60) + '1' + ')'.repeat(60)), FormulaError, 'tope de niveles');
 });
+
+test('fórmulas: un número tan grande que no cabe se rechaza al escribirla, también dentro de min y max', () => {
+  const huge = '9'.repeat(400);
+  for (const src of [huge, `max(${huge}, 0)`, `max(-${huge}, 0)`, `abs(-${huge})`]) {
+    assert.throws(() => run(src, {}), (e: unknown) => e instanceof FormulaError && /demasiado grande/.test(e.message), src);
+  }
+  assert.equal(run('max(2, 3) + abs(-1)', {}), 4);
+});

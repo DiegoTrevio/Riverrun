@@ -224,6 +224,47 @@ t('contacto: si Cloudflare no responde, el mensaje no sale (captcha cerrado ante
   }
 });
 
+t('contacto: en producción sin las claves del captcha el formulario queda cerrado y no sale nada', async () => {
+  const prevMail = config.signup.superadminEmail;
+  const prev = { ...config.signup.turnstile };
+  const prevEnv = process.env.RIVERRUN_ENV;
+  config.signup.superadminEmail = 'soporte@plataforma.mx';
+  Object.assign(config.signup.turnstile, { siteKey: '', secretKey: '' });
+  process.env.RIVERRUN_ENV = 'production';
+  try {
+    const n = outbox.length;
+    const r = await h.app.inject({ method: 'POST', url: '/contacto', remoteAddress: '10.42.0.1', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      payload: new URLSearchParams({ name: 'Ana', email: 'ana@cliente.mx', message: 'Mensaje de prueba largo' }).toString() });
+    assert.equal(r.statusCode, 503);
+    assert.match(r.body, /no está disponible por ahora/);
+    assert.equal(outbox.length, n, 'no sale nada');
+  } finally {
+    if (prevEnv === undefined) delete process.env.RIVERRUN_ENV; else process.env.RIVERRUN_ENV = prevEnv;
+    Object.assign(config.signup.turnstile, prev);
+    config.signup.superadminEmail = prevMail;
+  }
+});
+
+t('contacto: el tope del día de toda la plataforma solo cuenta lo que pasó el captcha', async () => {
+  const prevMail = config.signup.superadminEmail;
+  const prev = { ...config.signup.turnstile };
+  config.signup.superadminEmail = 'soporte@plataforma.mx';
+  Object.assign(config.signup.turnstile, { siteKey: 'site', secretKey: 'secret' });
+  try {
+    await pool.query(`DELETE FROM rate_limits WHERE key = 'contact:global'`);
+    for (let i = 0; i < 3; i++) {
+      const r = await h.app.inject({ method: 'POST', url: '/contacto', remoteAddress: `10.43.0.${i + 1}`, headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        payload: new URLSearchParams({ name: 'Bot', email: 'bot@spam.mx', message: 'Mensaje sin captcha resuelto' }).toString() });
+      assert.equal(r.statusCode, 400);
+    }
+    const row = await pool.query(`SELECT hits FROM rate_limits WHERE key = 'contact:global'`);
+    assert.equal(row.rowCount, 0, 'sin captcha válido no se gasta el tope de los clientes reales');
+  } finally {
+    Object.assign(config.signup.turnstile, prev);
+    config.signup.superadminEmail = prevMail;
+  }
+});
+
 t('un cuerpo JSON con __proto__ o constructor.prototype responde 400 (bajos de la 4′)', async () => {
   for (const payload of ['{"__proto__":{"x":1}}', '{"a":{"constructor":{"prototype":{"x":1}}}}']) {
     const r = await h.app.inject({ method: 'POST', url: '/api/login', headers: { 'content-type': 'application/json' }, payload });

@@ -419,7 +419,7 @@ printf 'DOMAIN=pms.ejemplo.mx\nEVOLUTION_IMAGE=evoapicloud/evolution-api:v2.3.7@
 # INF-21: «todo en orden» incluye exigir la firma del commit en update.
 : > "$work/firmantes"; printf 'UPDATE_ALLOWED_SIGNERS=%s\n' "$work/firmantes" >> .env
 grep -Eq "^HEALTH_TOKEN=.{16,}$" .env || { echo "ERROR: el .env de prueba no tiene HEALTH_TOKEN"; exit 1; }
-export RIVERRUN_PREFLIGHT_MEM_KB=2097152 RIVERRUN_PREFLIGHT_DISK_KB=20971520 RIVERRUN_PREFLIGHT_CPUS=2
+export RIVERRUN_PREFLIGHT_MEM_KB=4015000 RIVERRUN_PREFLIGHT_SWAP_KB=2097152 RIVERRUN_PREFLIGHT_DISK_KB=20971520 RIVERRUN_PREFLIGHT_CPUS=2
 # Sin ./riverrun harden, preflight lo avisa; con su marca, no.
 mkdir -p "$work/pfetc"; export RIVERRUN_PREFLIGHT_ETC="$work/pfetc"
 set +e; ./riverrun preflight --offline > "$work/out" 2>&1; rc=$?; set -e
@@ -429,6 +429,14 @@ set +e; ./riverrun preflight --offline > "$work/out" 2>&1; rc=$?; set -e
 [[ "$rc" == 0 ]] && grep -q "SIN BLOQUEOS EN LO REVISADO" "$work/out" && grep -q "No verificado: último respaldo" "$work/out" && grep -q "Envíos reales habilitados" "$work/out" || { cat "$work/out"; echo "ERROR: con todo en orden debía pasar sin bloqueos"; exit 1; }
 ! grep -q "APROBADO\." "$work/out" || { echo "ERROR: no debe afirmar aprobación completa con comprobaciones sin verificar"; exit 1; }
 grep -q "El panel solo escucha en el propio servidor" "$work/out" || { cat "$work/out"; echo "ERROR: no revisó PANEL_BIND"; exit 1; }
+
+echo "== preflight: sin swap o con topes de memoria que no caben, avisa"
+set +e; RIVERRUN_PREFLIGHT_SWAP_KB=0 ./riverrun preflight --offline > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" == 0 ]] && grep -q "Sin memoria de intercambio (swap)" "$work/out" || { cat "$work/out"; echo "ERROR: no avisó que falta swap"; exit 1; }
+cp .env .env.mem; printf 'BACKEND_MEM_LIMIT=4g\n' >> .env
+set +e; ./riverrun preflight --offline > "$work/out" 2>&1; rc=$?; set -e
+[[ "$rc" == 0 ]] && grep -q "Los topes de memoria de los servicios suman 8192 MB" "$work/out" || { cat "$work/out"; echo "ERROR: no avisó que los topes de memoria no caben"; exit 1; }
+mv -f .env.mem .env
 
 echo "== preflight: Redis sin contraseña y update sin firma avisan (INF-19, INF-21)"
 cp .env .env.redis
@@ -459,7 +467,7 @@ export RIVERRUN_PREFLIGHT_DISK_KB=20971520; touch CONFIG_MALA
 set +e; ./riverrun preflight --offline > "$work/out" 2>&1; rc=$?; set -e
 [[ "$rc" == 1 ]] && grep -q "Configuración con problemas críticos" "$work/out" || { cat "$work/out"; echo "ERROR: configuración crítica debía bloquear"; exit 1; }
 rm -f CONFIG_MALA
-mv -f .env.keep .env; unset RIVERRUN_PREFLIGHT_MEM_KB RIVERRUN_PREFLIGHT_DISK_KB RIVERRUN_PREFLIGHT_CPUS
+mv -f .env.keep .env; unset RIVERRUN_PREFLIGHT_MEM_KB RIVERRUN_PREFLIGHT_SWAP_KB RIVERRUN_PREFLIGHT_DISK_KB RIVERRUN_PREFLIGHT_CPUS
 
 echo "== preflight en línea sin servicios levantados: lo que no se comprueba se dice; opción desconocida se rechaza"
 set +e; ./riverrun preflight > "$work/out" 2>&1; rc=$?; set -e
@@ -610,7 +618,10 @@ HLOG="$hd/log"; export HLOG; : > "$HLOG"
 printf 'ID=debian\nVERSION_CODENAME=bookworm\n' > "$hd/root/etc/os-release"
 printf 'Include /etc/ssh/sshd_config.d/*.conf\nPort 2222\n' > "$hd/root/etc/ssh/sshd_config"
 printf '*filter\n:ufw-after-input - [0:0]\nCOMMIT\n' > "$hd/root/etc/ufw/after.rules"; cp "$hd/root/etc/ufw/after.rules" "$hd/root/etc/ufw/after6.rules"
-for c in apt-get ufw; do printf '#!/usr/bin/env bash\necho "%s $*" >> "$HLOG"\n' "$c" > "$hd/bin/$c"; done
+for c in apt-get ufw mkswap swapon sysctl; do printf '#!/usr/bin/env bash\necho "%s $*" >> "$HLOG"\n' "$c" > "$hd/bin/$c"; done
+printf '#!/usr/bin/env bash\necho "fallocate $*" >> "$HLOG"; : > "${@: -1}"\n' > "$hd/bin/fallocate"
+# Un VPS de 4 GB sin swap: harden crea 2 GB.
+printf 'MemTotal:        4015000 kB\nSwapTotal:             0 kB\n' > "$hd/meminfo"
 cat > "$hd/bin/systemctl" <<'SHIM'
 #!/usr/bin/env bash
 echo "systemctl $*" >> "$HLOG"
@@ -632,7 +643,7 @@ fi
 exit 0
 SHIM
 chmod +x "$hd/bin/"*
-hdenv=(env PATH="$hd/bin:$PATH" RIVERRUN_TEST=1 RIVERRUN_ROOT="$hd/root")
+hdenv=(env PATH="$hd/bin:$PATH" RIVERRUN_TEST=1 RIVERRUN_ROOT="$hd/root" RIVERRUN_MEMINFO="$hd/meminfo" RIVERRUN_HARDEN_FREE_KB=52428800)
 cp .env .env.harden; printf 'COMPOSE_PROFILES=https\n' >> .env
 # Sin terminal y sin --yes: no hace nada.
 set +e; "${hdenv[@]}" ./riverrun harden > "$work/out" 2>&1; rc=$?; set -e
@@ -654,6 +665,7 @@ if command -v iptables-restore >/dev/null 2>&1 && [[ "$(id -u)" == 0 ]]; then
   iptables-restore --test -n < "$hd/root/etc/ufw/after.rules" && ip6tables-restore --test -n < "$hd/root/etc/ufw/after6.rules" || { echo "ERROR: iptables rechaza las reglas"; exit 1; }
 fi
 [[ -f "$hd/root/etc/riverrun-harden" ]] || { echo "ERROR: no dejó su marca"; exit 1; }
+grep -q "fallocate -l 2G $hd/root/swapfile" "$HLOG" && grep -q "swapon $hd/root/swapfile" "$HLOG" && grep -q "^/swapfile none swap sw 0 0$" "$hd/root/etc/fstab" && grep -q "vm.swappiness = 10" "$hd/root/etc/sysctl.d/60-riverrun-swap.conf" || { cat "$HLOG"; echo "ERROR: harden no creó el swap en un VPS de 4 GB sin swap"; exit 1; }
 # Con llave: SSH solo con llave; repetir no duplica el bloque; un puerto extra se agrega.
 # Una llave de otra cuenta no cuenta: quien corre harden (SUDO_USER) entra con la suya.
 mkdir -p "$hd/root/home/otra/.ssh" "$hd/root/home/dueno/.ssh"

@@ -53,7 +53,10 @@ function tokenize(src: string): Token[] {
     if (out.length >= MAX_TOKENS) throw new FormulaError('La fórmula es demasiado larga', i);
     if (/[0-9]/.test(ch) || (ch === '.' && /[0-9]/.test(src[i + 1] ?? ''))) {
       const m = /^[0-9]*\.?[0-9]+|^[0-9]+/.exec(src.slice(i))!;
-      out.push({ t: 'num', v: Number(m[0]), pos: i });
+      const v = Number(m[0]);
+      // 9 repetido 400 veces es Infinity: una cantidad infinita omitía el concepto sin avisar.
+      if (!Number.isFinite(v)) throw new FormulaError('El número es demasiado grande', i);
+      out.push({ t: 'num', v, pos: i });
       i += m[0].length;
       continue;
     }
@@ -343,9 +346,9 @@ export function evaluate(n: Node, scope: Readonly<Record<string, Value>>): Value
           const f = 10 ** d;
           return finite(Math.round((args[0] + Math.sign(args[0]) * EPS) * f) / f, n.pos);
         }
-        case 'min': return Math.min(...args);
-        case 'max': return Math.max(...args);
-        case 'abs': return Math.abs(args[0]);
+        case 'min': return finite(Math.min(...args), n.pos);
+        case 'max': return finite(Math.max(...args), n.pos);
+        case 'abs': return finite(Math.abs(args[0]), n.pos);
       }
       throw new FormulaError(`No existe la función «${n.fn}»`, n.pos);
     }
