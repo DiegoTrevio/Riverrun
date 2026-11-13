@@ -2,6 +2,7 @@ import { brand, brandMark, productMark, resetBrand } from './brand.js';
 import { api, h, inBackground, invalidateReads, run, state } from './core.js';
 import { icon } from './icons.js';
 import { render } from './main.js';
+import { accountPicker, masterBanner } from './account-switch.js';
 import { ROLE_LABEL, copilotAvailable, isAdmin, isSuper, isOwner } from './session.js';
 
 /** Abre o cierra el Copiloto (su módulo se carga solo si la cuenta lo tiene). */
@@ -119,27 +120,7 @@ export function shell(active, content) {
     icon(iconName), h('span', {}, label));
 
   const switcher = isSuper()
-    ? h('label', { class: 'account-switch' },
-        h('span', { class: 'sr-only' }, 'Perfil de negocio'),
-        h('select', { id: 'profile-switch',
-          onchange: (e) => {
-            state.accountId = e.target.value; invalidateReads();
-            // Un enlace que abrió otro perfil (?account_id=, p. ej. desde un aviso de Consumo o Registros) no debe dejarlo fijo.
-            if (location.hash.includes('?')) {
-              const [route, query] = location.hash.split('?');
-              const filters = new URLSearchParams(query);
-              if (filters.has('account_id')) {
-                filters.delete('account_id');
-                history.replaceState(null, '', route + (filters.size ? '?' + filters : ''));
-              }
-            }
-            try { localStorage.setItem('cp-account', state.accountId); } catch { /* */ }
-            if (location.hash.startsWith('#/bot/') || location.hash.startsWith('#/channel/') || location.hash.startsWith('#/agentes/conexion/')) { location.hash = '#/agentes'; return; }
-            render();
-          },
-        },
-        h('option', { value: '' }, 'Todos los perfiles'),
-        state.accounts.map((a) => h('option', { value: a.id, selected: a.id === state.accountId }, a.name + (a.active ? '' : ' (inactiva)')))))
+    ? accountPicker()
     : h('div', { class: 'account-switch' }, h('strong', {}, account?.name || brand.name), h('span', {}, ROLE_LABEL[user.role]));
 
   const initials = (user.name || user.email || '?').split(/[\s@.]+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('');
@@ -210,6 +191,13 @@ export function shell(active, content) {
       copilotAvailable() ? h('button', { type: 'button', class: 'icon-button', 'data-copilot-launcher': '', 'aria-controls': 'copilot', 'aria-expanded': 'false', 'aria-label': 'Copiloto', title: 'Copiloto', onclick: toggleCopilot }, icon('wand', 20)) : null,
       h('a', { class: `icon-button${active === 'notifications' ? ' active' : ''}`, href: '#/notifications', 'aria-label': 'Notificaciones', title: 'Notificaciones' }, icon('bell', 20), bells[1])));
 
+  // «Cambiar de perfil» del aviso: en tableta y teléfono el selector está en el menú plegado, así que primero se abre.
+  // Abrir el menú enfoca su primera opción en el siguiente cuadro; la búsqueda se abre después para quedarse con el foco.
+  const changeProfile = () => {
+    if (desktop.matches) return switcher.openPicker?.();
+    openNav();
+    requestAnimationFrame(() => switcher.openPicker?.());
+  };
   const body = page ? h('div', { class: 'settings-layout' }, settingsNav(page), h('div', { class: 'settings-body' }, content)) : content;
   // «Saltar al contenido»: el hash es la ruta, así que el enlace enfoca <main> sin cambiarlo.
   const skip = h('a', { class: 'skip-link', href: '#contenido', onclick: (e) => { e.preventDefault(); document.getElementById('contenido')?.focus(); } }, 'Saltar al contenido');
@@ -217,7 +205,7 @@ export function shell(active, content) {
     skip,
     sidebar,
     h('div', { class: 'scrim', onclick: () => closeNav(true) }),
-    h('div', { class: 'content' }, topbar, h('main', { class: 'main', id: 'contenido', tabindex: '-1' }, accountBanner(), body)));
+    h('div', { class: 'content' }, topbar, h('main', { class: 'main', id: 'contenido', tabindex: '-1' }, masterBanner(changeProfile), accountBanner(), body)));
 }
 
 /** Submenú de Ajustes (a la izquierda; en el teléfono, arriba). */

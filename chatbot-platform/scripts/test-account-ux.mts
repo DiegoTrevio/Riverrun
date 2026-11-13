@@ -208,6 +208,43 @@ try {
   assert.equal(await sa.page.getByText(/Solo el dueño de la cuenta/).count(), 0, 'el superadministrador no ve el aviso de solo lectura');
   checks.push('El superadministrador, dentro de la cuenta, ve al dueño y sus controles');
 
+  // Cambiar de perfil con la búsqueda del menú lateral: aviso de en qué negocio estás, recientes y bitácora del negocio.
+  const other = await h.addAccount({ name: 'Taller Ñandú' });
+  await sa.page.reload();
+  await sa.page.locator('.main h1').first().waitFor();
+  const banner = sa.page.locator('.banner.master');
+  await banner.getByText('Estás dentro de').waitFor();
+  const current = (await pool.query(`SELECT name FROM accounts WHERE id = $1`, [h.accountId])).rows[0].name;
+  assert.match(await banner.innerText(), new RegExp(current), 'el aviso dice en qué perfil estás');
+  await sa.page.locator('#profile-switch').click();
+  const search = sa.page.getByRole('combobox', { name: 'Buscar perfil de negocio' });
+  assert.ok(await search.evaluate((el) => el === document.activeElement), 'al abrir, el foco va a la búsqueda');
+  await accessible(sa.page, 'Selector de perfil abierto');
+  await search.fill('nandu');
+  const options = sa.page.locator('.account-switch-panel [role=option]');
+  assert.deepEqual(await options.allInnerTexts(), ['Taller Ñandú'], 'busca sin importar acentos ni mayúsculas');
+  await search.press('Enter');
+  await banner.getByText('Taller Ñandú').waitFor();
+  assert.equal(await sa.page.evaluate(() => localStorage.getItem('cp-account')), other.id);
+  const entered = (await pool.query(`SELECT email FROM security_events WHERE kind = 'account.entered' AND account_id = $1`, [other.id])).rows;
+  assert.deepEqual(entered.map((r) => r.email), ['admin@test.mx'], 'la entrada queda en la bitácora del negocio');
+  await sa.page.locator('#profile-switch').click();
+  await sa.page.locator('.account-switch-panel [role=option]', { hasText: 'reciente' }).first().waitFor();
+  await search.press('Escape');
+  assert.ok(await sa.page.locator('#profile-switch').evaluate((el) => el === document.activeElement && el.getAttribute('aria-expanded') === 'false'), 'Escape cierra y regresa al botón');
+  // En el teléfono el selector está en el menú plegado: «Cambiar de perfil» del aviso lo abre con la búsqueda lista.
+  await sa.page.setViewportSize({ width: 390, height: 900 });
+  await banner.getByRole('button', { name: 'Cambiar de perfil' }).click();
+  await search.waitFor();
+  assert.ok(await search.evaluate((el) => el === document.activeElement), 'en el teléfono, el aviso abre la búsqueda');
+  await search.press('Escape');
+  await sa.page.keyboard.press('Escape');
+  await sa.page.setViewportSize({ width: 1366, height: 900 });
+  await banner.getByRole('button', { name: 'Ver todos los perfiles' }).click();
+  await banner.waitFor({ state: 'detached' });
+  assert.equal(await sa.page.locator('#profile-switch').innerText().then((t) => t.includes('Todos los perfiles')), true);
+  checks.push('La cuenta maestra busca un perfil, entra con Intro, ve en qué negocio está y la entrada queda en la bitácora');
+
   assert.deepEqual(errors, []);
   assert.deepEqual(cspViolations, [], 'La CSP bloqueó algo del panel');
   process.stdout.write(JSON.stringify({ checks, errors }, null, 2) + '\n');

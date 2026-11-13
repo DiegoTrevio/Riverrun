@@ -4,6 +4,7 @@
  */
 import assert from 'node:assert/strict';
 import { toast, type AreaContext } from '../areas.mts';
+import { pickProfile } from '../../profile-picker.mts';
 
 const DEF = {
   inputs: [
@@ -102,7 +103,7 @@ export const checks = {
     try {
       const { page } = await open('superadmin');
       await go(page, 'agentes');
-      await page.locator('#profile-switch').selectOption(h.accountId);
+      await pickProfile(page, h.accountId);
       await go(page, `cotizaciones/calculadoras?id=${calc.id}`);
       await page.getByRole('button', { name: 'Copiar a otra cuenta', exact: true }).click();
       const dlg = page.locator('dialog');

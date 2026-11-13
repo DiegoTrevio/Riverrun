@@ -37,6 +37,7 @@ const LABELS = {
   'export.contact': 'Descargó los datos de un contacto',
   'contact.erased': 'Borró un contacto con su historial',
   'account.deleted': 'Se borró la cuenta',
+  'account.entered': 'La cuenta maestra entró a este perfil',
   'apikey.created': 'Creó una llave de la API',
   'apikey.revoked': 'Revocó una llave de la API',
   'webhook_secret.rotated': 'Cambió el secreto de los webhooks',
@@ -53,7 +54,7 @@ const LABELS = {
 const FILTERS = [
   ['', 'Todo'], ['login', 'Accesos'], ['mfa', 'Códigos equivocados'], ['session', 'Sesiones cerradas'], ['password_reset', 'Restablecer contraseña'],
   ['notice', 'Cambios de seguridad'], ['user', 'Altas y bajas del equipo'], ['invite', 'Invitaciones'],
-  ['export', 'Descargas de datos'], ['contact.erased', 'Contactos borrados'], ['apikey', 'Llaves de la API'],
+  ['export', 'Descargas de datos'], ['contact.erased', 'Contactos borrados'], ['apikey', 'Llaves de la API'], ['account.entered', 'Entradas de la cuenta maestra'],
 ];
 
 const RISKY = /^(login\.failed|login\.blocked|login\.google_rejected|ip\.blocked|mfa\.failed|notice\.mfa_locked|password_reset\.failed|alert\.)/;
