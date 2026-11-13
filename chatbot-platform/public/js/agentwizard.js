@@ -4,7 +4,8 @@ import { api, area, field, fill, h, select, state, text, toast, upgradeCard } fr
 import { icon } from './icons.js';
 import { accountPicker } from './dashboard.js';
 import { render } from './main.js';
-import { isSuper } from './session.js';
+import { acct, isSuper } from './session.js';
+import { hoursCard, hoursProblem, learnedHours, weeklyHours } from './wizard-hours.js';
 
 /* ------------------------------ Crear un agente: 1. Tu negocio · 2. Qué hará ------------------------------ */
 
@@ -45,7 +46,7 @@ const importEndpoint = (w) => `/api/onboarding/import${isSuper() && w.account_id
 function model() {
   const type = state.me.account?.business_type || 'otro';
   const d = typeDefaults(type);
-  return draftModel('agent-new', {
+  const w = draftModel('agent-new', {
     account_id: '',
     company: { name: state.me.account?.name || state.accounts.find((a) => a.id === state.accountId)?.name || '', business_type: type, description: '', location: '' },
     teach: { mode: 'url', url: '', text: '' },
@@ -58,7 +59,12 @@ function model() {
     personalized: false,
     prompt_override: null,
     request_id: '',
+    // El horario de la cuenta: se propone ya elegido (leído de su información o el típico de su tipo de negocio).
+    hours: { mode: '', open: '09:00', close: '18:00', detected: null, picked: false },
   });
+  // Un borrador guardado antes de que existiera el horario lo recibe vacío.
+  if (!w.hours) w.hours = { mode: '', open: '09:00', close: '18:00', detected: null, picked: false };
+  return w;
 }
 
 /** Al cambiar el tipo de negocio, sus valores por omisión (salvo lo que la persona ya eligió). */
@@ -135,11 +141,14 @@ function screenBusiness(w) {
     if (signature === w.learned_from && infoChars(w) >= MIN_INFO) { location.hash = '#/agentes/nuevo?paso=2'; return; }
     next.disabled = true;
     status.textContent = 'Leyendo tu información… puede tardar hasta un minuto.';
+    // Lo leído de una fuente anterior (u otro borrador) no se propone para esta.
+    w.hours.detected = null;
     try {
       const r = await importFrom(importEndpoint(w), mode === 'file' ? { file } : mode === 'url' ? { url: source } : { text: source });
       w.knowledge = { sections: { ...EMPTY_SECTIONS, ...r.sections }, extra: '', sources: [r.source || 'tu información'] };
       if (r.description) w.company.description = r.description;
       w.truncated = !!r.truncated;
+      learnedHours(w, r.hours);
     } catch (e) {
       if (mode !== 'text') {
         status.textContent = '';
@@ -204,6 +213,7 @@ function screenRole(w) {
         }
         if (r.description && !w.company.description.trim()) w.company.description = r.description;
         w.knowledge.sources = [...w.knowledge.sources, r.source || 'documento'].slice(-10);
+        if (!w.hours.detected) learnedHours(w, r.hours);
         w.prompt_override = null;
         toast('Listo: lo agregamos a lo que ya sabía');
         render();
@@ -242,9 +252,20 @@ function screenRole(w) {
   personal.addEventListener('change', () => { w.personalized = true; });
   personal.addEventListener('input', () => { w.personalized = true; });
 
+  // Solo si la cuenta aún no guarda su horario: con el segundo agente ya no se vuelve a preguntar.
+  const hoursBox = h('div', { 'aria-live': 'polite' });
+  let askHours = false;
+  const hoursReady = needsHours(w).then((ask) => {
+    askHours = ask;
+    if (ask) fill(hoursBox, hoursCard(w));
+  });
+
   const errorBox = h('div');
   const create = h('button', { class: 'primary', onclick: async () => {
     if (!w.company.name.trim()) return toast('Escribe el nombre de tu negocio', true);
+    await hoursReady;
+    const badHours = askHours ? hoursProblem(w.hours) : null;
+    if (badHours) return toast(badHours, true);
     if (infoChars(w) < MIN_INFO) return toast('Cuéntale un poco más de tu negocio en «Esto aprendió»: con tan poca información no podrá responder.', true);
     if (!w.request_id) w.request_id = newRequestId();
     create.disabled = true;
@@ -254,8 +275,10 @@ function screenRole(w) {
         company: w.company, scope: w.scope, style: w.style, knowledge: w.knowledge, request_id: w.request_id,
         ...(w.prompt_override ? { prompt_override: w.prompt_override } : {}),
         ...(isSuper() && w.account_id ? { account_id: w.account_id } : {}),
+        ...(askHours && weeklyHours(w.hours) ? { hours: weeklyHours(w.hours) } : {}),
       });
       discardDraft('agent-new');
+      hoursAsked = { key: null, ask: null };
       state.bots = [];
       location.hash = `#/bot/${bot.id}/empezar`;
     } catch (e) {
@@ -269,10 +292,24 @@ function screenRole(w) {
   return h('div', { class: 'stack' },
     learned,
     roles,
+    hoursBox,
     personal,
     errorBox,
     h('p', { class: 'help', style: 'margin:0' }, 'Nace apagado: lo pruebas en el siguiente paso y se enciende solo cuando conectes tu WhatsApp.'),
     h('div', { class: 'row between' }, h('a', { class: 'btn', href: '#/agentes/nuevo' }, '← Atrás'), create));
+}
+
+/**
+ * ¿Hay que preguntar el horario? Solo si la cuenta aún no lo guarda. Se recuerda en esta visita (volver a dibujar la
+ * pantalla no lo pide otra vez); si no se puede saber, se pregunta: el servidor nunca pisa uno ya guardado.
+ */
+let hoursAsked = { key: null, ask: null };
+function needsHours(w) {
+  const query = isSuper() && w.account_id ? `?account_id=${encodeURIComponent(w.account_id)}` : acct();
+  if (hoursAsked.key !== query) {
+    hoursAsked = { key: query, ask: api('GET', `/api/onboarding/setup${query}`).then((s) => s.sections?.find((x) => x.key === 'hours')?.state !== 'ok').catch(() => true) };
+  }
+  return hoursAsked.ask;
 }
 
 /** Las instrucciones que se generarán (casi nadie las necesita: se piden solo al abrir). */

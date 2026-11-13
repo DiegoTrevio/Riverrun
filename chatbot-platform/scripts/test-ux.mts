@@ -359,7 +359,9 @@ try {
     // Crear un agente en 3 pantallas: aprende, elige qué hará, se prueba y se enciende solo al conectar su WhatsApp.
     const context = await contextFor('admin'); const page = await context.newPage();
     page.on('pageerror', (error) => results.errors.push({ role: 'admin', message: error.message }));
-    await page.route('**/api/onboarding/import**', (route) => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ description: 'Hotel boutique en Mazatlán frente al mar.', sections: { catalog: 'Habitación doble — $1,800 por noche', hours: 'Recepción 24 horas', location: 'Av. del Mar 100, Mazatlán', faq: '', other: '' }, source: 'hotelpalmas.mx', truncated: false }) }));
+    await page.route('**/api/onboarding/import**', (route) => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ description: 'Hotel boutique en Mazatlán frente al mar.', sections: { catalog: 'Habitación doble — $1,800 por noche', hours: 'Recepción 24 horas', location: 'Av. del Mar 100, Mazatlán', faq: '', other: '' }, source: 'hotelpalmas.mx', truncated: false, hours: { mon: [['00:00', '23:59']], tue: [['00:00', '23:59']], wed: [['00:00', '23:59']], thu: [['00:00', '23:59']], fri: [['00:00', '23:59']], sat: [['00:00', '23:59']], sun: [['00:00', '23:59']] } }) }));
+    // Cuenta sin horario guardado: el asistente lo propone ya elegido con lo que leyó.
+    await pool.query(`UPDATE accounts SET settings = settings - 'business_hours', onboarding = onboarding - 'hours' WHERE id = $1`, [h.accountId]);
     await page.goto(`${base}/#/agentes?new=1`); await page.waitForURL('**/#/agentes/nuevo');
     await page.getByRole('heading', { name: 'Crea tu agente' }).waitFor();
     await page.getByText('Lo escribo yo', { exact: true }).click();
@@ -367,8 +369,17 @@ try {
     await page.getByRole('button', { name: 'Siguiente →' }).click(); await page.waitForURL('**/#/agentes/nuevo?paso=2');
     await page.getByRole('heading', { name: /Esto aprendió de/ }).waitFor();
     await page.locator('label.plan-option', { hasText: 'Agendar citas' }).click();
+    const detected = page.getByRole('radio', { name: /Como lo leímos de tu información/ });
+    await detected.waitFor();
+    assert.ok(await detected.isChecked(), 'el horario leído viene elegido');
+    await page.getByText('Lunes a domingo 00:00 a 23:59').waitFor();
+    // Con un clic se cambia por otro, y abrir y cerrar se ajustan ahí mismo.
+    await page.getByRole('radio', { name: /^Lunes a viernes/ }).check();
+    await page.getByLabel('Abre', { exact: true }).fill('10:00'); await page.getByLabel('Cierra', { exact: true }).fill('19:00');
     await page.getByRole('button', { name: 'Crear mi agente' }).click(); await page.waitForURL(/#\/bot\/[0-9a-f-]+\/empezar$/);
     const created = page.url().split('/bot/')[1].split('/')[0];
+    const day = [['10:00', '19:00']];
+    assert.deepEqual((await pool.query(`SELECT settings->'business_hours' AS b FROM accounts WHERE id = $1`, [h.accountId])).rows[0].b, { mon: day, tue: day, wed: day, thu: day, fri: day, sat: [], sun: [] });
     await page.locator('.composer textarea').waitFor();
     assert.deepEqual((await pool.query(`SELECT active, start_on_connect FROM chatbots WHERE id = $1`, [created])).rows[0], { active: false, start_on_connect: true });
     await page.getByRole('button', { name: 'Conectar mi WhatsApp', exact: true }).click(); await page.locator('.wa-connect').waitFor();
@@ -376,7 +387,7 @@ try {
     await waitFor(() => evo.instances.has(instance), 10000); evo.instances.get(instance)!.state = 'open';
     await page.getByRole('heading', { name: '¡Listo! Tu agente ya responde en tu WhatsApp' }).waitFor({ timeout: 20000 });
     assert.deepEqual((await pool.query(`SELECT active, start_on_connect FROM chatbots WHERE id = $1`, [created])).rows[0], { active: true, start_on_connect: false });
-    await context.close(); checked('Crear un agente en 3 pantallas y se enciende solo al conectar su WhatsApp');
+    await context.close(); checked('Crear un agente en 3 pantallas (con su horario en un clic) y se enciende solo al conectar su WhatsApp');
   }
   {
     // Cobros: el cobro del cliente aparece con su monto y se marca pagado (ya no se le recuerda).

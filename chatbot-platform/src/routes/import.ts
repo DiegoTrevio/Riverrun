@@ -8,6 +8,7 @@ import { HttpError, requireRole, targetAccount } from '../access.js';
 import { withTransaction } from '../db.js';
 import type { AiProvider } from '../ai/provider.js';
 import { checkImportRate, cleanSourceUrl, IMPORT_SECTIONS, importKnowledge, MAX_FILE_BYTES, sourceFromFile, sourceFromUrl, type ImportResult, type Source } from '../knowledge-import.js';
+import { hoursFromText } from '../automation/hours-text.js';
 import { logEvent } from '../logs.js';
 import * as store from '../store/index.js';
 import { KNOWLEDGE_TITLES } from './onboarding.js';
@@ -108,7 +109,8 @@ export async function knowledgeImportRoutes(api: FastifyInstance, ai: AiProvider
     return { ...input, result };
   };
 
-  const view = (r: ImportResult, url?: string) => ({ description: r.description, sections: r.sections, source: r.source, source_url: url ?? null, truncated: r.truncated });
+  // El horario que se entendió del texto (o null) se propone ya llenado en el asistente; la persona lo confirma.
+  const view = (r: ImportResult, url?: string) => ({ description: r.description, sections: r.sections, source: r.source, source_url: url ?? null, truncated: r.truncated, hours: hoursFromText(r.sections.hours ?? '') });
 
   /** Durante el asistente de configuración: solo devuelve la propuesta; el cliente la revisa y la guarda con el paso 2. */
   api.post('/api/onboarding/import', admins, async (req: any) => {

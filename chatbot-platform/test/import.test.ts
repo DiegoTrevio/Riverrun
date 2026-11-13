@@ -100,6 +100,14 @@ t('guardar directo desde la página ya no existe: se pide revisar, sin leerla ni
   assert.equal(h.calls.length, 0);
 });
 
+t('importar propone el horario que entendió de la información, ya en horas de 24', async () => {
+  h.setScript(() => answer({ hours: 'Lunes a viernes de 9 a 7. Sábado de 9 a 2. Domingo cerrado.' }));
+  const r = await h.authed('POST', `/api/onboarding/import?account_id=${h.accountId}`, { text: 'Clínica dental. Limpieza $650. Lunes a viernes de 9 a 7, sábado de 9 a 2.' });
+  assert.equal(r.statusCode, 200, r.body);
+  const day = [['09:00', '19:00']];
+  assert.deepEqual(r.json().hours, { mon: day, tue: day, wed: day, thu: day, fri: day, sat: [['09:00', '14:00']], sun: [] });
+});
+
 t('el texto oculto de la página no llega a la IA', async () => {
   h.reset();
   h.setScript(() => answer());
@@ -114,6 +122,8 @@ t('texto pegado y archivo de texto/CSV', async () => {
   h.setScript(() => answer({ catalog: 'Café — $40' }));
   const pasted = await h.authed('POST', `/api/onboarding/import?account_id=${h.accountId}`, { text: 'Café $40, pastel $60. Abrimos todos los días de 8 a 20.' });
   assert.equal(pasted.statusCode, 200, pasted.body);
+  // La respuesta de la IA solo dice «Lunes a viernes» (sin horas): no se propone un horario inventado.
+  assert.equal(pasted.json().hours, null);
   // Una tabla (lista de precios en CSV) se copia completa, renglón por renglón, sin pasar por la IA.
   const callsBefore = h.calls.length;
   const m = multipart({}, { name: 'precios.csv', type: 'text/csv', data: Buffer.from('producto,precio\nCafé,40\nPastel,60\n') });

@@ -1,4 +1,5 @@
 import { api, area, check, field, fill, fmtDate, h, run, select, settingsSection, state, text, toast, confirmAction, ask, dialog } from './core.js';
+import { enterAccount, plainClick } from './account-switch.js';
 
 /** El título de un aviso sin el emoji con que llega también por WhatsApp (en el panel lo dice el texto). */
 const plainTitle = (t) => String(t || '').replace(/^[\p{Extended_Pictographic}️‍\s]+/u, '');
@@ -191,7 +192,7 @@ export async function viewAccounts(root) {
       h('button', { class: 'primary', onclick: async () => {
         const body = { name: n.name, ...(n.withOwner ? { owner: n.owner } : {}) };
         const acc = await run(() => api('POST', '/api/accounts', body), n.withOwner ? `Cuenta creada: invitamos a ${n.owner.email}` : 'Cuenta creada');
-        if (acc) { state.accountId = acc.id; try { localStorage.setItem('cp-account', acc.id); } catch { /* */ } state.me = null; render(); }
+        if (acc) { state.accounts = [...state.accounts, acc]; await enterAccount(acc.id, { redraw: false }); state.me = null; render(); }
       } }, 'Crear perfil')),
     h('div', { class: 'card' },
       h('table', {},
@@ -219,8 +220,8 @@ export async function viewAccounts(root) {
           h('td', { class: 'num' }, usd(a.ai_cost_month)),
           h('td', { class: 'small' }, a.last_activity_at ? fmtDate(a.last_activity_at) : '—'),
           h('td', {}, h('div', { class: 'row' },
-            h('button', { class: 'small', onclick: () => { state.accountId = a.id; try { localStorage.setItem('cp-account', a.id); } catch { /* */ } location.hash = '#/'; } }, 'Abrir perfil'),
-            h('a', { class: 'btn small', href: '#/users', onclick: () => { state.accountId = a.id; try { localStorage.setItem('cp-account', a.id); } catch { /* */ } if (location.hash === '#/users') render(); } }, 'Usuarios'),
+            h('button', { class: 'small', onclick: async () => { if (await enterAccount(a.id, { redraw: false })) location.hash = '#/'; } }, 'Abrir perfil'),
+            h('a', { class: 'btn small', href: '#/users', onclick: async (e) => { if (plainClick(e)) { e.preventDefault(); if (await enterAccount(a.id, { redraw: false })) location.hash = '#/users'; } } }, 'Usuarios'),
             a.status !== 'active' ? h('button', { class: 'small primary', onclick: async () => {
               const plan = await ask('Plan contratado (opcional)', a.plan || '');
               if (plan === null) return;
@@ -368,7 +369,7 @@ export function needAccount(root) {
   const choice = { account_id: state.accounts.find((a) => a.active)?.id || state.accounts[0]?.id || '' };
   // Desde el router la pantalla aún no tiene título: el de esta elección (cada página tiene su h1).
   if (!root.querySelector('h1')) root.append(h('h1', {}, 'Elige un perfil'));
-  root.append(h('div', { class: 'card' }, h('h2', {}, '¿Qué perfil quieres gestionar?'), field('Perfil de negocio', select(choice, 'account_id', state.accounts.map((a) => [a.id, a.name]))), h('button', { class: 'primary', disabled: !choice.account_id, onclick: () => { state.accountId = choice.account_id; try { localStorage.setItem('cp-account', state.accountId); } catch { /* sin almacenamiento */ } render(); } }, 'Gestionar este perfil')));
+  root.append(h('div', { class: 'card' }, h('h2', {}, '¿Qué perfil quieres gestionar?'), field('Perfil de negocio', select(choice, 'account_id', state.accounts.map((a) => [a.id, a.name]))), h('button', { class: 'primary', disabled: !choice.account_id, onclick: () => enterAccount(choice.account_id) }, 'Gestionar este perfil')));
   return true;
 }
 

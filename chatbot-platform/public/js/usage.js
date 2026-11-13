@@ -1,4 +1,5 @@
 import { budgetCard } from './ai-budget.js';
+import { enterAccount } from './account-switch.js';
 import { statusBadge } from './admin.js';
 import { api, check, h, num, run, state, text } from './core.js';
 import { render } from './main.js';
@@ -21,7 +22,7 @@ export async function viewUsage(root, params) {
       h('div', { class: 'card' }, h('div', { class: 'kpi' }, usd(u.total_usd)), h('div', { class: 'muted small' }, `Importes registrados en ${month}; pueden incluir estimaciones`)),
       h('div', { class: 'card' }, h('table', {},
         h('thead', {}, h('tr', {}, h('th', {}, 'Cuenta'), h('th', {}, 'Estado'), h('th', { class: 'num' }, 'Gasto'), h('th', { class: 'num' }, 'Llamadas'), h('th', { class: 'num' }, 'Tokens entrada'), h('th', { class: 'num' }, 'Tokens salida'), h('th', { class: 'num' }, 'Audio (min)'))),
-        h('tbody', {}, u.accounts.map((a) => h('tr', { class: 'click', onclick: () => { state.accountId = a.id; try { localStorage.setItem('cp-account', a.id); } catch { /* */ } render(); } },
+        h('tbody', {}, u.accounts.map((a) => h('tr', { class: 'click', onclick: () => enterAccount(a.id) },
           h('td', {}, a.name), h('td', {}, statusBadge(a)), h('td', { class: 'num' }, usd(a.cost_usd),a.unknown_costs?` + ${a.unknown_costs} sin importe determinado`:'') , h('td', { class: 'num' }, a.calls),
           h('td', { class: 'num' }, Number(a.input_tokens).toLocaleString()), h('td', { class: 'num' }, Number(a.output_tokens).toLocaleString()), h('td', { class: 'num' }, (a.audio_seconds / 60).toFixed(1))))))),
       h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Precios por modelo (USD)'), h('p', { class: 'small muted' }, 'Verifica las tarifas de tu proveedor y modelo (OpenRouter u otro). Un cambio de tarifa aplica solo a las llamadas nuevas.'), await pricesEditor()),

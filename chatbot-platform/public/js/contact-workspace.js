@@ -1,4 +1,5 @@
 import { api, ask, field, fill, fmtDate, fmtPhone, h, poll, run, select, state } from './core.js';
+import { enterAccount, plainClick } from './account-switch.js';
 import { isAdmin, isSuper, withAcct } from './session.js';
 import { badge, KIND, STATUS, totalText } from './quotes.js';
 import { tasksCard, requestsCard } from './conversations.js';
@@ -59,7 +60,8 @@ export async function viewContact(root,id) {
   const cf=d.contact_fields||[],rank=k=>{const i=cf.findIndex(f=>f.key===k);return i<0?cf.length:i;};
   const ordered=data=>Object.entries(data||{}).filter(([,v])=>v!=='').sort((a,b)=>rank(a[0])-rank(b[0]));
   const latest=d.conversations[0],main=d.records.find(r=>r.id===latest?.contact_id)||d.contact;
-  const scope=()=>{if(isSuper()){state.accountId=d.contact.account_id;try{localStorage.setItem('cp-account',state.accountId);}catch{/* optional storage */}}};
+  // La cuenta maestra entra al perfil del contacto antes de seguir el enlace (queda en la bitácora del negocio).
+  const scope=async e=>{if(!isSuper()||!plainClick(e))return;e.preventDefault();const href=e.currentTarget.getAttribute('href');if(await enterAccount(d.contact.account_id,{redraw:false}))location.hash=href;};
   const agendaWeek=starts=>{const date=new Intl.DateTimeFormat('en-CA',{timeZone:state.timeZone||'America/Mexico_City'}).format(new Date(starts));const monday=new Date(`${date}T12:00:00Z`);monday.setUTCDate(monday.getUTCDate()-(monday.getUTCDay()+6)%7);return monday.toISOString().slice(0,10);};
   fill(body,h('a',{class:'breadcrumb',href:'#/contacts'},'← Contactos'),h('div',{class:'row between'},h('h1',{},main.name||main.push_name||'Contacto'),latest?h('a',{class:'btn primary',href:`#/conversation/${latest.id}`},'Retomar conversación'):null),
    h('p',{class:'help'},`${d.account_name} · ${main.phone?`${fmtPhone(main.phone)} · `:''}${d.records.length} ${d.records.length===1?'canal visible':'canales visibles'}. Los datos se conservan por canal para evitar sobrescribir respuestas distintas.`),

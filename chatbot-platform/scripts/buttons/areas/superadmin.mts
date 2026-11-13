@@ -1,6 +1,7 @@
 /** Plataforma: el selector de perfil del maestro y lo que ve un admin que escribe la dirección de una pantalla del maestro. */
 import assert from 'node:assert/strict';
 import { toast, type AreaContext } from '../areas.mts';
+import { pickProfile } from '../../profile-picker.mts';
 
 const PER_ACCOUNT = ['comentarios', 'publicaciones', 'cobros', 'estadisticas', 'integraciones', 'redes', 'datos-clientes'];
 
@@ -10,7 +11,7 @@ export const checks = {
     const failed: string[] = [];
     for (const route of PER_ACCOUNT) {
       await go(page, 'agentes');
-      await page.locator('#profile-switch').selectOption('');
+      await pickProfile(page, '');
       await page.goto(`${base}/#/${route}`);
       await page.locator('.main [aria-busy="true"]').first().waitFor({ state: 'hidden' }).catch(() => {});
       await page.waitForTimeout(600);

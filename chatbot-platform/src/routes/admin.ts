@@ -1,6 +1,7 @@
 import net from 'node:net';
 import { actor, listSecurityEvents, loginFingerprint, recordSecurity, recordSecurityOnce, unblockIp } from '../security-log.js';
 import { partialIp } from '../identity/notices.js';
+import { noteAccountEntry } from '../identity/master-entry.js';
 import { cleanAlertPrefs } from '../automation/alert-groups.js';
 import type { AlertPrefs } from '../types.js';
 import { aiBudgetRoutes } from './ai-budget.js';
@@ -483,6 +484,20 @@ export async function adminRoutes(api: FastifyInstance, service: ChatService) {
     if (!acc) throw notFound('Cuenta no encontrada');
     if (!(await trialWithoutCard(acc.id, req.user))) throw new HttpError(400, 'La cuenta no está esperando tarjeta');
     return store.publicAccount((await store.getAccount(acc.id))!);
+  });
+
+  /**
+   * La cuenta maestra entra a un perfil desde el selector del panel: deja constancia de quién entró a qué negocio, en la
+   * bitácora de la plataforma y en la del propio negocio (sus administradores la ven en Actividad de seguridad). Las
+   * peticiones con `account_id` también se anotan solas (ver `identity/master-entry.ts`). Sin paso de verificación extra:
+   * cambiar de perfil no modifica nada.
+   */
+  api.post('/api/accounts/:id/switch', superadmin, async (req: any) => {
+    const id = z.string().uuid().safeParse(req.params.id);
+    const acc = id.success ? await store.getAccount(id.data) : null;
+    if (!acc) throw notFound('Cuenta no encontrada');
+    await noteAccountEntry(req, acc);
+    return { id: acc.id, name: acc.name, active: acc.active };
   });
 
   api.delete('/api/accounts/:id', { preHandler: requireRole('superadmin'), ...stepUp }, async (req: any) => {
