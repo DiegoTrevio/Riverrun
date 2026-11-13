@@ -4,7 +4,11 @@ COPY package*.json ./
 RUN npm ci --ignore-scripts
 COPY tsconfig.json ./
 COPY src ./src
-RUN npm run build && npm prune --omit=dev
+# El panel se comprime aquí, sobre la copia de la imagen (el repo sigue legible): sin espacios, sin comentarios y sin
+# mapas de código. Ver scripts/minify-public.mjs.
+COPY public ./public
+COPY scripts/minify-public.mjs ./scripts/
+RUN npm run build && node scripts/minify-public.mjs public && npm prune --omit=dev
 
 FROM node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
 WORKDIR /app
@@ -14,7 +18,7 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
 COPY migrations ./migrations
-COPY public ./public
+COPY --from=build /app/public ./public
 # Lista de contraseñas comunes (src/identity/passwords.ts la busca junto a dist/).
 COPY assets ./assets
 # Las cotizaciones se llenan en Word y se convierten a PDF con LibreOffice. Liberation tiene las mismas medidas que
