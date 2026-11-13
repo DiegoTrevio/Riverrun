@@ -338,6 +338,8 @@ Ninguna de ellas se ha ejecutado como parte de la revisión de observabilidad y 
 
 ## Lo que todavía no existe
 
+Resumen de los 10 puntos de producción y su estado: [produccion-10-puntos.md](produccion-10-puntos.md).
+
 Lista para quien vaya a publicar. Mientras cualquiera esté pendiente, no declares la plataforma "lista para producción" sin decirlo:
 
 - Overlay y guía de staging aislado, probados de extremo a extremo.
