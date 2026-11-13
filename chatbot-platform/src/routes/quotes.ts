@@ -16,6 +16,7 @@ import { safeFileName } from '../channels/media.js';
 import { pool, withTransaction } from '../db.js';
 import { logEvent } from '../logs.js';
 import { AcceptBody, acceptedTotal, planCharges } from '../quotes/accept.js';
+import { withAcceptSlot } from '../quotes/accept-slots.js';
 import { quoteEvent } from '../quotes/agent.js';
 import { receivableBySource } from '../receivables/index.js';
 import { receivableOut } from './receivables.js';
@@ -493,7 +494,7 @@ export async function quoteRoutes(api: FastifyInstance, service: ChatService) {
    * El cliente aceptó la cotización (lo marca el equipo): ya no vence y, si se pide, se crean sus cobros con sus
    * recordatorios de pago: el total, un anticipo y el resto, o varias parcialidades.
    */
-  api.post('/api/quotes/:id/accept', admins, async (req: any) => {
+  api.post('/api/quotes/:id/accept', admins, (req: any) => withAcceptSlot(async () => {
     // Una aceptación a la vez por cotización: dos al mismo tiempo con planes distintos dejaban los cobros de las dos. La
     // segunda no espera: responde 409 al momento (el candado vive en su propia conexión y se suelta al terminar).
     const lock = await pool.connect();
@@ -508,7 +509,7 @@ export async function quoteRoutes(api: FastifyInstance, service: ChatService) {
     } finally {
       lock.release();
     }
-  });
+  }));
 
   const acceptQuote = async (req: any) => {
     const quote = await quoteFor(req.user, req.params.id);

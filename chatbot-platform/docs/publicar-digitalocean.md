@@ -130,8 +130,8 @@ Riverrun respalda cada noche, cifrado, pero en el mismo disco. Para que sobreviv
 
 ## 6. Endurecer el servidor (en el servidor)
 
-Firewall (solo entran SSH, 80 y 443, también para lo que publica Docker), SSH solo con llave, fail2ban y
-actualizaciones de seguridad automáticas:
+Firewall (solo entran SSH, 80 y 443, también para lo que publica Docker), SSH solo con llave, fail2ban,
+actualizaciones de seguridad automáticas y 2 GB de memoria de intercambio (swap) si el Droplet no tiene:
 
 ```bash
 sudo ./riverrun harden
@@ -140,6 +140,36 @@ sudo ./riverrun harden
 **Antes de cerrar tu sesión**, abre otra terminal y comprueba que sigues entrando con `ssh root@IP`. Si no entra, en
 la primera sesión revisa lo que dijo `harden`; DigitalOcean también tiene la consola web del Droplet (*Access →
 Launch Droplet Console*) por si te quedas fuera.
+
+### Memoria para el Droplet de 4 GB
+
+Los topes de memoria que traen los servicios suman unos 5.7 GB: están pensados para servidores más grandes. En 4 GB,
+si varios crecen a la vez (un PDF, el respaldo de la madrugada y varios WhatsApp), el sistema mata un servicio al azar,
+a veces PostgreSQL. El swap que crea `harden` es el colchón; además, agrega esto al final de `.env`:
+
+```bash
+POSTGRES_MEM_LIMIT=800m
+REDIS_MEM_LIMIT=256m
+EVOLUTION_MEM_LIMIT=1g
+BACKEND_MEM_LIMIT=1g
+PDF_MEM_LIMIT=640m
+BACKUP_MEM_LIMIT=384m
+CADDY_MEM_LIMIT=128m
+```
+
+y aplícalo con `docker compose up -d`. `./riverrun preflight` avisa si falta el swap o si los topes no caben.
+
+Cuánto aguanta así (estimado, no medido): unas 12 a 20 respuestas de la IA por minuto con dos a la vez (el valor de
+fábrica), es decir, unos 15 a 20 negocios chicos con su hora pico al mismo tiempo. El primer límite real suele ser
+WhatsApp: cada número vinculado ocupa memoria en Evolution, y con 1 GB caben unos 8 a 12. Sube a un Droplet de 8 GB
+cuando tengas más de 10 a 15 números de WhatsApp o cuando los mensajes esperen respuesta varios minutos en hora pico.
+
+Para atender más respuestas a la vez (hasta 6), cambia `QUEUE_CONCURRENCY` en `.env` **y** el límite guardado en la
+base, que no cambia solo:
+
+```bash
+docker compose exec postgres psql -U chatbot -d chatbot -c "UPDATE worker_limits SET concurrency = 4 WHERE id = true;"
+```
 
 ## 7. Revisión antes de abrir (en el servidor)
 
@@ -155,8 +185,9 @@ Debe terminar en **APROBADO CON ADVERTENCIAS** o mejor, sin ningún ✕. Revisa 
 
 Después, desde tu navegador:
 
-1. Abre `https://app.tumarca.com`, entra con tu correo y la contraseña inicial y configura la verificación en dos
-   pasos (te la pide al entrar). Cambia la contraseña en **Mi perfil**.
+1. Abre `https://app.tumarca.com`, entra con tu correo y la contraseña inicial y cambia la contraseña en **Mi perfil**.
+   La verificación en dos pasos está apagada por ahora (`MFA_REQUIRED=false`): usa una contraseña larga y única. Para
+   encenderla, `MFA_REQUIRED=true` en `.env` y `docker compose up -d`; desde ese momento la pide al entrar.
 2. **Sistema → Correo saliente → Mandarme un correo de prueba**: debe llegarte.
 3. Crea un agente de prueba, vincula un WhatsApp con el QR y mándale un mensaje desde otro teléfono.
 4. Genera una cotización de prueba y descarga su PDF.

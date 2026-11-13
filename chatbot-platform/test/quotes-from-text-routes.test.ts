@@ -171,4 +171,8 @@ t('permisos: el agente no arma ni activa; otra cuenta no usa este agente', async
   const bad = await connect(foreign.id);
   assert.equal(bad.statusCode, 400);
   assert.match(bad.json().error, /no existe en esta cuenta/);
+  // Tampoco al crear un agente nuevo con ella.
+  const created = await h.authed('POST', '/api/chatbots', { account_id: h.accountId, name: 'Con calculadora ajena', ai: { quotes: { enabled: true, allow_final: true, required_fields: [], template_id: '', calculator_id: foreign.id, send_summary: true, send_pdf: true } } });
+  assert.equal(created.statusCode, 400, created.body);
+  assert.match(created.json().error, /no existe en esta cuenta/);
 });

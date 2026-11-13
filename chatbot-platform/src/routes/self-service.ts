@@ -20,7 +20,7 @@ import { sendMail } from '../mailer.js';
 import { cachedChecks } from '../monitor.js';
 import { toComponents } from '../observability/health.js';
 import { STATE_LABEL, overallState } from '../observability/status.js';
-import { CAPTCHA_MESSAGE, captchaEnabled, verifyCaptcha } from '../signup-guard.js';
+import { CAPTCHA_MESSAGE, captchaEnabled, captchaRequired, verifyCaptcha } from '../signup-guard.js';
 import * as store from '../store/index.js';
 import { publicPalette } from '../public-colors.js';
 import { esc, parse } from './util.js';
@@ -161,6 +161,8 @@ export async function selfServicePages(root: FastifyInstance) {
       web: z.string().optional(),
       'cf-turnstile-response': z.string().optional(),
     });
+    /** Mensajes de contacto que llegan a soporte al día, de todas las conexiones juntas. */
+    const CONTACT_MAX_PER_DAY = 200;
     app.post('/contacto', async (req: any, reply) => {
       const { brand } = await brandFor(req);
       const values = (req.body ?? {}) as Record<string, string>;
@@ -172,10 +174,16 @@ export async function selfServicePages(root: FastifyInstance) {
       }
       // Campo trampa: solo un robot lo llena. Se le contesta igual para no darle pistas.
       if (!b.data.web) {
+        // En producción sin las claves del captcha el formulario queda cerrado, como el registro y las reservas: sin
+        // captcha, cualquiera puede llenar el buzón de soporte desde muchas conexiones.
+        if (!captchaEnabled() && captchaRequired()) return html(reply, 503, contactForm({ brand, values, error: 'El formulario no está disponible por ahora. Intenta más tarde.' }));
         // Cerrado ante fallas: si Cloudflare no responde, el mensaje espera (no sale sin comprobar).
         const captcha = await verifyCaptcha(b.data['cf-turnstile-response'], req.ip);
         if (captcha === 'invalid') return html(reply, 400, contactForm({ brand, values, error: CAPTCHA_MESSAGE }));
         if (captcha === 'unavailable') return html(reply, 503, contactForm({ brand, values, error: 'No pudimos comprobar el captcha: intenta en un momento.' }));
+        // Tope del día para toda la plataforma (muchas conexiones distintas no inundan el buzón de soporte). Cuenta solo lo
+        // que pasó el captcha: si no, un robot agotaba el tope y cerraba el formulario a los clientes reales.
+        if (await limited('contact:global', CONTACT_MAX_PER_DAY, 86400_000)) return html(reply, 429, contactForm({ brand, values, error: 'Hoy recibimos muchos mensajes. Intenta mañana.' }));
         const to = supportInbox();
         if (to) await sendMail({ to, replyTo: b.data.email, subject: `Mensaje desde /contacto de ${brand.name}`, text: `${b.data.name} <${b.data.email}> escribió desde ${brand.name} (/contacto):\n\n${b.data.message}` });
         await logEvent({ level: to ? 'info' : 'warn', source: 'system', message: to ? `Mensaje de contacto de ${b.data.email}` : `Mensaje de contacto de ${b.data.email} sin buzón de soporte (define SUPERADMIN_EMAIL)`, details: to ? undefined : { message: b.data.message.slice(0, 2000) } });
