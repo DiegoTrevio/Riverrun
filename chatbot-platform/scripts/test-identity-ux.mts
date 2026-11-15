@@ -192,8 +192,12 @@ try {
   await context.clearCookies();
   await enter('nuria@identidad.mx', PASS);
   await page.waitForURL(/#\/login\/codigo/);
+  // Primero que la pantalla termine de pedir su reto: si las cookies se borran antes, esa consulta ya no lo encuentra y
+  // lleva a entrar sin mostrar el campo (una carrera de la prueba, no del panel).
+  const code = page.getByLabel('Código de 6 dígitos');
+  await code.waitFor();
   await context.clearCookies();
-  await page.getByLabel('Código de 6 dígitos').fill('123456');
+  await code.fill('123456');
   await page.getByRole('button', { name: 'Entrar' }).click();
   await page.waitForURL(/#\/login$/);
   await page.getByText('Vuelve a escribir tu contraseña para continuar').first().waitFor();
