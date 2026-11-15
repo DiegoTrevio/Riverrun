@@ -37,6 +37,8 @@ const installed = (over: Env = {}): Env => ({
   SIGNUP_ENABLED: 'true',
   SIGNUP_REQUIRE_EMAIL: 'false',
   SUPERADMIN_EMAIL: 'yo@ejemplo.com',
+  PRIVACY_COMPANY: 'Ejemplo S.A. de C.V.',
+  PRIVACY_ADDRESS: 'Calle 1, Monterrey, N.L.',
   ALERT_WEBHOOK_URL: 'https://ntfy.sh/riverrun-ejemplo',
   TRUST_PROXY_HOPS: '1',
   KNOWLEDGE_SEARCH_ENABLED: 'false',

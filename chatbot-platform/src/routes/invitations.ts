@@ -20,7 +20,7 @@ import { countHit, ipLimitKey, limited, releaseHit } from '../identity/rate-limi
 import { assertRecentMfa } from '../identity/step-up.js';
 import { logEvent } from '../logs.js';
 import { deliverMail } from '../mailer.js';
-import { DISPOSABLE_MESSAGE, GOOGLE_PASS_COOKIE, googlePassCookie, isDisposableEmail, readGoogleSignupPass, recordTermsAcceptance, termsVersion } from '../signup-guard.js';
+import { DISPOSABLE_MESSAGE, GOOGLE_PASS_COOKIE, googlePassCookie, isDisposableEmail, readGoogleSignupPass, privacyUrl, recordTermsAcceptance, termsVersion } from '../signup-guard.js';
 import * as store from '../store/index.js';
 import type { User } from '../types.js';
 import { parse } from './util.js';
@@ -266,7 +266,7 @@ export async function invitationPublicRoutes(app: FastifyInstance) {
       // Solo en el dominio principal: Google exige registrar la dirección de regreso.
       google_login: !google && googleConfigured() && hostOf(req) === new URL(config.publicBaseUrl).hostname,
       terms_url: config.signup.termsUrl,
-      privacy_url: config.signup.privacyUrl,
+      privacy_url: privacyUrl(),
       terms_version: termsVersion(),
     };
   });

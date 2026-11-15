@@ -24,7 +24,7 @@ import { HttpError } from '../access.js';
 import { assertPasswordAllowed, NewPassword } from '../identity/passwords.js';
 import { parse } from './util.js';
 import { offeredPlans } from './billing.js';
-import { DISPOSABLE_MESSAGE, assertCaptcha, captchaEnabled, isDisposableEmail, recordTermsAcceptance, signupAvailable, termsVersion } from '../signup-guard.js';
+import { DISPOSABLE_MESSAGE, assertCaptcha, captchaEnabled, isDisposableEmail, privacyUrl, recordTermsAcceptance, signupAvailable, termsVersion } from '../signup-guard.js';
 import { recordSecurity } from '../security-log.js';
 
 const Password = NewPassword;
@@ -116,7 +116,7 @@ export async function signupRoutes(app: FastifyInstance) {
     card_required: await cardRequired(),
     support_contact: config.signup.supportContact,
     terms_url: config.signup.termsUrl,
-    privacy_url: config.signup.privacyUrl,
+    privacy_url: privacyUrl(),
     terms_version: termsVersion(),
     // Clave pública del captcha (vacía si no está activo).
     turnstile_site_key: captchaEnabled() ? config.signup.turnstile.siteKey : '',

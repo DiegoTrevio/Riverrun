@@ -1,7 +1,7 @@
 /**
  * Lo que el dueño de una cuenta resuelve solo, sin escribirle a nadie:
  * - páginas públicas: estado del servicio (/estado), contacto (/contacto), aviso de privacidad con derechos ARCO
- *   (/privacidad) y la confirmación del borrado de la cuenta (/borrar-cuenta, desde el enlace del correo);
+ *   (/privacidad, en legal-pages.ts) y la confirmación del borrado de la cuenta (/borrar-cuenta, desde el enlace del correo);
  * - en el panel: descargar todos sus datos (ZIP) y pedir o cancelar el borrado de su cuenta.
  * Las páginas son HTML del servidor, sin JavaScript (salvo el captcha opcional del contacto), con la marca del dominio.
  */
@@ -20,7 +20,8 @@ import { sendMail } from '../mailer.js';
 import { cachedChecks } from '../monitor.js';
 import { toComponents } from '../observability/health.js';
 import { STATE_LABEL, overallState } from '../observability/status.js';
-import { CAPTCHA_MESSAGE, captchaEnabled, captchaRequired, verifyCaptcha } from '../signup-guard.js';
+import { CAPTCHA_MESSAGE, captchaEnabled, captchaRequired, privacyUrl, verifyCaptcha } from '../signup-guard.js';
+import { registerLegalPages } from './legal-pages.js';
 import * as store from '../store/index.js';
 import { publicPalette } from '../public-colors.js';
 import { esc, parse } from './util.js';
@@ -33,7 +34,7 @@ const supportInbox = () => config.signup.superadminEmail || (/^[^\s@]+@[^\s@]+\.
 /** Dónde se ejercen los derechos ARCO. */
 const privacyContact = () => config.signup.privacyContact || config.signup.supportContact || config.signup.superadminEmail;
 /** Aviso de privacidad: el propio del operador (PRIVACY_URL) o el de la plataforma. */
-export const privacyUrl = () => config.signup.privacyUrl || '/privacidad';
+export { privacyUrl };
 
 async function brandFor(req: any) {
   const host = hostOf(req);
@@ -96,6 +97,7 @@ ${o.head ?? ''}
   <a href="/estado">Estado del servicio</a>
   <a href="/contacto">Contacto</a>
   <a href="${esc(privacyUrl())}">Aviso de privacidad</a>
+  <a href="/proteccion-de-datos">Protección de datos</a>
   <a href="/#/login">Entrar a mi panel</a>
 </footer>
 </body>
@@ -191,38 +193,8 @@ export async function selfServicePages(root: FastifyInstance) {
       return html(reply, 200, page({ title: 'Mensaje enviado', brand, body: '<h1>¡Gracias!</h1><p>Recibimos tu mensaje y te responderemos a tu correo lo antes posible.</p>' }));
     });
 
-    /* Aviso de privacidad de la plataforma, con el procedimiento para los derechos ARCO. */
-    app.get('/privacidad', async (req, reply) => {
-      const { brand } = await brandFor(req);
-      const company = config.signup.privacyCompany || brand.name;
-      const contact = privacyContact();
-      const body = `<h1>Aviso de privacidad</h1>
-  <p><strong>Responsable:</strong> ${esc(company)}${config.signup.privacyAddress ? `, con domicilio en ${esc(config.signup.privacyAddress)}` : ''}.${contact ? ` Contacto para privacidad: <strong>${esc(contact)}</strong>.` : ''}</p>
-  <h2>Qué datos tratamos</h2>
-  <ul>
-    <li><strong>De tu cuenta:</strong> nombre, correo, teléfono para avisos, datos de tu negocio y la información que cargas (productos, precios, horarios).</li>
-    <li><strong>De los clientes de tu negocio:</strong> nombre, número o identificador en el canal y el contenido de los mensajes. Respecto de ellos, tu negocio es el responsable y nosotros los tratamos por su cuenta (encargados).</li>
-    <li><strong>De pago:</strong> la tarjeta la procesan Stripe o Mercado Pago; nosotros no la vemos ni la guardamos. Guardamos tus pagos, tus datos fiscales y tus facturas.</li>
-    <li><strong>Técnicos:</strong> registros de actividad y de errores, y el consumo de inteligencia artificial.</li>
-  </ul>
-  <h2>Para qué los usamos</h2>
-  <p>Para prestar el servicio (responder mensajes, agendar, avisarte), cobrar y facturar, dar soporte y mantener la seguridad. No vendemos datos personales.</p>
-  <h2>Con quién los compartimos</h2>
-  <p>Con los proveedores necesarios para el servicio: inteligencia artificial (recibe el texto necesario para responder), canales de mensajería, correo, pagos, facturación electrónica y alojamiento. Y con autoridades, cuando la ley lo exija.</p>
-  <h2>Tus derechos (ARCO)</h2>
-  <p>Puedes <strong>acceder</strong> a tus datos, <strong>rectificarlos</strong>, <strong>cancelarlos</strong> u <strong>oponerte</strong> a su uso, así como revocar tu consentimiento o limitar su uso. Hay dos formas:</p>
-  <ul>
-    <li><strong>Desde tu panel, al momento:</strong> en <em>Mi plan y pagos → Tus datos</em> descargas todos tus datos o borras tu cuenta; tus datos de perfil los corriges en <em>Mi perfil</em>.</li>
-    <li><strong>Por escrito:</strong> manda un correo a ${contact ? `<strong>${esc(contact)}</strong>` : 'nuestro contacto de soporte'} con tu nombre, el correo de tu cuenta, el derecho que quieres ejercer y qué datos, y una copia de tu identificación (o la de tu representante, con su poder). Te respondemos en un máximo de 20 días hábiles y, si procede, lo hacemos efectivo en los 15 días hábiles siguientes.</li>
-  </ul>
-  <p>Si eres cliente de un negocio que usa este servicio, dirige tu solicitud a ese negocio; nosotros le ayudamos a atenderla.</p>
-  <h2>Conservación</h2>
-  <p>Conservamos los datos mientras tu cuenta esté activa. Una cuenta en pausa se borra sola después de un tiempo, con aviso previo, y puedes borrarla tú cuando quieras. Los pagos y las facturas se conservan el tiempo que exige la ley fiscal.</p>
-  <p><strong>Una prueba gratis por persona:</strong> para que nadie repita la prueba, guardamos durante 2 años una huella irreversible (no el dato) de tu correo, de tu cuenta de Google y de tu tarjeta. Con ella no se puede saber cuál es tu correo ni tu tarjeta, solo reconocerlos si vuelven a usarse para otra prueba. Borrar tu cuenta no borra esa huella antes de tiempo.</p>
-  <h2>Cambios</h2>
-  <p>Publicaremos aquí cualquier cambio a este aviso y, si es importante, te avisaremos por correo.</p>`;
-      return reply.code(200).type('text/html; charset=utf-8').header('cache-control', 'public, max-age=300').header('vary', 'Host').send(page({ title: 'Aviso de privacidad', brand, body }));
-    });
+    /* Avisos de privacidad (integral y simplificado) y protección de datos, con el procedimiento para los derechos ARCO. */
+    registerLegalPages(app, { page, brandFor, privacyContact });
 
     /* Confirmación del borrado desde el correo. El GET solo pregunta: los antivirus de correo abren los enlaces. */
     const invalid = (reply: any, brand: any) => html(reply, 400, page({ title: 'Enlace no válido', brand, noindex: true, body: '<h1>Enlace no válido o vencido</h1><p>Vuelve a pedir el borrado desde tu panel (Mi plan y pagos → Tus datos): el enlace dura 24 horas.</p>' }));

@@ -12,5 +12,7 @@ TERMS_VERSION=2026-10
 
 y el registro de nuevos clientes las enlazará en la casilla de aceptación. Cada aceptación queda guardada (tabla `terms_acceptances`): quién, qué versión (`TERMS_VERSION`, o la dirección de los términos si no la defines), las direcciones vigentes, la IP, el navegador y la fecha. También al registrarse con Google: la cuenta se crea hasta que acepta. Cuando publiques unos términos nuevos, cambia `TERMS_VERSION`. Los archivos `index.html`, `privacy.*` y `terms.*` que hay en la raíz del repositorio pertenecen a otro propósito (sitio estático de GitHub Pages) y **no describen este producto**: no los reutilices tal cual.
 
+La plataforma ya trae sus avisos de privacidad publicados, listos para usar con tus datos (`PRIVACY_COMPANY`, `PRIVACY_ADDRESS`, `PRIVACY_CONTACT`): el integral en `/privacidad`, el simplificado en `/privacidad/simplificado` y la página de protección de datos (encargados y proveedores) en `/proteccion-de-datos`. Su texto está en `src/routes/legal-pages.ts`; la plantilla de abajo solo hace falta si prefieres publicar el tuyo en `PRIVACY_URL`.
+
 - [Términos del servicio](terminos-plantilla.md)
 - [Aviso de privacidad](privacidad-plantilla.md)
