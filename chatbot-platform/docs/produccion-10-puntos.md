@@ -58,7 +58,8 @@ Contadores en PostgreSQL (`src/identity/rate-limit.ts`), compartidos por todos l
 
 ## 8. Caché y compresión
 
-- Caddy comprime cada respuesta con zstd o gzip (lo que acepte el navegador).
+- Caddy comprime cada respuesta con zstd o gzip (lo que acepte el navegador). Los archivos del panel ya vienen comprimidos desde la imagen en Brotli y gzip al máximo (`scripts/minify-public.mjs`), así que el backend los entrega tal cual, sin gastar CPU en cada petición, y Safari (que no acepta zstd) recibe Brotli.
+- Las fuentes se guardan en el navegador un año y las imágenes de la ayuda una semana (`src/static-cache.ts`). Las capturas de la ayuda van en AVIF o WebP (con la JPG de respaldo), con tamaño fijo y carga diferida.
 - Los archivos del panel se sirven con `ETag`: el navegador pregunta y recibe "sin cambios" (304) sin descargarlos otra vez, y una versión nueva se ve al instante, sin limpiar caché.
 - Logos, fotos y adjuntos llevan su propio tiempo de caché; lo privado (exportaciones, datos del contacto) va con `no-store`.
 - Dentro del backend se guardan en memoria las comprobaciones de salud, la lista de modelos de IA, los PDF de cotizaciones y la disponibilidad de los calendarios.
@@ -79,3 +80,4 @@ No conviene adelantar estos pasos: cada uno cuesta cada mes y hoy no hay carga q
 - Tres niveles de salud (`/health`, `/health/ready`, `/health/functional`), métricas en `/metrics` e incidencias con aviso al equipo ([observabilidad.md](observabilidad.md)).
 - Latido a healthchecks.io (`HEARTBEAT_URL`): avisa si el servidor entero deja de responder ([publicar-digitalocean.md](publicar-digitalocean.md)).
 - Registro de seguridad en el panel y registros de cada servicio con `./riverrun logs`.
+- Peticiones lentas: cada respuesta que tarda `SLOW_REQUEST_MS` (2 s) o más queda en el registro con su ruta, y `/metrics` cuenta respuestas, lentas y tiempo total por sección. Lista completa de mejoras de velocidad en [rendimiento.md](rendimiento.md).

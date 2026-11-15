@@ -635,6 +635,14 @@ fieldset.field { border: 0; padding: 0; }
 .app-dialog::backdrop { background: rgb(17 24 39 / .45); }
 .dialog-actions { justify-content: flex-end; margin-top: var(--space-3); }
 .loading-view { padding-top: 48px; }
+/* Silueta de carga (loadingSkeleton en core.js): barras grises con un brillo que pasa; quieta con «reducir movimiento». */
+.skeleton > div { display: grid; gap: 12px; max-width: 960px; }
+.skeleton-card { display: grid; gap: 10px; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--surface); }
+.skeleton-bar { display: block; height: 12px; border-radius: 4px; background: linear-gradient(90deg, var(--raised) 25%, var(--line) 50%, var(--raised) 75%); background-size: 200% 100%; animation: skeleton-shine 1.4s ease-in-out infinite; }
+.skeleton-title { height: 22px; width: 40%; margin-bottom: 4px; }
+.skeleton-line.short { width: 60%; }
+@keyframes skeleton-shine { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { .skeleton-bar { animation: none; } }
 .sub-tabs { border: 0; gap: 4px; padding: 4px; background: var(--raised); border-radius: 10px; display: inline-flex; flex-wrap: wrap; }
 .sub-tabs a { padding: 6px 12px; margin: 0; border: 0; border-radius: 7px; color: var(--muted); }
 .sub-tabs a.active { background: var(--surface); color: var(--text); outline: 1px solid var(--line); outline-offset: -1px; }

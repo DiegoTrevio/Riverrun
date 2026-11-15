@@ -60,11 +60,13 @@ import { cachedChecks, checkDb, runReadiness } from './monitor.js';
 import { registerSecurityHeaders } from './security-headers.js';
 import { functionalReport, readinessReport } from './observability/health.js';
 import { collectMetricsExtra, renderMetrics } from './observability/metrics.js';
+import { registerHttpTiming } from './observability/http-timing.js';
 import { ChatService, type TransportFactory } from './service.js';
 import { copilotRoutes } from './copilot/routes.js';
 import { settleTurns } from './copilot/runner.js';
 import { COPILOT_TOOLS } from './copilot/tools/index.js';
 import { loadPlatformSecrets, startPlatformSecretsRefresh, stopPlatformSecretsRefresh } from './platform-secrets.js';
+import { staticOptions } from './static-cache.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -141,11 +143,12 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
 
   installErrorHandler(app);
   registerSecurityHeaders(app);
+  registerHttpTiming(app, config.monitor.slowRequestMs);
   await app.register(cookie);
   // Con la cookie del panel, lo que cambia algo tiene que venir del mismo sitio (después de leer las cookies).
   app.addHook('onRequest', originGuard);
   await app.register(multipart);
-  await app.register(fastifyStatic, { root: path.resolve(here, '..', 'public'), prefix: '/' });
+  await app.register(fastifyStatic, staticOptions(path.resolve(here, '..', 'public')));
 
   // Liveness: el proceso responde. No consulta nada, así un fallo externo no reinicia el contenedor en bucle.
   app.get('/health', async () => ({ ok: true }));

@@ -342,6 +342,8 @@ export const config = {
     escalateMinutes: monitorLimit('ALERT_ESCALATE_MINUTES', 60, 10080),
     /** Memoria residente del proceso que avisa, en MB (0 = sin aviso). Pensado para un VPS de ~2 GB. */
     rssWarnMb: monitorLimit('RESOURCE_WARN_RSS_MB', 1024, 65536),
+    /** Milisegundos a partir de los cuales una respuesta del backend cuenta como lenta y se anota en el registro (0 = sin aviso). */
+    slowRequestMs: Math.max(0, Number(env('SLOW_REQUEST_MS', '2000')) || 0),
   },
   /**
    * Salida real de mensajes. `sandbox` (staging) bloquea todo envío a WhatsApp, correo o webhooks salvo a los destinos de
