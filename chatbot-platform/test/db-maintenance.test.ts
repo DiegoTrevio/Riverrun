@@ -147,6 +147,13 @@ t('los mensajes por fecha, la recuperación de trabajos y la limpieza tienen su 
   assert.match(await plan(`SELECT id FROM event_logs WHERE level = 'error' AND created_at > now() - interval '15 minutes'`), /event_logs_errors_idx/);
 });
 
+t('los avisos de entrega y las listas de registros por cuenta tienen su índice', async () => {
+  const account = '00000000-0000-0000-0000-000000000000';
+  assert.match(await plan(`SELECT id FROM messages WHERE direction = 'out' AND external_message_id = ANY($1::text[])`, [['abc']]), /messages_external_out_idx/);
+  assert.match(await plan(`SELECT * FROM event_logs WHERE account_id = $1 ORDER BY id DESC LIMIT 200`, [account]), /event_logs_account_id_idx/);
+  assert.match(await plan(`SELECT * FROM ai_runs WHERE account_id = $1 ORDER BY id DESC LIMIT 200`, [account]), /ai_runs_account_id_idx/);
+});
+
 t('una consulta atorada y una transacción olvidada se cortan solas', async () => {
   assert.equal((await pool.query('SHOW statement_timeout')).rows[0].statement_timeout, '2s');
   await assert.rejects(pool.query('SELECT pg_sleep(3)'), /statement timeout/);

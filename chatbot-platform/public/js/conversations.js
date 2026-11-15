@@ -3,7 +3,7 @@ import { workspaceTabs } from './contact-workspace.js';
 import { workRecovery } from './work-recovery.js';
 import { dataLabel, flowCard } from './bot.js';
 import { channelIcon } from './channels.js';
-import { api, area, check, clone, dialog, field, fill, fmtDate, fmtPhone, h, initialsOf, lines, personTint, poll, run, select, state, text, toast, confirmAction, ask, named } from './core.js';
+import { api, area, check, clone, debounce, dialog, field, fill, fmtDate, fmtPhone, h, initialsOf, lines, personTint, poll, run, select, state, text, toast, confirmAction, ask, named } from './core.js';
 import { icon, okMark } from './icons.js';
 import { acct, isAdmin, isSuper, withAcct } from './session.js';
 import { pipelineCard } from './pipeline.js';
@@ -254,7 +254,7 @@ export async function viewInbox(root, params, id) {
   const list = h('aside', { class: 'inbox-list' },
     h('div', { class: 'inbox-list-head' },
       h('div', { class: 'row between' }, h('h1', { style: 'margin:0;font-size:18px' }, 'Conversaciones'), h('a', { class: 'small', href: '#/conversations?vista=tabla' }, 'Vista de tabla')),
-      h('input', { type: 'search', placeholder: 'Buscar nombre o teléfono…', 'aria-label': 'Buscar conversaciones', value: f.search, onchange: (e) => { f.search = e.target.value.trim(); load(); } }),
+      h('input', { type: 'search', placeholder: 'Buscar nombre o teléfono…', 'aria-label': 'Buscar conversaciones', value: f.search, oninput: (e) => { f.search = e.target.value.trim(); searchLater(); }, onchange: () => { searchLater.cancel(); load(); } }),
       // Filtros de una misma lista (no pestañas): botones con aria-pressed dentro de un grupo con nombre.
       h('div', { class: 'inbox-tabs', role: 'group', 'aria-label': 'Filtrar conversaciones' }, INBOX_TABS.map(([k, l]) => h('button', { type: 'button', 'aria-pressed': String(f.status === k), class: f.status === k ? 'active' : '', onclick: (e) => { f.status = k; e.currentTarget.parentNode.querySelectorAll('button').forEach((b) => { const on = b === e.currentTarget; b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on)); }); load(); } }, l)))),
     items);
@@ -263,10 +263,16 @@ export async function viewInbox(root, params, id) {
   root.append(h('div', { class: 'inbox' }, list, detail));
   let shown = [];
   let inboxSignature = '';
-  const load = async () => {
+  const query = () => {
     const qs = new URLSearchParams({ page: 'true', ...(f.status ? { status: f.status } : {}), ...(f.search ? { search: f.search } : {}) });
     if (isSuper() && state.accountId) qs.set('account_id', state.accountId);
+    return qs.toString();
+  };
+  const load = async () => {
+    const qs = query();
     const page = await api('GET', `/api/conversations?${qs}`);
+    // Al buscar mientras se escribe, la respuesta de una búsqueda que ya cambió no tapa la de la búsqueda nueva.
+    if (qs !== query()) return;
     shown = page.items;
     // Sin cambios no se vuelve a dibujar (el lector no relee el enlace enfocado cada 10 s); con cambios, el foco sigue
     // en la misma conversación.
@@ -278,6 +284,8 @@ export async function viewInbox(root, params, id) {
     items.scrollTop = inboxScroll;
     if (focused) items.querySelector(`a[href="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
   };
+  // Si la persona ya cambió de pantalla, la búsqueda pendiente no se hace.
+  const searchLater = debounce(() => { if (root.isConnected) load().catch(() => toast('No se pudo buscar. Inténtalo de nuevo.', true)); });
   await load();
   poll(load, 10000, root);
   if (id) await viewConversation(detail, id, { embedded: true });

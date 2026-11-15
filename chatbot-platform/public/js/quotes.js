@@ -1,5 +1,5 @@
 import { needAccount } from './admin.js';
-import { api, area, check, confirmAction, dialog, field, fill, fmtDate, h, run, select, settingsSection, state, text, toast, named } from './core.js';
+import { api, area, check, confirmAction, debounce, dialog, field, fill, fmtDate, h, run, select, settingsSection, state, text, toast, named } from './core.js';
 import { render } from './main.js';
 import { isAdmin, isSuper, withAcct } from './session.js';
 
@@ -417,9 +417,12 @@ async function listQuotes(root, params) {
   const f = { status: params.get('status') || '', kind: params.get('kind') || '', search: params.get('search') || '' };
   const box = h('div');
   const open = (q) => (location.hash = `#/cotizaciones/historial?id=${q.id}`);
+  const query = () => new URLSearchParams(Object.entries(f).filter(([, v]) => v)).toString();
   const load = async () => {
-    const qs = new URLSearchParams(Object.entries(f).filter(([, v]) => v));
-    const quotes = await api('GET', withAcct(`/api/quotes${qs.size ? `?${qs}` : ''}`));
+    const qs = query();
+    const quotes = await api('GET', withAcct(`/api/quotes${qs ? `?${qs}` : ''}`));
+    // Al buscar mientras se escribe, la respuesta de una búsqueda que ya cambió no tapa la de la búsqueda nueva.
+    if (qs !== query()) return;
     fill(box, quotes.length
       ? h('table', {},
           h('thead', {}, h('tr', {}, h('th', {}, 'Folio'), h('th', {}, 'Cliente'), h('th', {}, 'Tipo'), h('th', {}, 'Estado'), h('th', {}, 'Total'), h('th', {}, 'Fecha'))),
@@ -432,6 +435,8 @@ async function listQuotes(root, params) {
             h('td', { class: 'small' }, fmtDate(q.created_at))))))
       : h('p', { class: 'muted' }, 'Todavía no hay cotizaciones con estos filtros.'));
   };
+  // Si la persona ya cambió de pantalla, la búsqueda pendiente no se hace.
+  const searchLater = debounce(() => { if (box.isConnected) load().catch(() => toast('No se pudo buscar. Inténtalo de nuevo.', true)); });
   root.append(
     isAdmin() ? h('div', { class: 'page-intro' }, h('a', { class: 'btn primary', href: '#/cotizaciones/historial?id=new' }, '+ Nueva cotización'),
       h('p', { class: 'small muted' }, 'Para un cliente que te pidió precio por teléfono, en persona o por otro medio. Para un cliente que te escribe, ábrela desde su conversación.')) : null,
@@ -439,7 +444,7 @@ async function listQuotes(root, params) {
     h('div', { class: 'row' },
       field('Estado', select(f, 'status', [['', 'Todos'], ...Object.entries(STATUS).map(([k, [, l]]) => [k, l])], load)),
       field('Tipo', select(f, 'kind', [['', 'Todos'], ['approximate', 'Aproximadas'], ['final', 'Finales']], load)),
-      field('Buscar', text(f, 'search', { type: 'search', placeholder: 'Folio o cliente', onkeydown: (e) => { if (e.key === 'Enter') load(); } }))),
+      field('Buscar', text(f, 'search', { type: 'search', placeholder: 'Folio o cliente', oninput: () => searchLater(), onkeydown: (e) => { if (e.key === 'Enter') { searchLater.cancel(); load(); } } }))),
     box));
   await load();
 }

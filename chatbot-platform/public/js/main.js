@@ -1,4 +1,4 @@
-import { $app, errorCard, fill, h, recordUX, state } from './core.js';
+import { $app, errorCard, fill, h, loadingSkeleton, recordUX, state } from './core.js';
 import { enterAccount } from './account-switch.js';
 import { brand, ensureBrand } from './brand.js';
 import { loadWhatsappStatus } from './connect.js';
@@ -19,7 +19,7 @@ export async function render() {
   const nav = ++state.navigation;
   clearTimers();
   const current = () => nav === state.navigation;
-  fill($app, h('main', { class: 'main loading-view', role: 'status', 'aria-live': 'polite', 'aria-busy': 'true' }, 'Cargando…'));
+  fill($app, h('main', { class: 'main loading-view', 'aria-busy': 'true' }, loadingSkeleton('Cargando…')));
   const view = async (file, name, ...args) => { const module = await import(`./${file}.js`); if (current()) return module[name](...args); };
   const hash = location.hash.slice(1) || '/';
   const [pathPart, qs] = hash.split('?');
@@ -69,7 +69,7 @@ export async function render() {
   }
   // Crear un agente tiene su propia página (antes era una tarjeta dentro de la lista).
   if (['agentes', 'asistentes'].includes(parts[0]) && !parts[1] && params.get('new') === '1') { location.replace('#/agentes/nuevo'); return; }
-  const pending = h('p', { class: 'help', role: 'status' }, 'Cargando información…');
+  const pending = loadingSkeleton();
   const content = h('div', { 'aria-busy': 'true' }, pending);
   fill($app, shell(parts[0] || 'home', content));
   try {

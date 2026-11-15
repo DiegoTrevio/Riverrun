@@ -277,6 +277,28 @@ export function localDateTime(d, timeZone) {
 
 export const clone = (o) => JSON.parse(JSON.stringify(o));
 
+/** Espera a que la persona deje de escribir `ms` milisegundos antes de llamar a `fn` (búsquedas que consultan al servidor). */
+export function debounce(fn, ms = SEARCH_DELAY_MS) {
+  let timer;
+  const later = (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
+  later.cancel = () => clearTimeout(timer);
+  return later;
+}
+/**
+ * Silueta gris de la pantalla mientras llegan sus datos: se siente más rápida que un texto solo. El lector de pantalla
+ * oye solo «Cargando…» (la silueta va oculta para él) y la animación se apaga con «reducir movimiento».
+ */
+export function loadingSkeleton(label = 'Cargando información…', rows = 3) {
+  const bar = (cls) => h('span', { class: `skeleton-bar ${cls}` });
+  return h('div', { class: 'skeleton', role: 'status' },
+    h('span', { class: 'sr-only' }, label),
+    h('div', { 'aria-hidden': 'true' },
+      bar('skeleton-title'),
+      ...Array.from({ length: rows }, () => h('div', { class: 'skeleton-card' }, bar('skeleton-line'), bar('skeleton-line short')))));
+}
+/** Pausa al escribir antes de buscar: corta para que se sienta inmediato, larga para no pedir una búsqueda por letra. */
+export const SEARCH_DELAY_MS = 300;
+
 /* ------------------------------ Personas, tiempos y teléfonos ------------------------------ */
 /** Iniciales de una persona (dos letras como máximo). */
 export const initialsOf = (name) => (name || '?').split(/[\s@.]+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '?';

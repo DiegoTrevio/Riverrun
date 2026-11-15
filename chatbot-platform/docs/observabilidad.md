@@ -146,6 +146,9 @@ Formato de texto de Prometheus. Las etiquetas son solo valores fijos o validados
 | `riverrun_ai_cost_usd_15m` | `model` | Costo en USD en 15 minutos (lo que guarda cada llamada en `ai_runs`). |
 | `riverrun_ai_latency_p95_ms_15m` | `model` | Latencia p95 en 15 minutos. |
 | `riverrun_db_pool_connections` | `state` | `total`, `idle`, `waiting` del pool de PostgreSQL. |
+| `riverrun_http_requests` | `group` | Respuestas del backend desde que arrancó el proceso, por sección (`conversations`, `quotes`, `api_v1`, `webhook`, `archivos`…). Sin `/health` ni `/metrics`. |
+| `riverrun_http_slow_requests` | `group` | De esas, las que tardaron `SLOW_REQUEST_MS` o más. |
+| `riverrun_http_duration_ms_sum` | `group` | Suma de milisegundos; entre `riverrun_http_requests` da el promedio de la sección. |
 | `riverrun_process_resident_memory_bytes` | — | Memoria residente del proceso. |
 | `riverrun_process_uptime_seconds` | — | Tiempo desde el arranque. |
 
@@ -173,6 +176,7 @@ Canales: el correo a `SUPERADMIN_EMAIL` y el webhook `ALERT_WEBHOOK_URL` (Slack,
 | `ALERT_MUTE` | vacío | Componentes sin avisos externos (la incidencia se registra igual). Con `=AAAA-MM-DDTHH:MM:SSZ`, el silencio vence solo. |
 | `ALERT_ESCALATE_MINUTES` | `60` | Minutos abiertos antes del aviso de escalamiento. |
 | `RESOURCE_WARN_RSS_MB` | `1024` | Memoria del proceso que dispara un aviso. `0` lo desactiva. |
+| `SLOW_REQUEST_MS` | `2000` | Una respuesta que tarda esto o más se anota en el registro (`Petición lenta: GET /api/quotes tardó 2300 ms`, con la ruta del código y nunca la URL real) y cuenta en `riverrun_http_slow_requests`. `0` lo desactiva. |
 | `ALERT_WEBHOOK_URL`, `HEARTBEAT_URL`, `SUPERADMIN_EMAIL` | vacío | Destinos de los avisos (ya existían). |
 
 ## Pruebas

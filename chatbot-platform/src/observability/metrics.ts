@@ -9,6 +9,7 @@
 import { config } from '../config.js';
 import { pool, query } from '../db.js';
 import type { CheckResult } from '../monitor.js';
+import { type HttpGroupStats, httpTimingStats } from './http-timing.js';
 import { openBySeverity } from './incidents.js';
 import { STATES, stateOf } from './status.js';
 
@@ -38,6 +39,8 @@ export interface MetricsExtra {
   uptimeSeconds: number;
   rssBytes: number;
   pool: { total: number; idle: number; waiting: number };
+  /** Respuestas del backend desde que arrancó el proceso, por sección (ver http-timing.ts). */
+  http?: HttpGroupStats[];
 }
 
 /**
@@ -97,6 +100,7 @@ export async function collectMetricsExtra(): Promise<MetricsExtra> {
     }),
   ]);
   return {
+    http: httpTimingStats(),
     incidents,
     channels: channels.map((c) => ({ type: label(c.type), connection: label(c.connection), n: c.n })),
     ai: a.ai,
@@ -182,6 +186,10 @@ export function renderMetrics(checks: CheckResult[], extra: MetricsExtra): strin
     [{ state: 'idle' }, extra.pool.idle],
     [{ state: 'waiting' }, extra.pool.waiting],
   ]);
+  const http = extra.http ?? [];
+  family('riverrun_http_requests', 'Respuestas del backend desde que arrancó el proceso, por sección.', http.map((g) => [{ group: g.group }, g.requests] as [Record<string, string>, number]));
+  family('riverrun_http_slow_requests', `Respuestas que tardaron ${config.monitor.slowRequestMs} ms o más (SLOW_REQUEST_MS), por sección.`, http.map((g) => [{ group: g.group }, g.slow] as [Record<string, string>, number]));
+  family('riverrun_http_duration_ms_sum', 'Suma de milisegundos de las respuestas, por sección (dividida entre las respuestas da el promedio).', http.map((g) => [{ group: g.group }, Math.round(g.durationMsSum)] as [Record<string, string>, number]));
   family('riverrun_process_resident_memory_bytes', 'Memoria residente del proceso.', [[{}, extra.rssBytes]]);
   family('riverrun_process_uptime_seconds', 'Segundos desde que arrancó el proceso.', [[{}, Math.round(extra.uptimeSeconds)]]);
   return out.join('\n') + '\n';
