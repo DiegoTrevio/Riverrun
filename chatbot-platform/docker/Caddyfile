@@ -30,7 +30,7 @@
 }
 
 {$DOMAIN} {
-	encode gzip
+	encode zstd gzip
 	import seguridad
 	# /internal/* es solo para Caddy (va directo al backend, sin pasar por aquí)
 	handle /internal/* {
@@ -46,7 +46,7 @@ https:// {
 	tls {
 		on_demand
 	}
-	encode gzip
+	encode zstd gzip
 	import seguridad
 	handle /internal/* {
 		respond 404

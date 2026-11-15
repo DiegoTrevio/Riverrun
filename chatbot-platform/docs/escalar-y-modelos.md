@@ -23,11 +23,7 @@ Decisiones de diseño y cómo operarlas. Todo esto funciona hoy con **un solo VP
 - La carga real es baja: un VPS atiende cientos de conversaciones simultáneas; el cuello de botella es la IA (segundos por respuesta), no la cola.
 - Un arrendamiento con `UPDATE` es atómico y no mantiene conexiones abiertas durante la llamada a la IA (a diferencia de un *advisory lock* de sesión, que agotaría el pool).
 
-**Para correr varios procesos** (no es necesario hoy): se puede levantar otra réplica del `backend` apuntando a la misma base. Lo que **no** comparten las réplicas:
-- los límites de intentos (inicio de sesión, registro, chat web): cada proceso aplica el suyo (el límite efectivo se multiplica por el número de réplicas);
-- el simulador del panel, que usa exclusión local (solo afecta a quien prueba).
-
-Si algún día el límite de intentos debe ser exacto con varias réplicas, el siguiente paso es una tabla `rate_limits` en PostgreSQL (una fila por clave y ventana, con `INSERT … ON CONFLICT DO UPDATE`), no Redis.
+**Para correr varios procesos** (no es necesario hoy): se puede levantar otra réplica del `backend` apuntando a la misma base. Los límites de intentos (inicio de sesión, registro, chat web, API) ya viven en la tabla `rate_limits` de PostgreSQL (`src/identity/rate-limit.ts`), así que todas las réplicas comparten el mismo contador. Lo único que no comparten es el simulador del panel, que usa exclusión local (solo afecta a quien prueba). Camino completo de crecimiento: [produccion-10-puntos.md](produccion-10-puntos.md#9-escalar).
 
 **Qué *no* cubre.** Mientras el backend está caído (por ejemplo, ~1 min durante `./riverrun update`) los webhooks que Evolution intente entregar pueden perderse según su política de reintentos. Para actualizaciones sin hueco habría que correr dos réplicas detrás de Caddy y reiniciarlas de una en una (el arrendamiento ya lo permite).
 
