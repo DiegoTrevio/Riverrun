@@ -108,11 +108,22 @@ export const CAPTCHA_MESSAGE = 'Confirma que no eres un robot e intenta de nuevo
 /** Versión de los términos vigente: TERMS_VERSION o, sin ella, la dirección de los términos. */
 export const termsVersion = () => config.signup.termsVersion || config.signup.termsUrl;
 
+/**
+ * Fecha de la versión vigente del aviso de privacidad incluido (/privacidad). Cámbiala cuando cambie su texto: se
+ * muestra en el aviso y queda en cada constancia de aceptación. El texto de cada versión es el de
+ * src/routes/legal-pages.ts en el historial del repositorio a esa fecha.
+ */
+export const PRIVACY_NOTICE_VERSION = '2026-11-15';
+/** Aviso de privacidad que se enlaza: el propio del operador (PRIVACY_URL) o el incluido en la plataforma. */
+export const privacyUrl = () => config.signup.privacyUrl || '/privacidad';
+/** Dirección completa del aviso que se guarda en la constancia: con el incluido, también su versión. */
+export const acceptedPrivacyUrl = () => config.signup.privacyUrl || `${config.publicBaseUrl}/privacidad?version=${PRIVACY_NOTICE_VERSION}`;
+
 /** Guarda la constancia de aceptación de términos (dentro de la transacción que crea la cuenta). */
 export async function recordTermsAcceptance(client: PoolClient, o: { userId: string; accountId: string; email: string; ip: string; userAgent: string; source: 'signup' | 'google' | 'reaccept' | 'invite' }) {
   await client.query(
     `INSERT INTO terms_acceptances (user_id, account_id, email, terms_version, terms_url, privacy_url, ip, user_agent, source) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-    [o.userId, o.accountId, o.email, termsVersion(), config.signup.termsUrl, config.signup.privacyUrl, o.ip, o.userAgent.slice(0, 300), o.source],
+    [o.userId, o.accountId, o.email, termsVersion(), config.signup.termsUrl, acceptedPrivacyUrl(), o.ip, o.userAgent.slice(0, 300), o.source],
   );
 }
 

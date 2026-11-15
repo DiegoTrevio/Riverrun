@@ -98,7 +98,7 @@ function brandSide() {
 
 /** Las páginas públicas también son un <main>: el título de la pestaña dice dónde estás y el foco empieza en el título. */
 function publicPage(card) {
-  fill($app, h('main', { id: 'contenido', class: 'auth' }, brandSide(), h('div', { class: 'auth-pane' }, card)));
+  fill($app, h('main', { id: 'contenido', class: 'auth' }, brandSide(), h('div', { class: 'auth-pane' }, h('div', { class: 'auth-stack' }, card, legalLinks()))));
   const title = card.querySelector('h1');
   if (!title) return;
   document.title = title.textContent === brand.name ? brand.name : `${title.textContent} · ${brand.name}`;
@@ -106,12 +106,25 @@ function publicPage(card) {
   title.focus({ preventScroll: true });
 }
 
-/** Casilla de aceptación de términos y aviso de privacidad (se guarda como constancia al crear la cuenta). */
+/** Enlaces a los avisos debajo de cada pantalla pública (entrar, registro, recuperar contraseña). */
+function legalLinks() {
+  return h('nav', { class: 'auth-legal', 'aria-label': 'Avisos y ayuda' },
+    h('a', { href: '/privacidad' }, 'Aviso de privacidad'), h('a', { href: '/proteccion-de-datos' }, 'Protección de datos'), h('a', { href: '/ayuda.html' }, 'Ayuda'));
+}
+
+/**
+ * Casilla de aceptación de términos y aviso de privacidad (se guarda como constancia al crear la cuenta), con el aviso
+ * simplificado: para qué usamos los datos y dónde está el aviso completo.
+ */
 function termsCheck(info, f) {
-  return h('label', { class: 'check small' }, h('input', { type: 'checkbox', onchange: (e) => (f.accept_terms = e.target.checked) }),
-    [info.terms_url ? ['Acepto los ', h('a', { href: info.terms_url, target: '_blank', rel: 'noopener' }, 'términos del servicio')] : 'Acepto los términos del servicio',
-      info.privacy_url ? [' y el ', h('a', { href: info.privacy_url, target: '_blank', rel: 'noopener' }, 'aviso de privacidad')] : '',
-      '. Entiendo que WhatsApp se conecta como "dispositivo vinculado" (no es la API oficial) y que los envíos masivos pueden provocar el bloqueo del número.']);
+  const privacy = info.privacy_url || '/privacidad';
+  return h('div', {},
+    h('label', { class: 'check small' }, h('input', { type: 'checkbox', onchange: (e) => (f.accept_terms = e.target.checked) }),
+      [info.terms_url ? ['Acepto los ', h('a', { href: info.terms_url, target: '_blank', rel: 'noopener' }, 'términos del servicio')] : 'Acepto los términos del servicio',
+        ' y el ', h('a', { href: privacy, target: '_blank', rel: 'noopener' }, 'aviso de privacidad'),
+        '. Entiendo que WhatsApp se conecta como "dispositivo vinculado" (no es la API oficial) y que los envíos masivos pueden provocar el bloqueo del número.']),
+    h('p', { class: 'small muted auth-privacy-note' }, 'Usamos tus datos para crear tu cuenta, darte el servicio, cobrarte y darte soporte. No los usamos para publicidad ni los vendemos. ',
+      h('a', { href: privacy, target: '_blank', rel: 'noopener' }, 'Lee el aviso completo'), ' para saber con quién los compartimos y cómo ejercer tus derechos.'));
 }
 
 /** Captcha de Cloudflare (solo si el servidor lo activa): guarda su respuesta en f.turnstile_token. */

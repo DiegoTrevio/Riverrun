@@ -293,8 +293,10 @@ no debe mostrar nada en «Para cobrar de verdad».
      con la clave de pruebas (`sk_test_…`, en un servidor con `RIVERRUN_ENV=test`).
 6. **Textos legales**:
    - Publica tus términos (`TERMS_URL`) y define `TERMS_VERSION`.
-   - Para el aviso de privacidad: o publicas el tuyo (`PRIVACY_URL`), o usas el incluido en `/privacidad` con
-     `PRIVACY_COMPANY`, `PRIVACY_ADDRESS` y `PRIVACY_CONTACT`.
+   - Para el aviso de privacidad: o publicas el tuyo (`PRIVACY_URL`), o usas los incluidos (`/privacidad`,
+     `/privacidad/simplificado` y `/proteccion-de-datos`) con `PRIVACY_COMPANY`, `PRIVACY_ADDRESS` y
+     `PRIVACY_CONTACT`. Revisa que la lista de proveedores de `/proteccion-de-datos` sea la que de verdad usas y haz
+     revisar los textos por un abogado.
 7. **Planes**: créalos en **Planes y cobro**, con el precio sin IVA, el periodo y los límites. Revisa `/precios`.
 8. **Prueba con dinero real** antes de abrir el registro:
    - Contrata el plan más barato con tu propia tarjeta. Una cuenta nueva con prueba no cobra al agregar la tarjeta: para

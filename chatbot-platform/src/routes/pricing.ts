@@ -120,6 +120,7 @@ export function pricingPage(o: { brand: ReturnType<typeof publicBrand>; plans: O
     <a href="/#/login">Ya tengo cuenta</a>
     ${o.terms ? `<a href="${esc(o.terms)}">Términos</a>` : ''}
     ${o.privacy ? `<a href="${esc(o.privacy)}">Aviso de privacidad</a>` : ''}
+    <a href="/proteccion-de-datos">Protección de datos</a>
     <a href="/ayuda.html">Ayuda</a>
     <a href="/estado">Estado del servicio</a>
     <a href="/contacto">Escríbenos</a>

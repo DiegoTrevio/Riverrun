@@ -19,7 +19,7 @@ const EMBEDDABLE = [/^\/reservar\//, /^\/ayuda(\.html)?(\/|$)/];
  * omisión. Se compara contra la ruta ya decodificada y normalizada, como la ve @fastify/static.
  */
 const SERVER_PAGES = [
-  /^\/precios$/, /^\/estado$/, /^\/privacidad$/, /^\/contacto$/, /^\/borrar-cuenta$/, /^\/baja-recordatorios$/,
+  /^\/precios$/, /^\/estado$/, /^\/privacidad(\/simplificado)?$/, /^\/proteccion-de-datos$/, /^\/contacto$/, /^\/borrar-cuenta$/, /^\/baja-recordatorios$/,
   /^\/reservar\/[^/]+$/, /^\/ayuda(\.html)?$/, /^\/api-docs\.html$/, /^\/api\/v1\/docs$/, /^\/webchat-demo\.html$/,
   /^\/wa\/[^/]+$/, /^\/conectar-red\/[^/]+$/, /^\/zernio\/(return|callback)\//, /^\/meta\/callback$/, /^\/oauth\//, /^\/pago\//,
 ];

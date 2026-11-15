@@ -100,7 +100,14 @@ SUPERADMIN_EMAIL=tu@correo.com                       # aquí te llegan los aviso
 HEARTBEAT_URL=https://hc-ping.com/...                # healthchecks.io → tu chequeo → la URL de ping
 TURNSTILE_SITE_KEY=0x...                             # Cloudflare → Turnstile → agrega tu dominio
 TURNSTILE_SECRET_KEY=0x...
+PRIVACY_COMPANY=Tu Empresa S.A. de C.V.              # quién es responsable de los datos (aviso de privacidad)
+PRIVACY_ADDRESS=Calle 1, Col. Centro, Monterrey, N.L., 64000
+PRIVACY_CONTACT=privacidad@tumarca.com               # aquí llegan las solicitudes ARCO
 ```
+
+Con esos tres datos quedan completos los avisos de `https://tu-dominio/privacidad`,
+`https://tu-dominio/privacidad/simplificado` y `https://tu-dominio/proteccion-de-datos`. Ábrelos y revisa que no quede
+ningún texto entre corchetes amarillos; conviene que un abogado los lea antes de abrir el registro.
 
 Aplica los cambios (antes revisa que no haya problemas críticos):
 

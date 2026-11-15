@@ -64,6 +64,8 @@ export const SECRET_VARS = [
  */
 const EXAMPLE_VALUE = /^cambia-esta-clave(-larga)?$/i;
 const EXAMPLE_SECRET = { test: (v: string) => EXAMPLE_VALUE.test(String(v ?? '').trim().replace(/^["']+|["']+$/g, '').trim()) };
+/** Qué dice cada dato del responsable que pide el aviso de privacidad. */
+const PRIVACY_FIELD: Record<string, string> = { PRIVACY_COMPANY: 'la razón social', PRIVACY_ADDRESS: 'el domicilio', PRIVACY_CONTACT: 'el correo para privacidad' };
 const PLACEHOLDER = /^(cambia-esta-clave.*|changeme|change-me|secret|secreto|password|contrase(n|ñ)a|admin|123456\d*|test|x+)$/i;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const LOCAL_HOST = /^(localhost|127\.\d+\.\d+\.\d+|\[?::1\]?|0\.0\.0\.0)$/i;
@@ -437,6 +439,29 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
     add('warning', 'security', 'data_key.same', ['DATA_KEY', 'SESSION_SECRET'],
       'DATA_KEY es igual a SESSION_SECRET: no sirve separarlas si una se filtra.',
       'Cámbiala con `./riverrun rotate-data-key`.');
+  }
+  // Aviso de privacidad incluido (/privacidad): la ley pide decir quién es el responsable, su domicilio y dónde se
+  // ejercen los derechos ARCO. Sin estos datos la página los muestra como [marcadores].
+  // El correo de privacidad, si falta, se toma de SUPPORT_CONTACT o SUPERADMIN_EMAIL (como en la página). Con un aviso
+  // propio (PRIVACY_URL), /proteccion-de-datos sigue publicándose con la razón social y el correo, no con el domicilio.
+  const ownPrivacy = get('PRIVACY_URL');
+  const privacyMissing = (ownPrivacy ? ['PRIVACY_COMPANY', 'PRIVACY_CONTACT'] : ['PRIVACY_COMPANY', 'PRIVACY_ADDRESS', 'PRIVACY_CONTACT'])
+    .filter((k) => !get(k) && !(k === 'PRIVACY_CONTACT' && (get('SUPPORT_CONTACT') || get('SUPERADMIN_EMAIL'))));
+  if (prod && privacyMissing.length) {
+    add('warning', 'security', 'privacy.responsible_missing', privacyMissing,
+      `Los avisos de privacidad (${ownPrivacy ? '/proteccion-de-datos' : '/privacidad y /proteccion-de-datos'}) no dicen ${privacyMissing.map((k) => PRIVACY_FIELD[k]).join(', ')}: se ven como marcador pendiente.`,
+      'Define PRIVACY_COMPANY (razón social), PRIVACY_ADDRESS (domicilio) y PRIVACY_CONTACT (correo para privacidad) en .env, o publica tu propio aviso en PRIVACY_URL.');
+  }
+  // /privacidad lleva a PRIVACY_URL: debe ser una página https de otro lugar (si apunta a /privacidad, se repite sin fin).
+  if (ownPrivacy) {
+    let url: URL | null = null;
+    try { url = new URL(ownPrivacy); } catch { /* se avisa abajo */ }
+    const self = (() => { try { return new URL(get('PUBLIC_BASE_URL') || 'http://x.invalid').host; } catch { return ''; } })();
+    if (!url || url.protocol !== 'https:' || (url.host === self && /^\/privacidad(\/|$)/.test(url.pathname))) {
+      add('warning', 'security', 'privacy.url_invalid', ['PRIVACY_URL'],
+        'PRIVACY_URL debe ser la dirección https completa de tu aviso de privacidad, en otra página que no sea /privacidad.',
+        'Por ejemplo PRIVACY_URL=https://tusitio.com/aviso-de-privacidad, o déjala vacía para usar el aviso incluido.');
+    }
   }
   const adminPw = get('ADMIN_PASSWORD');
   if (!adminPw) {

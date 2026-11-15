@@ -429,6 +429,11 @@ code { background: var(--raised); color: var(--text); padding: 1px 6px; border-r
 .auth-or { margin: 16px 0 12px; text-align: center; color: var(--muted); font-size: 14px; }
 .auth-signup { margin: 28px 0 0; padding: 16px 18px; border-radius: 8px; background: var(--accent-soft); color: var(--text); font-size: 15px; }
 .auth-signup:empty { display: none; }
+.auth-stack { display: grid; gap: 16px; justify-items: center; width: 100%; }
+.auth-stack > .card { width: 100%; }
+.auth-legal { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 16px; font-size: 14px; }
+.auth-legal a { color: var(--muted); }
+.auth-privacy-note { margin: 4px 0 12px; }
 .auth-signup a { font-weight: 600; }
 
 @media (max-width: 900px) {
