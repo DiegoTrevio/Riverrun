@@ -1,6 +1,6 @@
 /**
  * Iniciar sesión / registrarse con Google (con un Google falso). Se entra por el identificador estable de Google (`sub`);
- * por correo solo se liga si los dos lados lo tienen verificado. El pase para terminar el registro sirve solo en el
+ * por correo se liga si Google lo verificó; si aquí estaba sin verificar, la contraseña anterior deja de servir. El pase para terminar el registro sirve solo en el
  * navegador que entró con Google (cookie cp_gpass).
  */
 import { after, before, test } from 'node:test';
@@ -123,17 +123,37 @@ t('por correo solo se liga si los dos lo tienen verificado, y entonces guarda el
   assert.equal(other.session, undefined);
 });
 
-t('con el correo sin verificar aquí, Google entra sin pedir confirmarlo: pasa al código, no cambia la contraseña ni lo marca verificado', async () => {
+t('con el correo sin verificar aquí, Google entra sin pedir confirmarlo y la cuenta queda de quien probó el correo: la contraseña anterior ya no entra', async () => {
+  // Alguien se registró con el correo de Vic (sin poder confirmarlo) y con su propia contraseña.
   const { hashPassword } = await import('../src/auth.js');
   const hash = await hashPassword('clave-de-quien-registro-1');
   await pool.query(`INSERT INTO accounts (name, status) VALUES ('Sin Verificar SA', 'trial')`);
   const acc = (await pool.query(`SELECT id FROM accounts WHERE name = 'Sin Verificar SA'`)).rows[0].id;
-  await pool.query(`INSERT INTO users (account_id, role, name, email, password_hash) VALUES ($1, 'admin', 'Vic', 'vic@empresa.mx', $2)`, [acc, hash]); // sin verificar
+  const uid = (await pool.query(`INSERT INTO users (account_id, role, name, email, password_hash) VALUES ($1, 'admin', 'Vic', 'vic@empresa.mx', $2) RETURNING id`, [acc, hash])).rows[0].id; // sin verificar
+  await pool.query(`INSERT INTO user_sessions (user_id, expires_at) VALUES ($1, now() + interval '1 day')`, [uid]);
+  await pool.query(`UPDATE users SET totp_secret = 'secreto-de-quien-registro', totp_enabled_at = now() WHERE id = $1`, [uid]);
+  // Dejó preparado un cambio de correo al suyo, una llave de la API y un webhook a su servidor.
+  await pool.query(`INSERT INTO auth_tokens (user_id, kind, token_hash, expires_at, email) VALUES ($1, 'change_email', 'h-vic', now() + interval '1 day', 'quien@registro.mx')`, [uid]);
+  await pool.query(`INSERT INTO api_keys (account_id, name, prefix, key_hash, created_by) VALUES ($1, 'suya', 'rk_x', 'hash-vic', $2)`, [acc, uid]);
+  await pool.query(`INSERT INTO webhook_endpoints (account_id, url, created_by) VALUES ($1, 'https://quien.registro.mx/hook', $2)`, [acc, uid]);
+
   const r = await flow({ sub: 'g-vic', email: 'vic@empresa.mx', email_verified: true, name: 'Vic' });
-  assert.equal(r.location, '/#/login/configurar');
+  assert.equal(r.location, '/#/login/configurar', 'configura su propia verificación en dos pasos, no la de quien registró');
   assert.equal(r.session?.name, 'cp_mfa', 'falta el segundo paso: no abre sesión por sí sola');
-  const row = (await pool.query(`SELECT password_hash, email_verified_at, google_sub FROM users WHERE email = 'vic@empresa.mx'`)).rows[0];
-  assert.deepEqual(row, { password_hash: hash, email_verified_at: null, google_sub: 'g-vic' });
+  const row = (await pool.query(`SELECT password_hash, email_verified_at, google_sub, totp_secret FROM users WHERE id = $1`, [uid])).rows[0];
+  assert.notEqual(row.password_hash, hash, 'la contraseña anterior se reemplaza');
+  assert.ok(row.email_verified_at, 'Google ya probó el correo');
+  assert.equal(row.google_sub, 'g-vic');
+  assert.equal(row.totp_secret, null);
+  const open = (await pool.query(`SELECT count(*)::int n FROM user_sessions WHERE user_id = $1 AND revoked_at IS NULL`, [uid])).rows[0].n;
+  assert.equal(open, 0, 'las sesiones de antes se cierran');
+  const old = await h.app.inject({ method: 'POST', url: '/api/login', remoteAddress: '10.62.0.1', payload: { email: 'vic@empresa.mx', password: 'clave-de-quien-registro-1' } });
+  assert.equal(old.statusCode, 401, 'quien registró con el correo ajeno ya no entra con su contraseña');
+  const left = (await pool.query(
+    `SELECT (SELECT count(*)::int FROM auth_tokens WHERE user_id = $1 AND used_at IS NULL) AS tokens,
+            (SELECT count(*)::int FROM api_keys WHERE created_by = $1 AND revoked_at IS NULL) AS keys,
+            (SELECT count(*)::int FROM webhook_endpoints WHERE created_by = $1 AND active) AS hooks`, [uid])).rows[0];
+  assert.deepEqual(left, { tokens: 0, keys: 0, hooks: 0 }, 'no le queda el cambio de correo, la llave ni el webhook');
 });
 
 t('se rechaza: correo sin verificar en Google, state alterado, sin cookie, cancelación, sin sub y superadmin', async () => {

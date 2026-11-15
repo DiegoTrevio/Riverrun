@@ -1,5 +1,5 @@
 /** Iniciar sesión o registrarse con Google (OpenID Connect). Solo funciona en el dominio principal. */
-import { ipLimitKey, limited } from '../identity/rate-limit.js';
+import { clearHits, ipLimitKey, limited } from '../identity/rate-limit.js';
 import crypto from 'node:crypto';
 import { pendingInviteFor } from './invitations.js';
 import type { FastifyInstance } from 'fastify';
@@ -18,7 +18,6 @@ import { z } from 'zod';
 import { HttpError } from '../access.js';
 import { BUSINESS_TYPES } from '../templates/business.js';
 import { assertCaptcha, captchaEnabled, DISPOSABLE_MESSAGE, GOOGLE_PASS_COOKIE, googlePassCookie, googleSignupPass, isDisposableEmail, readGoogleSignupPass, recordTermsAcceptance, termsVersion } from '../signup-guard.js';
-import { query } from '../db.js';
 import { parse } from './util.js';
 import { recordSecurity, recordSecurityOnce } from '../security-log.js';
 
@@ -82,16 +81,22 @@ export async function googleLoginRoutes(app: FastifyInstance) {
       if (!email || claims.email_verified !== true) return fail('sin-correo');
 
       // Primero por su identificador de Google (sigue aunque cambie su correo aquí); si no, por correo (Google ya lo
-      // verificó), aunque aquí no esté confirmado: no pide confirmar el correo para entrar. Ligarla no cambia la
-      // contraseña ni marca el correo como verificado, y el código de la app sigue siendo obligatorio.
+      // verificó), aunque aquí no esté confirmado: no pide confirmar el correo para entrar.
       let user = await store.getUserForGoogle(sub);
       if (!user) {
         const byEmail = await store.getUserForLogin(email);
         if (byEmail) {
           if (byEmail.role === 'superadmin') return rejected('solo-contrasena', byEmail);
           if (byEmail.google_sub) return rejected('otra-cuenta', byEmail);
-          await query(`UPDATE users SET google_sub = $2 WHERE id = $1 AND google_sub IS NULL`, [byEmail.id, sub]);
-          user = { ...byEmail, google_sub: sub };
+          // Correo sin confirmar aquí: quien puso esa contraseña no probó que el correo fuera suyo (pudo registrarse
+          // con el correo de otra persona antes que ella). Google sí lo probó, así que la cuenta queda de quien entra.
+          const linked = await linkByEmail(byEmail.id, sub, !byEmail.email_verified_at);
+          if (linked === 'otra-cuenta') return rejected('otra-cuenta', byEmail);
+          if (linked === 'reclamada') await logEvent({ level: 'warn', source: 'admin', message: `Acceso con Google a una cuenta con el correo sin confirmar (${email}): la contraseña anterior dejó de servir y se cerraron sus sesiones`, accountId: byEmail.account_id, details: { ip: req.ip } });
+          // Recargada: con la contraseña vigente (la sesión va ligada a ella) y sin el segundo paso de antes.
+          const fresh = await store.getUserForGoogle(sub);
+          if (!fresh) return fail('error');
+          user = fresh;
         }
       }
       if (user) {
@@ -185,4 +190,35 @@ export async function googleLoginRoutes(app: FastifyInstance) {
     const begin = await beginLogin(reply, { ...created, password_hash: hash }, 'google');
     return { ok: true, user: created, account: store.publicAccount((await store.getAccount(account.id))!), ...begin };
   });
+}
+
+/**
+ * Liga la cuenta de Google por correo, todo o nada: si algo falla no queda ligada a medias (y la próxima vez no se
+ * salta el reclamo). Con el correo sin confirmar aquí, la cuenta pasa a quien entró con Google: contraseña nueva al
+ * azar (la anterior ya no entra; si era suya, la recupera con «Olvidé mi contraseña»), correo verificado, sin la
+ * verificación en dos pasos ni los dispositivos recordados de antes, sesiones cerradas, enlaces pendientes (cambio de
+ * correo, restablecer) anulados, y las llaves de la API y webhooks que esa persona creó, apagados.
+ */
+async function linkByEmail(userId: string, sub: string, unverified: boolean): Promise<'ligada' | 'reclamada' | 'otra-cuenta'> {
+  const randomHash = unverified ? await hashPassword(crypto.randomBytes(24).toString('base64url')) : null;
+  const result = await withTransaction(async (c) => {
+    const row = (await c.query(`SELECT google_sub, email_verified_at FROM users WHERE id = $1 FOR UPDATE`, [userId])).rows[0];
+    if (!row || row.google_sub) return 'otra-cuenta' as const;
+    await c.query(`UPDATE users SET google_sub = $2, updated_at = now() WHERE id = $1`, [userId, sub]);
+    if (row.email_verified_at || !randomHash) return 'ligada' as const;
+    await c.query(
+      `UPDATE users SET password_hash = $2, email_verified_at = now(), totp_secret = NULL, totp_pending = NULL, totp_pending_at = NULL,
+              totp_enabled_at = NULL, totp_last_step = 0, mfa_locked_until = NULL, updated_at = now() WHERE id = $1`,
+      [userId, randomHash],
+    );
+    await c.query(`DELETE FROM user_recovery_codes WHERE user_id = $1`, [userId]);
+    await c.query(`UPDATE user_devices SET trust_hash = NULL, trusted_until = NULL WHERE user_id = $1 AND trust_hash IS NOT NULL`, [userId]);
+    await c.query(`UPDATE user_sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`, [userId]);
+    await store.invalidateAuthTokens(userId, c);
+    await c.query(`UPDATE api_keys SET revoked_at = now() WHERE created_by = $1 AND revoked_at IS NULL`, [userId]);
+    await c.query(`UPDATE webhook_endpoints SET active = false, disabled_reason = 'Se apagó al confirmar el correo de la cuenta con Google' WHERE created_by = $1 AND active`, [userId]);
+    return 'reclamada' as const;
+  });
+  if (result === 'reclamada') await clearHits(`mfa-user:${userId}`);
+  return result;
 }
