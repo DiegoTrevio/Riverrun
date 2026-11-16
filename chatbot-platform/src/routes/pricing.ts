@@ -38,6 +38,8 @@ function planCard(p: Offered, o: { signup: boolean; trialDays: number }) {
   const per = p.billing_interval === 'year' ? 'año' : 'mes';
   const lim = (p.limits ?? {}) as Record<string, number | null | undefined>;
   const limits = LIMITS.filter(([k]) => lim[k]).map(([k, pl, sg]) => `<li>${esc(Number(lim[k]).toLocaleString('es-MX'))} ${lim[k] === 1 ? sg : pl}</li>`);
+  // Un plan con otros límites pero sin tope de mensajes lo dice (si no tiene ninguno, sale «Sin límites de uso»).
+  if (limits.length && !lim.messages_per_month) limits.unshift('<li>Mensajes del asistente sin límite</li>');
   return `<article class="plan">
   <h2>${esc(p.name)}</h2>
   <p class="price"><strong>$${esc(amount(p.price))}</strong> <span>${esc(p.currency)}${p.tax_percent ? ' + IVA' : ''} / ${per}</span></p>

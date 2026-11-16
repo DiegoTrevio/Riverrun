@@ -17,11 +17,13 @@ test('el plan único cuesta 5,000 MXN + IVA y 270 USD al mes', () => {
   assert.equal(mx.ai_usd_per_month, us.ai_usd_per_month);
 });
 
-test('el peor mes del plan (Zernio + IA al tope) cuesta menos de la mitad de lo que se cobra', () => {
-  const [, us] = single.singlePlans();
-  const cost = single.worstMonthCostUsd(us.limits, us.ai_usd_per_month);
-  // 10 redes a 6 USD (tarifa más alta de Zernio), 10,000 mensajes a 0.0001 USD y el tope de IA.
-  assert.equal(cost, 10 * 6 + 10_000 * 0.0001 + 50);
+test('el plan no limita los mensajes y aun con 100,000 al mes cuesta menos de la mitad de lo que se cobra', () => {
+  const [mx, us] = single.singlePlans();
+  assert.equal(mx.limits.messages_per_month, undefined, 'sin límite de mensajes');
+  assert.ok(us.ai_usd_per_month > 0, 'lo que frena al asistente es el tope de IA');
+  const cost = single.monthCostUsd(us.limits, us.ai_usd_per_month, 100_000);
+  // 10 redes a 6 USD (tarifa más alta de Zernio), 100,000 mensajes a 0.0001 USD y el tope de IA.
+  assert.equal(cost, 10 * 6 + 100_000 * 0.0001 + 50);
   assert.ok(cost < us.price / 2, `cuesta ${cost} USD de ${us.price}`);
 });
 
@@ -71,6 +73,7 @@ t('aplicar el plan único crea los dos precios y apaga los demás planes sin bor
   const page = await h.app.inject({ method: 'GET', url: '/precios' });
   assert.match(page.body, /\$5,000<\/strong> <span>MXN \+ IVA \/ mes/);
   assert.match(page.body, /Total con IVA: \$5,800 MXN al mes/);
+  assert.match(page.body, /<li>Mensajes del asistente sin límite<\/li>/);
   assert.doesNotMatch(page.body, /Básico|USD/);
 
   // Con usdPublic, el de dólares también se publica, sin IVA.

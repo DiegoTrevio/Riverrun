@@ -11,7 +11,7 @@ Los dos incluyen lo mismo:
 
 | Incluye | Límite |
 |---|---|
-| Mensajes del asistente al mes | 10,000 |
+| Mensajes del asistente | Sin límite |
 | Canales (WhatsApp, Instagram, chat web…) | 10 |
 | Redes sociales conectadas (Zernio) | 10 |
 | Personas del equipo | 10 |
@@ -39,17 +39,21 @@ Zernio cobra a la plataforma por cada red conectada (gratis las 2 primeras de to
 hasta la 10.ª, 3 USD hasta la 100.ª y 1 USD después) y por cada mensaje enviado después de los primeros 10,000 al mes
 (0.0001 USD). Los mensajes recibidos y los comentarios no cuestan.
 
-El peor mes de un negocio, con todo al tope y la tarifa más alta de Zernio:
+Los mensajes no tienen límite. Lo que protege el costo es el **tope de IA de 50 USD al mes**: al llegar, el asistente
+deja de contestar solo hasta el mes siguiente (el negocio puede seguir contestando a mano). Los mensajes de Zernio son
+baratos: 100,000 enviados cuestan 10 USD. Un mes muy pesado, con todo al tope y la tarifa más alta de Zernio:
 
 | Concepto | USD al mes |
 |---|---|
 | 10 redes × 6 USD | 60 |
-| 10,000 mensajes × 0.0001 USD | 1 |
+| 100,000 mensajes × 0.0001 USD | 10 |
 | IA (se corta en el tope) | 50 |
-| **Total** | **111** de 270 que se cobran |
+| **Total** | **120** de 270 que se cobran |
 
-Un negocio típico usa 2 o 3 redes y mucho menos IA, así que el margen real es mayor. La prueba
-`test/single-plan.test.ts` falla si un cambio de límites deja el peor mes por encima de la mitad del precio. No cuenta
+Un negocio típico usa 2 o 3 redes y mucho menos IA, así que el margen real es mayor. Lo que no tiene tope son los
+mensajes que envían las automatizaciones y campañas sin IA (1 USD por cada 10,000); si un negocio abusa, ponle un límite
+de mensajes con el botón **Límites** de su cuenta. La prueba `test/single-plan.test.ts` falla si un cambio de límites
+deja ese mes por encima de la mitad del precio. No cuenta
 el servidor, las comisiones de Stripe (alrededor de 4 %) ni los mensajes de plantilla de WhatsApp, que Meta cobra a la
 cuenta de WhatsApp Business del negocio.
 
@@ -57,7 +61,7 @@ cuenta de WhatsApp Business del negocio.
 
 Como no hay un plan más grande, al topar un límite el negocio ve «Para ampliarlo, escríbenos» (con `SUPPORT_CONTACT`
 si está configurado) en lugar de «cambia de plan». Para ampliarle algo, usa el botón **Límites** de esa cuenta en
-**Cuentas** (excepción sobre su plan). Los avisos del 80 % y del 100 % de mensajes dicen lo mismo. Nunca se le sugiere
+**Cuentas** (excepción sobre su plan). Nunca se le sugiere
 un precio en otra moneda ni un plan privado.
 
 ## IVA por moneda
