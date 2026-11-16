@@ -156,7 +156,7 @@ try {
   await page.goto(`${base}/#/plan`);
   await page.getByRole('heading', { name: 'Mi plan y pagos' }).waitFor();
   await page.getByText('Total con IVA (16 %): $578.84 MXN al mes').waitFor();
-  await page.getByText(/Los precios no incluyen IVA/).waitFor();
+  await page.getByText(/Los precios en pesos no incluyen IVA/).waitFor();
   checks.push('«Mi plan» en prueba: tarjetas con precio + IVA y total');
 
   // Se cobra la suscripción: el pago aparece en el historial con su IVA desglosado.
@@ -425,7 +425,7 @@ try {
   await page.setViewportSize({ width: 1366, height: 1000 });
   await page.goto(`${base}/#/planes`);
   await page.getByRole('heading', { name: 'Planes y cobro' }).waitFor();
-  await page.getByText('Se publica "+ IVA" y se cobra el precio más 16 % de IVA.').first().waitFor();
+  await page.getByText('En MXN se publica "+ IVA" y se cobra el precio más 16 % de IVA; en otra moneda (USD) se cobra sin IVA.').first().waitFor();
   const editor = page.locator('.card').last();
   await editor.getByLabel('Clave (minúsculas, sin espacios)').fill('basico');
   await editor.getByLabel('Nombre', { exact: true }).fill('Básico anual');

@@ -274,7 +274,7 @@ export async function viewPlan(root, params) {
           : h('p', { class: 'muted small' }, 'No disponible por ahora.')))),
       h('p', { class: 'muted small' }, 'Pago seguro en la página de Stripe o Mercado Pago: nosotros nunca vemos los datos de tu tarjeta.',
         trialOffer ? ` Con la prueba, el primer cobro es al terminar los ${cc.trial_days} días; si cancelas antes, no se cobra nada.` : '',
-        b.plans.some((p) => p.tax_percent) ? ' Los precios no incluyen IVA: se cobra el total con IVA.' : '',
+        b.plans.some((p) => p.tax_percent) ? ' Los precios en pesos no incluyen IVA: se cobra el total con IVA.' : '',
         ' El cobro se renueva solo y puedes cancelar cuando quieras.'));
     }
   }
@@ -380,7 +380,7 @@ export async function viewPlans(root) {
         field('Nombre', text(m, 'name', { placeholder: 'Plan Básico' }))),
       field('Qué incluye', text(m, 'description', { placeholder: '1 WhatsApp, citas y automatizaciones' })),
       h('div', { class: 'grid' },
-        field('Precio sin IVA', num(m, 'price', { step: 0.01, min: 0 }), p.tax_percent ? `Se publica "+ IVA" y se cobra el precio más ${p.tax_percent} % de IVA.` : undefined),
+        field('Precio sin IVA', num(m, 'price', { step: 0.01, min: 0 }), ov.tax_percent ? `En ${(ov.tax_currencies || ['MXN']).join(', ')} se publica "+ IVA" y se cobra el precio más ${ov.tax_percent} % de IVA; en otra moneda (USD) se cobra sin IVA.` : undefined),
         field('Se cobra', select(m, 'interval', [['month', 'Cada mes'], ['year', 'Cada año']])),
         field('Moneda', text(m, 'currency', { placeholder: 'MXN' })),
         field('ID de precio de Stripe (opcional)', text(m, 'stripe_price_id', { placeholder: 'price_1Abc…' }), 'Déjalo vacío: Stripe cobra el precio con IVA, la moneda y el periodo de este plan automáticamente. Úsalo solo si ya tienes un precio creado en Stripe por el total con IVA y el mismo periodo.')),

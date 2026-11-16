@@ -48,7 +48,7 @@ const publicSub = (s: any) =>
   s && { provider: s.provider, plan_key: s.plan_key, pending_plan_key: s.pending_plan_key ?? '', status: s.status, current_period_end: s.current_period_end, cancel_at_period_end: s.cancel_at_period_end, past_due_since: s.past_due_since, can_portal: s.provider === 'stripe' && !!s.provider_customer_id };
 
 /** Plan para el panel: precio sin IVA, IVA y total que se cobra. */
-const planOut = (p: any) => ({ ...p, price: p.price_cents / 100, interval: p.billing_interval, tax_percent: taxPercent(), total: chargeCents(p) / 100, ai_usd_per_month: p.ai_usd_per_month == null ? null : Number(p.ai_usd_per_month) });
+const planOut = (p: any) => ({ ...p, price: p.price_cents / 100, interval: p.billing_interval, tax_percent: taxPercent(p.currency), total: chargeCents(p) / 100, ai_usd_per_month: p.ai_usd_per_month == null ? null : Number(p.ai_usd_per_month) });
 
 const paymentOut = (p: any) => ({
   id: p.id, provider: p.provider, plan_key: p.plan_key, currency: p.currency, paid_at: p.paid_at, period_start: p.period_start, period_end: p.period_end, status: p.status,
@@ -252,6 +252,7 @@ export async function billingRoutes(api: FastifyInstance) {
       grace_days: config.billing.graceDays,
       plan_defaults: { ai_usd_per_month: config.signup.planDefaultAiUsd || null, storage_mb: config.signup.planDefaultStorageMb || null },
       tax_percent: taxPercent(),
+      tax_currencies: config.billing.taxCurrencies,
       invoicing: { enabled: invoicer.enabled(), counts: await cfdiCounts() },
       // Pagos en otra moneda cuya factura espera el tipo de cambio (PAY-9).
       awaiting_rate: await query<{ id: string; currency: string; total_cents: number; paid_at: Date; account: string }>(

@@ -57,7 +57,7 @@ export function pricingPage(o: { brand: ReturnType<typeof publicBrand>; plans: O
     ...(o.trialDays > 0 ? [['¿Necesito tarjeta para probar?', o.cardRequired
       ? `Sí. Tu prueba de ${o.trialDays} días empieza al agregar tu tarjeta, y no se cobra nada hasta que termina; si cancelas antes desde Mi plan, no se cobra.`
       : `No. Tienes ${o.trialDays} días gratis para configurar y probar tu asistente; eliges plan cuando quieras.`] as [string, string]] : []),
-    ['¿El precio incluye IVA?', o.plans.some((p) => p.tax_percent) ? 'No: los precios son más IVA. Antes de pagar ves el total con IVA.' : 'Ves el total exacto antes de pagar.'],
+    ['¿El precio incluye IVA?', o.plans.some((p) => p.tax_percent) ? 'No: los precios en pesos son más IVA. Antes de pagar ves el total con IVA.' : 'Ves el total exacto antes de pagar.'],
     ['¿Cómo pago?', 'Con tarjeta en la página segura de Stripe o de Mercado Pago. Nosotros nunca vemos los datos de tu tarjeta.'],
     ['¿Puedo cancelar?', 'Sí, cuando quieras desde tu panel. Sigues usando tu plan hasta el final del periodo pagado.'],
   ];
