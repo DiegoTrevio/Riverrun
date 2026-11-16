@@ -135,18 +135,23 @@ export interface UpgradeOffer {
  * barato. null si ningún plan alcanza (o no hay planes).
  */
 export async function nextPlanFor(accountId: string, key: LimitKey, needed: number, q?: Q): Promise<UpgradeOffer | null> {
-  const [acc, used, plans] = await Promise.all([
+  const [acc, used, all] = await Promise.all([
     one<{ plan: string }>(q, `SELECT plan FROM accounts WHERE id = $1`, [accountId]),
     usageOf(accountId, q),
-    many<{ key: string; name: string; price_cents: number; currency: string; billing_interval: 'month' | 'year'; limits: unknown }>(q, `SELECT key, name, price_cents, currency, billing_interval, limits FROM plans WHERE active`),
+    many<{ key: string; name: string; price_cents: number; currency: string; billing_interval: 'month' | 'year'; limits: unknown; public: boolean; active: boolean }>(q, `SELECT key, name, price_cents, currency, billing_interval, limits, public, active FROM plans`),
   ]);
   const fits = (max: number | null | undefined, n: number) => !max || max >= n;
   const monthly = (p: { price_cents: number; billing_interval: string }) => (p.billing_interval === 'year' ? p.price_cents / 12 : p.price_cents);
   // Quien paga cada mes no debería ver como "siguiente plan" un compromiso anual solo por salir más barato al mes.
-  const period = plans.find((p) => p.key === acc?.plan)?.billing_interval ?? 'month';
+  // Su plan puede estar apagado (quien pagaba un plan anterior al plan único): su moneda y periodo siguen contando.
+  const current = all.find((p) => p.key === acc?.plan);
+  const plans = all.filter((p) => p.active);
+  const period = current?.billing_interval ?? 'month';
+  // Solo planes públicos (un privado es de la cuenta a la que se asignó) y de su misma moneda (sin plan, pesos).
+  const currency = (current?.currency ?? 'MXN').toUpperCase();
   const best = plans
     .map((p) => ({ ...p, lim: withPlanDefaults(clean(p.limits)) }))
-    .filter((p) => p.key !== acc?.plan && fits(p.lim[key], needed) && LIMIT_KEYS.every((k) => k === key || k === 'messages_per_month' || fits(p.lim[k], used[k])))
+    .filter((p) => p.key !== acc?.plan && p.public !== false && p.currency.toUpperCase() === currency && fits(p.lim[key], needed) && LIMIT_KEYS.every((k) => k === key || k === 'messages_per_month' || fits(p.lim[k], used[k])))
     .sort((a, b) => Number(a.billing_interval !== period) - Number(b.billing_interval !== period) || monthly(a) - monthly(b))[0];
   if (!best) return null;
   return { key: best.key, name: best.name, price: best.price_cents / 100, total: chargeCents(best) / 100, currency: best.currency, interval: best.billing_interval, allows: best.lim[key] ?? null };
@@ -156,6 +161,9 @@ export async function nextPlanFor(accountId: string, key: LimitKey, needed: numb
 export async function limitDetail(accountId: string, key: LimitKey, used: number, max: number, q?: Q) {
   return { key, label: LIMIT_LABELS[key].plural, used, max, next_plan: await nextPlanFor(accountId, key, Math.max(used, max) + 1, q) };
 }
+
+/** Sin un plan mayor al cual subir (plan único): el límite se amplía a mano (excepción del superadmin), así que se pide escribir. */
+export const widenText = () => `Para ampliarlo, escríbenos${config.signup.supportContact ? ` a ${config.signup.supportContact}` : ''}.`;
 
 /** "El plan Pro incluye hasta 5 canales" / "…sin límite de canales". */
 export const offerText = (o: UpgradeOffer, key: LimitKey) =>
@@ -185,8 +193,8 @@ export async function assertWithinLimit(accountId: string, key: Exclude<LimitKey
     const who = source === 'trial' ? 'Tu periodo de prueba permite' : 'Tu plan permite';
     const l = LIMIT_LABELS[key];
     const detail = await limitDetail(accountId, key, used, max, q);
-    const offer = detail.next_plan ? ` ${offerText(detail.next_plan, key)}` : '';
-    throw new HttpError(403, `${who} hasta ${max} ${max === 1 ? l.singular : l.plural} y ya tienes ${used}.${offer} Para agregar más, cambia de plan en Ajustes → Mi plan y pagos.`, ['limit_reached'], { limit: detail });
+    const next = detail.next_plan ? ` ${offerText(detail.next_plan, key)} Para agregar más, cambia de plan en Ajustes → Mi plan y pagos.` : ` ${widenText()}`;
+    throw new HttpError(403, `${who} hasta ${max} ${max === 1 ? l.singular : l.plural} y ya tienes ${used}.${next}`, ['limit_reached'], { limit: detail });
   }
 }
 
@@ -232,9 +240,9 @@ async function notifyLimit(accountId: string, notice: 'messages_80' | 'messages_
   const title = full ? 'Llegaste al límite de mensajes de tu plan' : 'Estás por llegar al límite de mensajes de tu plan';
   // El plan sugerido va en el texto y el enlace lo deja elegido en Mi plan (un clic para subir).
   const next = await nextPlanFor(accountId, 'messages_per_month', max + 1);
-  const suggest = next ? ` ${offerText(next, 'messages_per_month')}` : '';
+  const suggest = next ? ` ${offerText(next, 'messages_per_month')}` : ` ${widenText()}`;
   const body = full
-    ? `Tu asistente ya envió los ${max.toLocaleString('es-MX')} mensajes que incluye tu plan este mes, así que dejó de responder solo. Sube de plan para que siga atendiendo; el contador se reinicia el día 1.${suggest}`
+    ? `Tu asistente ya envió los ${max.toLocaleString('es-MX')} mensajes que incluye tu plan este mes, así que dejó de responder solo. ${next ? 'Sube de plan para que siga atendiendo; el' : 'El'} contador se reinicia el día 1.${suggest}`
     : `Tu asistente lleva ${used.toLocaleString('es-MX')} de ${max.toLocaleString('es-MX')} mensajes de tu plan este mes (80 %). Cuando llegue al 100 % dejará de responder solo.${suggest}`;
   const link = next ? `#/plan?subir=${encodeURIComponent(next.key)}` : '#/plan';
   await notifyUsers(accountId, admins.map((a) => a.id), { title, body, link, kind: 'billing' });

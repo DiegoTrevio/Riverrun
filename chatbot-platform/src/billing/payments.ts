@@ -27,7 +27,7 @@ export interface Payment {
 /** Guarda el cobro. Devuelve su id y si es nuevo (`fresh` es false si ese aviso ya se había registrado). */
 export async function recordPayment(o: { accountId: string; provider: ProviderName; planKey: string; payment: PaymentInfo }): Promise<{ id: string; fresh: boolean } | null> {
   const p = o.payment;
-  const percent = taxPercent();
+  const percent = taxPercent(p.currency);
   const { subtotal, tax } = splitTax(p.totalCents, percent);
   const row = await queryOne<{ id: string; inserted: boolean }>(
     `INSERT INTO billing_payments (account_id, provider, provider_payment_id, provider_charge_ref, subscription_id, plan_key, currency,

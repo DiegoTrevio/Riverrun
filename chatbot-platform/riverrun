@@ -16,6 +16,7 @@
 #   ./riverrun rotate-data-key cambia DATA_KEY, la llave de los datos cifrados (respaldo antes; nada se desconecta)
 #   ./riverrun db-roles    un usuario de PostgreSQL por servicio (lo hacen solos install, update y restore)
 #   ./riverrun admin-password [correo]   recupera el acceso del superadministrador: contraseña nueva y sesiones cerradas
+#   ./riverrun plan-unico  deja un solo plan: 5,000 MXN + IVA al mes y 270 USD (privado; --usd-publico lo publica)
 #   ./riverrun keys        muestra las llaves que hay que guardar fuera del servidor (solo en una terminal; --stdout)
 #   sudo ./riverrun harden firewall (también para lo que publica Docker), SSH solo con llave, fail2ban y actualizaciones
 #                          automáticas (Debian, Ubuntu, Fedora, AlmaLinux, Rocky, RHEL; --yes, --skip-firewall, --skip-ssh; HARDEN_ALLOW_PORTS="8080,…")
@@ -1163,6 +1164,13 @@ cmd_admin_password() {
   dc exec -T backend node dist/cli/admin-password.js "$email" || die "No se cambió la contraseña (¿el sistema está arrancado? ./riverrun status)"
 }
 
+# Deja el plan único (src/billing/single-plan.ts) y apaga los demás planes; quien ya pagaba uno lo conserva.
+cmd_single_plan() {
+  need_docker || die "Docker no está disponible"
+  [[ -f "$ENV_FILE" ]] || die "No hay .env: primero ./riverrun install"
+  dc exec -T backend node dist/cli/single-plan.js "$@" || die "No se aplicó el plan único (¿el sistema está arrancado? ./riverrun status)"
+}
+
 # Cambia SESSION_SECRET (firma sesiones y enlaces). Lo cifrado en la base pasa antes a DATA_KEY. Respaldo verificado antes, confirmación
 # escrita y el secreto nuevo no se imprime. Consecuencia que se avisa: cierra las sesiones del panel.
 cmd_rotate_secret() {
@@ -1441,6 +1449,7 @@ case "${1:-help}" in
   rotate-data-key) cmd_rotate_data_key ;;
   db-roles) cmd_db_roles ;;
   admin-password) shift; cmd_admin_password "$@" ;;
+  plan-unico) shift; cmd_single_plan "$@" ;;
   keys) shift; cmd_keys "$@" ;;
   harden) shift; cmd_harden "$@" ;;
   preflight) shift; cmd_preflight "$@" ;;
