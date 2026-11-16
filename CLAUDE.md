@@ -61,6 +61,7 @@ Desde `chatbot-platform/`:
 - `npm run typecheck`
 - `npm test`. Las pruebas con base de datos necesitan PostgreSQL en `TEST_DATABASE_URL` (por omisión `postgres://chatbot:chatbot@localhost:5432/chatbot_test`); sin él se omiten y las corre el CI.
 - `npm run check:frontend` si tocaste `public/`.
+- Si agregas o cambias un texto del panel (o un mensaje del servidor que el panel muestra), agrega su traducción al inglés en `chatbot-platform/public/i18n/en.json`; `node scripts/i18n-strings.mjs` dice cuáles faltan ([idiomas](chatbot-platform/docs/idiomas.md)).
 - Si cambias el prompt del asistente (`src/engine/context.ts`), actualiza las fotografías con `UPDATE_PROMPT_SNAPSHOTS=1 node --import tsx --test test/prompt-snapshot.test.ts` y revisa el cambio.
 - Si cambias el motor o el validador: `npm run eval` y `npm run eval:engine`.
 

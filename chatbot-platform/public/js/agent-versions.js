@@ -45,12 +45,12 @@ export function agentTestsCard(bot,versions) {
   const suite=draftModel(key,versions.suite,false);
   const box=h('div',{class:'card stack'}),cases=h('div',{class:'stack'}),results=h('div',{role:'status','aria-live':'polite'});
   let busy=false;
-  const showRun=(r)=>fill(results,h('strong',{},r.status==='running'?'Evaluando tu agente…':r.status==='passed'?'Todas las pruebas aprobadas':r.status==='failed'?'Hay resultados que corregir':'No se completó la evaluación'),
+  const showRun=(r)=>(results.dataset.running=r.status==='running'?'1':'',fill(results,h('strong',{},r.status==='running'?'Evaluando tu agente…':r.status==='passed'?'Todas las pruebas aprobadas':r.status==='failed'?'Hay resultados que corregir':'No se completó la evaluación'),
     ...(r.results||[]).map(test=>h('details',{open:!test.passed},h('summary',{},okMark(test.passed),' ',test.name),
       ...(test.error?[h('p',{class:'error'},test.error)]:[]),...(test.turns||[]).map(t=>h('div',{class:'stack'},h('strong',{},`Turno ${t.turn}`),h('p',{class:'pre'},t.actual.text||'(sin respuesta)'),
         h('p',{class:'small muted'},`Acción: ${t.actual.action}. Fotos: ${t.actual.images.join(', ')||'ninguna'}. Reserva: ${t.actual.booked?'simulada':'ninguna'}.`),
         h('pre',{class:'pre small'},JSON.stringify(t.actual.data,null,2)),...t.failures.map(f=>h('p',{class:'error'},f)))))),
-    h('p',{class:'small muted'},`Modelos: ${(r.models||[]).join(', ')||'sin llamadas'}. Llamadas: ${r.calls}. Tokens: ${Number(r.input_tokens)+Number(r.output_tokens)}. Costo informado por el proveedor: ${r.cost_usd===null?'no disponible':`$${Number(r.cost_usd).toFixed(4)} USD`}.`));
+    h('p',{class:'small muted'},`Modelos: ${(r.models||[]).join(', ')||'sin llamadas'}. Llamadas: ${r.calls}. Tokens: ${Number(r.input_tokens)+Number(r.output_tokens)}. Costo informado por el proveedor: ${r.cost_usd===null?'no disponible':`$${Number(r.cost_usd).toFixed(4)} USD`}.`)));
   const draw=()=>fill(cases,...suite.cases.map((c,index)=>{
     const final=c.turns[c.turns.length-1],expected=final.expect||{contains:[],not_contains:[],image_codes:[],data:{}};
     final.expect=expected;
@@ -95,7 +95,7 @@ export function agentTestsCard(bot,versions) {
       const poll=async()=>{const r=await api('GET',`/api/chatbots/${bot.id}/tests/runs/${started.id}`);showRun(r);if(r.status==='running'&&box.isConnected){const timer=setTimeout(()=>poll().catch(()=>{busy=false;execute.disabled=false;fill(results,h('p',{class:'error'},'No se pudo consultar el resultado. Recarga para comprobar el estado de las pruebas.'));}),1500);state.timers.push(()=>clearTimeout(timer));}else{busy=false;execute.disabled=false;}};
       await poll();
     }catch{fill(results,h('p',{class:'error'},'No se pudo consultar la evaluación. Recarga para comprobar el estado de las pruebas.'));}
-    finally{if(!results.textContent.includes('Evaluando')){busy=false;execute.disabled=false;}}
+    finally{if(results.dataset.running!=='1'){busy=false;execute.disabled=false;}}
   }},'Guardar y ejecutar pruebas');
   draw();
   box.append(h('h2',{style:'margin:0'},'Pruebas automáticas'),h('p',{class:'help'},'Opcional: guarda conversaciones de ejemplo y compruébalas cuando cambies tu agente. Usa tu IA (puede costar); las fotos y las reservas se simulan. Hasta 10 casos de 6 turnos.'),cases,

@@ -89,6 +89,8 @@ jobs:
           exit 1
       - name: Regresión UX y accesibilidad
         run: npm run test:ux
+      - name: Panel en inglés (cada pantalla, sin textos en español)
+        run: npm run test:english:ux
       - name: Activación semántica en navegador y aislamiento de base
         run: npm run test:semantic:ux
       - name: Agent drafts, publication and Promptfoo UX

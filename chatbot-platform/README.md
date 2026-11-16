@@ -192,6 +192,8 @@ Las facturas se emiten en la revisión periódica (cada 10 minutos), nunca dos v
 
 `.github/workflows/ci.yml` corre en cada pull request y en `main`: revisión de tipos, sintaxis del panel, **todas las pruebas** (contra PostgreSQL real), auditoría de dependencias, `shellcheck` de los scripts, la prueba de respaldo y restauración de punta a punta, la del flujo de actualización, la validación del `docker-compose` y la construcción de las imágenes.
 
+**Español e inglés.** El panel se ve en inglés si el navegador de la persona está en inglés o si lo elige (Español · English en la entrada, en el menú de su cuenta o en Mi perfil); fechas y números en formato de Estados Unidos. Cada texto nuevo necesita su traducción en `public/i18n/en.json`: `npm run check:frontend` y `npm test` avisan si falta, y `npm run test:english:ux` revisa cada pantalla en inglés. Ver [idiomas del panel](docs/idiomas.md).
+
 El panel también tiene regresión de navegador y accesibilidad: `npm run test:ux`, con Chromium y axe-core. Se ejecuta después de las pruebas del motor, contra una base aislada que el arnés reinicia. CI adjunta los resultados y las capturas. Consulta la [auditoría UX/UI](docs/ux-ui/audit.md) y su [cobertura de implementación, criterios y ejecución](docs/ux-ui/implementation.md).
 
 Cada botón del panel se presiona con cada rol en `npm run test:buttons` (trabajo «Botones del panel» del CI): un recorrido que anota qué hace cada control, acepta cada diálogo y comprueba por área, en la base, que el botón hizo lo que dice. Ver la [auditoría de botones](docs/auditoria-botones.md), con sus hallazgos, su cobertura y la lista de lo que solo se prueba con servicios reales.

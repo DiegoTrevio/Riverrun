@@ -2,7 +2,7 @@
  * Cotizador escrito: el negocio escribe sus productos, precios y reglas; el sistema lo entiende, muestra cotizaciones de
  * ejemplo calculadas con esas reglas y, al activarlo, el agente cotiza con eso. Nada se guarda hasta «Activar».
  */
-import { api, confirmAction, h, toast } from './core.js';
+import { api, confirmAction, h, toast, LOCALE } from './core.js';
 import { icon } from './icons.js';
 import { aiLock } from './session.js';
 
@@ -124,7 +124,7 @@ export function quoteBuilderCard(bot, { calculator = null, onApplied } = {}) {
   function show() {
     const { r } = built;
     const def = r.draft.definition;
-    const money = new Intl.NumberFormat('es-MX', { style: 'currency', currency: r.currency || 'MXN' });
+    const money = new Intl.NumberFormat(LOCALE, { style: 'currency', currency: r.currency || 'MXN' });
     const price = (p) => (p.price_mode === 'tbd' ? 'Por confirmar' : p.price_mode === 'range' ? `${money.format(p.price_min / 100)} a ${money.format(p.price_max / 100)}` : `${p.price_mode === 'from' ? 'desde ' : ''}${money.format(p.price_min / 100)}`);
     const advisor = [...(def.values || []).flatMap((v) => (v.tiers?.otherwise?.stop ? [v.tiers.otherwise.stop] : [])), ...(def.stops || []).map((s) => s.message)];
     const parts = [h('p', { class: 'ai-result-head' }, icon('wand', 16), h('strong', {}, r.ready ? 'Así lo entendí' : 'Falta corregir algo')), r.summary ? h('p', { class: 'ai-result-text' }, r.summary) : null];

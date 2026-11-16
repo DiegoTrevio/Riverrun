@@ -1,5 +1,5 @@
 import { needAccount } from './admin.js';
-import { api, area, check, confirmAction, debounce, dialog, field, fill, fmtDate, h, run, select, settingsSection, state, text, toast, named } from './core.js';
+import { api, area, check, confirmAction, debounce, dialog, field, fill, fmtDate, h, run, select, settingsSection, state, text, toast, named, LOCALE } from './core.js';
 import { render } from './main.js';
 import { isAdmin, isSuper, withAcct } from './session.js';
 
@@ -18,7 +18,7 @@ export const STATUS = {
 const moneyFormats = new Map();
 export function money(cents, currency = 'MXN') {
   if (cents === null || cents === undefined) return '';
-  if (!moneyFormats.has(currency)) moneyFormats.set(currency, new Intl.NumberFormat('es-MX', { style: 'currency', currency, minimumFractionDigits: 2 }));
+  if (!moneyFormats.has(currency)) moneyFormats.set(currency, new Intl.NumberFormat(LOCALE, { style: 'currency', currency, minimumFractionDigits: 2 }));
   return moneyFormats.get(currency).format(cents / 100);
 }
 

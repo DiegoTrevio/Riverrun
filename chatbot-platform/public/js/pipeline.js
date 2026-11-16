@@ -1,5 +1,5 @@
 import { needAccount } from './admin.js';
-import { api, area, check, clone, confirmAction, field, fill, fmtDate, fmtPhone, h, run, select, state, text, toast } from './core.js';
+import { api, area, check, clone, confirmAction, field, fill, fmtDate, fmtPhone, h, run, select, state, text, toast, LOCALE } from './core.js';
 import { icon } from './icons.js';
 import { isAdmin, withAcct } from './session.js';
 
@@ -23,7 +23,7 @@ const timeAgo = (d) => {
 /** Valor en la moneda del pipeline (sin decimales si son cero). */
 const money = (n, currency) => {
   const digits = Number(n) % 1 ? 2 : 0;
-  try { return new Intl.NumberFormat('es-MX', { style: 'currency', currency, minimumFractionDigits: digits, maximumFractionDigits: digits }).format(Number(n) || 0); }
+  try { return new Intl.NumberFormat(LOCALE, { style: 'currency', currency, minimumFractionDigits: digits, maximumFractionDigits: digits }).format(Number(n) || 0); }
   catch { return `${Number(n) || 0} ${currency}`; }
 };
 const initialsOf = (name) => (name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('');

@@ -5,6 +5,7 @@ import { enterAccount, plainClick } from './account-switch.js';
 const plainTitle = (t) => String(t || '').replace(/^[\p{Extended_Pictographic}️‍\s]+/u, '');
 import { render } from './main.js';
 import { mfaSecurityCard } from './mfa.js';
+import { LANGS, currentLang, setLang } from './i18n.js';
 import { ROLE_LABEL, acct, isAdmin, isOwner, isSuper, ownerOnlyText, withAcct } from './session.js';
 import { refreshBell } from './shell.js';
 import { usd } from './usage.js';
@@ -334,6 +335,8 @@ export async function viewPassword(root) {
       state.me.user.account_id ? check(me, 'available', 'Estoy disponible: recibir conversaciones asignadas por turnos (desmárcalo si estás fuera de turno)') : null,
       // Al guardar se vuelve a dibujar: «Mis avisos» habilita la columna de WhatsApp en cuanto hay número.
       h('div', { class: 'settings-actions' }, h('button', { onclick: async () => { const u = await run(() => api('PUT', '/api/me', me), 'Perfil guardado'); if (u) { state.me.user = { ...state.me.user, ...u }; render(); } } }, 'Guardar perfil'))),
+    settingsSection('Idioma', 'El idioma del panel en este navegador. Si no eliges uno, se usa el de tu navegador.',
+      h('div', { class: 'row', role: 'group', 'aria-label': 'Idioma', translate: 'no' }, LANGS.map(([code, name]) => h('button', { type: 'button', lang: code, class: code === currentLang() ? 'primary' : '', 'aria-pressed': String(code === currentLang()), onclick: () => setLang(code) }, name)))),
     settingsSection('Correo', 'Con él entras al panel y te llegan los avisos. El cambio se aplica al abrir el enlace que te mandamos al correo nuevo.',
       h('p', {}, h('strong', {}, state.me.user.email)),
       h('div', { class: 'settings-actions' }, h('button', { onclick: async () => {

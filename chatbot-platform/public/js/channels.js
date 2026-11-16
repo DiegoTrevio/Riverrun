@@ -267,15 +267,17 @@ export async function viewChannel(root, id, parentId = null) {
   const setup = async () => {
     if (connecting) return; connecting = true;
     const snapshot = JSON.stringify(cfg);
+    // Se reconoce por el elemento, no por su texto: en inglés el texto ya viene traducido.
+    const pending = h('p', { role: 'status' }, 'Guardando y verificando la conexión…');
     try {
-      fill(result, h('p', { role: 'status' }, 'Guardando y verificando la conexión…'));
+      fill(result, pending);
       if (!(await persist())) return;
       if (JSON.stringify(cfg) !== snapshot) return toast('Cambiaste los datos mientras se guardaban. Vuelve a verificar la conexión.', true);
       const r = await run(() => api('POST', `/api/channels/${id}/setup`));
       if (!r) return;
       fill(result, h('p', { role: 'status' }, h('span', { class: `badge ${r.ok ? 'green' : 'orange'}` }, r.ok ? 'Listo' : 'Atención'), ' ', r.message));
       await refresh();
-    } finally { connecting = false; if (result.textContent === 'Guardando y verificando la conexión…') fill(result, h('p', { role: 'status' }, 'Verificación no completada. Revisa los datos y vuelve a intentar.')); }
+    } finally { connecting = false; if (pending.isConnected) fill(result, h('p', { role: 'status' }, 'Verificación no completada. Revisa los datos y vuelve a intentar.')); }
   };
   const copyBtn = (value) => h('button', { class: 'small', onclick: async () => { try { await navigator.clipboard.writeText(value); toast('Copiado'); } catch { toast('No se pudo copiar', true); } } }, 'Copiar');
   const connection = [];

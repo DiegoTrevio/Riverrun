@@ -139,5 +139,13 @@ if (path.basename(dir) === 'js') {
   });
   for (const p of walk(root)) problems.push(...rawHtmlProblems(path.relative(root, p), fs.readFileSync(p, 'utf8'), { panel: false }));
 }
+// Panel en inglés: cada texto que se ve tiene su traducción en public/i18n/en.json (ver scripts/i18n-strings.mjs).
+if (!process.env.CHECK_FRONTEND_DIR) {
+  const { checkTranslations } = await import('./i18n-strings.mjs');
+  const { missing, broken } = checkTranslations();
+  for (const m of missing.slice(0, 40)) problems.push(`${m.at[0]}: falta la traducción al inglés de ${JSON.stringify(m.s)} (public/i18n/en.json)`);
+  if (missing.length > 40) problems.push(`…y ${missing.length - 40} textos más sin traducir (node scripts/i18n-strings.mjs --missing)`);
+  for (const k of broken) problems.push(`public/i18n/en.json: la traducción de ${JSON.stringify(k)} está vacía o no tiene las mismas partes {0}`);
+}
 if (problems.length) { console.error(problems.join('\n')); process.exit(1); }
 console.log(`Panel OK: ${files.length} módulos, ${Object.values(src).join('\n').split('\n').length} líneas`);

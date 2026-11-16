@@ -2,6 +2,9 @@
 
 export const $app = document.getElementById('app');
 
+/** Formato de fechas y números según el idioma del panel (js/i18n.js lo marca en <html lang> antes de cargar esto). */
+export const LOCALE = document.documentElement.lang === 'en' ? 'en-US' : 'es-MX';
+
 export const state = { meta: null, me: null, accounts: [], bots: [], timers: [], accountId: '', navigation: 0, timeZone: '', ux: [] };
 /** Datos agregados de esta sesión; sin URL/IDs, mensajes, prompts ni credenciales. */
 export function recordUX(task, duration, outcome) {
@@ -223,7 +226,7 @@ function clearFieldError(control) {
 
 export function clearFieldErrors(scope) { scope?.querySelectorAll('[aria-invalid="true"]').forEach(clearFieldError); }
 
-const amountText = (n) => new Intl.NumberFormat('es-MX', { minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2 }).format(n);
+const amountText = (n) => new Intl.NumberFormat(LOCALE, { minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2 }).format(n);
 
 /**
  * Se topó un límite del plan: en lugar de "revisa el formulario", qué se topó y un botón para subir al plan que alcanza
@@ -239,7 +242,7 @@ export function upgradeCard(e) {
       ? h('p', {}, 'Pídele a un administrador de tu cuenta que cambie de plan en Mi plan y pagos.')
       : p
         ? h('p', {}, h('a', { class: 'btn primary', href: `#/plan?subir=${encodeURIComponent(p.key)}` }, `Subir a ${p.name}`), ` $${amountText(p.price)} ${p.currency} al ${p.interval === 'year' ? 'año' : 'mes'}${p.total !== p.price ? ' + IVA' : ''} · `,
-          p.allows ? `hasta ${p.allows.toLocaleString('es-MX')} ${l.label}` : `${l.label} sin límite`)
+          p.allows ? `hasta ${p.allows.toLocaleString(LOCALE)} ${l.label}` : `${l.label} sin límite`)
         : h('p', {}, h('a', { class: 'btn primary', href: '#/plan' }, 'Ver planes')));
 }
 
@@ -268,7 +271,7 @@ export async function run(fn, okMsg) {
   }
 }
 
-export const fmtDate = (d, timeZone = state.timeZone) => (d ? new Date(d).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short', ...(timeZone ? { timeZone } : {}) }) : '');
+export const fmtDate = (d, timeZone = state.timeZone) => (d ? new Date(d).toLocaleString(LOCALE, { dateStyle: 'short', timeStyle: 'short', ...(timeZone ? { timeZone } : {}) }) : '');
 export function localDateTime(d, timeZone) {
   if (!d) return '';
   const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(d)).map((x) => [x.type, x.value]));

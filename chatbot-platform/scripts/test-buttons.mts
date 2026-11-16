@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { installNetworkGuard, blocked } from './buttons/network-guard.mts';
+import './ux-locale.mts'; // el panel en español (el navegador de pruebas viene en inglés)
 installNetworkGuard();
 const { chromium } = await import('playwright');
 const { createHarness, pool } = await import('../test/harness.js');

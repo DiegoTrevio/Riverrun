@@ -3,7 +3,7 @@ import { workspaceTabs } from './contact-workspace.js';
 import { workRecovery } from './work-recovery.js';
 import { dataLabel, flowCard } from './bot.js';
 import { channelIcon } from './channels.js';
-import { api, area, check, clone, debounce, dialog, field, fill, fmtDate, fmtPhone, h, initialsOf, lines, personTint, poll, run, select, state, text, toast, confirmAction, ask, named } from './core.js';
+import { api, area, check, clone, debounce, dialog, field, fill, fmtDate, fmtPhone, h, initialsOf, lines, personTint, poll, run, select, state, text, toast, confirmAction, ask, named, LOCALE } from './core.js';
 import { icon, okMark } from './icons.js';
 import { acct, isAdmin, isSuper, withAcct } from './session.js';
 import { pipelineCard } from './pipeline.js';
@@ -216,8 +216,8 @@ const shortTime = (d) => {
   const mins = (Date.now() - t) / 60000;
   if (mins < 1) return 'ahora';
   if (mins < 60) return `${Math.round(mins)} min`;
-  if (new Date().toDateString() === t.toDateString()) return t.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', ...(state.timeZone ? { timeZone: state.timeZone } : {}) });
-  return t.toLocaleDateString('es-MX', { day: 'numeric', month: 'short', ...(state.timeZone ? { timeZone: state.timeZone } : {}) });
+  if (new Date().toDateString() === t.toDateString()) return t.toLocaleTimeString(LOCALE, { hour: '2-digit', minute: '2-digit', ...(state.timeZone ? { timeZone: state.timeZone } : {}) });
+  return t.toLocaleDateString(LOCALE, { day: 'numeric', month: 'short', ...(state.timeZone ? { timeZone: state.timeZone } : {}) });
 };
 // Cada persona con su tinte pálido estable (el mismo que en la cola del inicio).
 const avatarOf = (name, key) => h('span', { class: 'inbox-avatar person', style: personTint(key), 'aria-hidden': 'true' }, initialsOf(name));
@@ -478,7 +478,7 @@ export async function viewConversation(root, id, opts = {}) {
           m.meta?.attachment_id ? h('a', { href: `/api/attachments/${m.meta.attachment_id}/file`, target: '_blank', rel: 'noopener' }, icon('paperclip', 14), ` ${m.meta.file_name || 'Archivo'}`) : null,
           m.media_kind ? customerMedia(m) : null,
           m.meta?.media_error ? h('div', { class: 'small muted' }, m.meta.media_error) : null,
-          m.content || null,
+          m.content ? h('span', { translate: 'no' }, m.content) : null,
           // Botones de un flujo (como los vio el cliente) y la opción que eligió.
           Array.isArray(m.meta?.buttons) && m.meta.buttons.length ? h('div', { class: 'msg-buttons', role: 'list', 'aria-label': 'Botones enviados' },
             m.meta.buttons.map((b) => h('span', { class: 'chip', role: 'listitem' }, b.kind === 'url' ? [icon('external', 14), b.label] : b.label))) : null,
@@ -636,7 +636,9 @@ export async function viewConversation(root, id, opts = {}) {
         h('div', { class: 'row' },
           h('a', { class: 'btn small', href: `/api/contacts/${ct.id}/data`, download: '' }, 'Descargar todos sus datos'),
           h('button', { class: 'small danger', onclick: async () => {
-            if (await ask('Se borrará este cliente y TODA su conversación, de forma definitiva. Escribe BORRAR para confirmar') !== 'BORRAR') return;
+            // En inglés el aviso pide DELETE: se acepta cualquiera de las dos palabras.
+            const typed = String((await ask('Se borrará este cliente y TODA su conversación, de forma definitiva. Escribe BORRAR para confirmar')) || '').trim();
+            if (typed !== 'BORRAR' && typed !== 'DELETE') return;
             if (await run(() => api('DELETE', `/api/contacts/${ct.id}`), 'Datos eliminados')) location.hash = '#/conversations';
           } }, 'Borrar todos sus datos'))) : null,
       flowCard(data.chatbot?.flow, c),

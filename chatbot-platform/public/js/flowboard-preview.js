@@ -1,4 +1,4 @@
-import { fill, h, state } from './core.js';
+import { fill, h, state, LOCALE } from './core.js';
 import { icon } from './icons.js';
 
 /*
@@ -10,7 +10,7 @@ import { icon } from './icons.js';
 const SAMPLE = () => ({
   nombre: 'Ana', nombre_completo: 'Ana López', cliente: 'Ana', telefono: '+52 55 1234 5678',
   negocio: state.me?.account?.name || 'tu negocio', canal: 'WhatsApp', asesor: 'Luis',
-  fecha_hoy: new Date().toLocaleDateString('es-MX', { day: 'numeric', month: 'long' }),
+  fecha_hoy: new Date().toLocaleDateString(LOCALE, { day: 'numeric', month: 'long' }),
 });
 const UNIT_WORD = { minutes: ['minuto', 'minutos'], hours: ['hora', 'horas'], days: ['día', 'días'] };
 const STARTED = { intent: 'La IA detecta la intención', tag_added: 'Se le pone la etiqueta', no_reply: 'El cliente dejó de responder', appointment_booked: 'Agendó una cita', goal_completed: 'Se cumplió el objetivo', data_captured: 'Se guardó un dato', handoff: 'Pasó con una persona' };
@@ -19,7 +19,7 @@ export function previewPanel({ board, files, fileUrl, onShow }) {
   const nodes = new Map(board.nodes.map((n) => [n.id, n]));
   const next = (id, port = 'out') => { const e = board.edges.find((x) => x.from === id && x.port === port); return e ? nodes.get(e.to) : null; };
   const chat = h('div', { class: 'fb-chat', role: 'log', 'aria-live': 'polite', 'aria-label': 'Conversación de ejemplo' });
-  const time = () => new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
+  const time = () => new Date().toLocaleTimeString(LOCALE, { hour: '2-digit', minute: '2-digit' });
   let firstWords = 'Hola';
   let steps = 0;
   const vars = (t) => {
@@ -28,7 +28,7 @@ export function previewPanel({ board, files, fileUrl, onShow }) {
   };
   const scroll = () => requestAnimationFrame(() => { chat.scrollTop = chat.scrollHeight; });
   const note = (text, iconName = 'clock') => { chat.append(h('div', { class: 'fb-chat-note' }, icon(iconName, 14), h('span', {}, text))); scroll(); };
-  const customer = (text) => { chat.append(h('div', { class: 'fb-bubble in' }, h('span', {}, text), h('time', {}, time()))); scroll(); };
+  const customer = (text) => { chat.append(h('div', { class: 'fb-bubble in' }, h('span', { translate: 'no' }, text), h('time', {}, time()))); scroll(); };
   const disableChoices = () => chat.querySelectorAll('.fb-choice').forEach((b) => { b.disabled = true; });
 
   function photo(d) {

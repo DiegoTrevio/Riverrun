@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import pg from 'pg';
 import { chromium, type Page } from 'playwright';
 
+import './ux-locale.mts'; // el panel en español (el navegador de pruebas viene en inglés)
 const url = new URL(process.env.TEST_DATABASE_URL ?? 'postgres://chatbot:chatbot@127.0.0.1:5433/chatbot_test');
 assert.ok(['localhost', '127.0.0.1', '[::1]'].includes(url.hostname), 'Solo PostgreSQL local');
 url.pathname = '/postgres';
