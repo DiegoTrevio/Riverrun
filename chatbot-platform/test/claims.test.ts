@@ -51,3 +51,21 @@ test('varias afirmaciones en una respuesta, con listas y conjunciones', () => {
   assert.deepEqual(unsupportedClaims('Incluye desayuno, alberca, sauna y jacuzzi.', K), ['sauna', 'jacuzzi']);
   assert.deepEqual(unsupportedClaims('Ofrecemos desayuno y estacionamiento.', K), []);
 });
+
+test('en inglés: marca lo que el negocio afirma tener y no está en la información', () => {
+  const EN = ['Palms Hotel. Double rooms $120 per night. Heated pool open 8 AM to 8 PM. Breakfast included. Free parking. We accept cards and bank transfers. Wi-Fi throughout the hotel. Small pets allowed.'];
+  const cases: [string, string[]][] = [
+    ['Hi! Yes, we have a pool and a gym.', ['gym']],
+    ['We offer spa services and massages.', ['spa', 'massages']],
+    ['We accept Bitcoin as payment.', ['bitcoin']],
+    ['It includes breakfast and dinner.', ['dinner']],
+    ['There is a jacuzzi on the roof.', ['jacuzzi']],
+    ['Yes, we have a swimming pool and free parking.', []],
+    ['We accept credit cards.', []],
+    ["We don't have a gym, sorry.", []],
+    ['If we had a gym, I would tell you.', []],
+    ['Do you have a pool?', []],
+    ['Happy to help you with that!', []],
+  ];
+  for (const [reply, want] of cases) assert.deepEqual(unsupportedClaims(reply, EN), want, reply);
+});

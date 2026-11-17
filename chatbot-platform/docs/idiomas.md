@@ -38,7 +38,20 @@ Agrega la traducción en `public/i18n/en.json` con las mismas partes `{0}`. Si u
 
 `npm run test:english:ux` abre cada pantalla de cada rol en inglés en un navegador real y falla si quedó texto del panel en español, si algo no cabe en un teléfono o si hay fallas graves de accesibilidad.
 
+## El asistente cuando contesta en inglés
+
+El asistente contesta en el idioma de su personalidad (Agente → Personalidad → Idioma) y en el del cliente si le escribe en otro. La revisión que impide inventar (`src/engine/text.ts` y `src/engine/claims.ts`) entiende también las respuestas en inglés:
+
+- Precios en dólares escritos de cualquier forma: `$165`, `165 dollars`, `15 bucks`, `1,200 USD`, `15 thousand dollars`. Los montos escritos con palabras (`one thousand five hundred dollars`) se piden con cifras.
+- Fechas (`October 20, 2026`, `20th of October`) y cantidades con unidad (`3 nights`, `6 people`, `2 hours`) no cuentan como precio.
+- Descuentos (`20% off`, `twenty percent`, `half price`), promociones (`buy one get one free`, `BOGO`, `2 for 1`, `three for the price of two`) y regalos (`free`, `complimentary`, `on the house`, `at no cost`, `we don't charge`) solo si están en la información del negocio.
+- Lo que la respuesta niega (`we don't offer 3x2`, `parking isn't free`) no es una oferta; `don't miss our 30% off` o `20% off since we are not busy` sí lo son.
+- Horas: `at 8`, `from 9 to 6`, `9 to 6`, `open at 9 and close at 6`, con las mismas reglas que en español.
+- Afirmaciones como `we have a pool`, `we offer delivery` o `it includes breakfast` se revisan contra la información (si el agente tiene activada la verificación de afirmaciones).
+
+Las pruebas están en `test/anti-invention-en.test.ts` y al final de `test/claims.test.ts`.
+
 ## Lo que todavía está solo en español
 
-- Lo que el asistente le contesta al cliente, los correos, las cotizaciones y los PDF (siguiente fase: idioma de cada negocio).
+- Los mensajes fijos que el sistema le manda al cliente (confirmación de cita, cotización, cobros, baja de promociones), los correos, las cotizaciones y los PDF (siguiente fase: idioma de cada negocio).
 - La ayuda (`ayuda.html`), la página para reservar, el chat web y los avisos legales (fase de páginas públicas, con Privacy Policy y Terms para Estados Unidos).

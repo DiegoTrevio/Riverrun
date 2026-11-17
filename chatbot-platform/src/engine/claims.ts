@@ -14,27 +14,27 @@ import { normalize } from './text.js';
 /** Grupos de sinónimos: cualquiera de la lista respalda a los demás. */
 const SYNONYMS: string[][] = [
   ['alberca', 'piscina', 'pileta', 'swimming', 'pool'],
-  ['estacionamiento', 'parking', 'cochera', 'parqueadero', 'aparcamiento', 'valet'],
-  ['wifi', 'wi-fi', 'internet', 'inalambrico'],
+  ['estacionamiento', 'parking', 'cochera', 'parqueadero', 'aparcamiento', 'valet', 'garage'],
+  ['wifi', 'wi-fi', 'internet', 'inalambrico', 'wireless'],
   ['gimnasio', 'gym', 'fitness'],
-  ['regadera', 'ducha', 'bano', 'banos'],
-  ['aire', 'climatizacion', 'clima', 'ac'],
-  ['mascota', 'mascotas', 'perro', 'perros', 'gato', 'gatos', 'pet', 'animal', 'animales'],
-  ['domicilio', 'envio', 'envios', 'entrega', 'entregas', 'delivery', 'reparto'],
-  ['tarjeta', 'tarjetas', 'credito', 'debito', 'visa', 'mastercard', 'amex'],
+  ['regadera', 'ducha', 'bano', 'banos', 'shower', 'showers', 'bathroom', 'bathrooms'],
+  ['aire', 'climatizacion', 'clima', 'ac', 'air', 'conditioning'],
+  ['mascota', 'mascotas', 'perro', 'perros', 'gato', 'gatos', 'pet', 'pets', 'dog', 'dogs', 'cat', 'cats', 'animal', 'animales', 'animals'],
+  ['domicilio', 'envio', 'envios', 'entrega', 'entregas', 'delivery', 'reparto', 'shipping', 'deliveries'],
+  ['tarjeta', 'tarjetas', 'credito', 'debito', 'visa', 'mastercard', 'amex', 'card', 'cards', 'credit', 'debit'],
   ['transferencia', 'spei', 'deposito', 'clabe'],
-  ['factura', 'facturas', 'facturacion', 'cfdi', 'fiscal'],
-  ['reservacion', 'reservaciones', 'reserva', 'reservas', 'cita', 'citas'],
-  ['descuento', 'descuentos', 'promocion', 'promociones', 'oferta', 'ofertas', 'cupon'],
-  ['desayuno', 'desayunos', 'brunch', 'almuerzo'],
-  ['restaurante', 'comedor', 'cafeteria', 'cocina'],
-  ['garantia', 'garantias', 'devolucion', 'devoluciones', 'cambio', 'cambios'],
-  ['sabado', 'sabados', 'domingo', 'domingos', 'weekend', 'fin'],
+  ['factura', 'facturas', 'facturacion', 'cfdi', 'fiscal', 'invoice', 'invoices', 'receipt'],
+  ['reservacion', 'reservaciones', 'reserva', 'reservas', 'cita', 'citas', 'reservation', 'reservations', 'booking', 'bookings', 'appointment', 'appointments'],
+  ['descuento', 'descuentos', 'promocion', 'promociones', 'oferta', 'ofertas', 'cupon', 'discount', 'discounts', 'promotion', 'promotions', 'deal', 'deals', 'coupon'],
+  ['desayuno', 'desayunos', 'brunch', 'almuerzo', 'breakfast'],
+  ['restaurante', 'comedor', 'cafeteria', 'cocina', 'restaurant', 'kitchen', 'dining'],
+  ['garantia', 'garantias', 'devolucion', 'devoluciones', 'cambio', 'cambios', 'warranty', 'guarantee', 'refund', 'refunds', 'return', 'returns', 'exchange', 'exchanges'],
+  ['sabado', 'sabados', 'domingo', 'domingos', 'weekend', 'fin', 'saturday', 'saturdays', 'sunday', 'sundays', 'weekends'],
   ['whatsapp', 'wasap', 'mensaje', 'mensajes', 'chat'],
-  ['video', 'videollamada', 'zoom', 'meet', 'virtual', 'remota', 'remoto', 'linea'],
+  ['video', 'videollamada', 'zoom', 'meet', 'virtual', 'remota', 'remoto', 'linea', 'online', 'remote'],
   ['recepcion', 'concierge', 'lobby', 'front'],
-  ['terraza', 'balcon', 'patio', 'jardin', 'azotea'],
-  ['spa', 'masaje', 'masajes', 'relajacion'],
+  ['terraza', 'balcon', 'patio', 'jardin', 'azotea', 'terrace', 'balcony', 'garden', 'rooftop'],
+  ['spa', 'masaje', 'masajes', 'relajacion', 'massage', 'massages'],
 ];
 const canonical = new Map<string, string>();
 for (const g of SYNONYMS) for (const w of g) canonical.set(w, g[0]);
@@ -49,11 +49,18 @@ const GENERIC = new Set(
    pregunta preguntas duda dudas solicitud peticion proceso pasos paso numero numeros nombre datos correo telefono cita citas
    reservacion reservaciones desglose desgloses cotizacion cotizaciones presupuesto presupuestos calculo calculos resumen
    total totales subtotal validez vigencia vigente opcion economica actualizada actualizado aproximada aproximado
-   detallada detallado completa completo final nueva nuevo`.split(/\s+/),
+   detallada detallado completa completo final nueva nuevo
+   service services option options way ways thing things type types information info details detail help support pleasure
+   time moment day days hour hours schedule week month place places people person customer customers team agent answer
+   availability spot spots space spaces product products price prices cost costs rate rates payment payments more everything
+   anything something other others now today tomorrow soon thanks quality experience account contact question questions
+   process step steps number name email phone quote quotes estimate estimates summary total subtotal valid new full`.split(/\s+/),
 );
 
 const STOP = new Set(
-  `un una unos unas el la los las lo al del de en con por para sin sobre entre desde hasta hacia segun nuestro nuestra nuestros
+  `the and for with your our their this that these those some any many much very more less also only just always never
+   from into onto over about than then there here what which who whom whose when where while been being have has had
+   un una unos unas el la los las lo al del de en con por para sin sobre entre desde hasta hacia segun nuestro nuestra nuestros
    nuestras su sus mi mis tu tus este esta estos estas ese esa esos esas aquel muy mas menos tan tanto algun alguna algunos algunas
    varios varias muchos muchas mucho mucha pocos pocas poco poca cada cualquier cierto cierta ciertos ciertas otro otra que como
    cuando donde si no ni pero aunque porque pues entonces tambien ademas tambien solo solamente siempre nunca ya aun
@@ -66,17 +73,22 @@ const VERBS = [
   'incluye', 'incluyen', 'incluido', 'incluida', 'incluidos', 'incluidas', 'disponemos de', 'dispone de', 'hay', 'habra',
   'manejamos', 'maneja', 'aceptamos', 'acepta', 'aceptan', 'trabajamos con', 'brindamos', 'brinda', 'damos', 'hacemos',
   'realizamos', 'vendemos', 'rentamos', 'preparamos', 'contamos', 'proporcionamos', 'otorgamos', 'permitimos', 'permite',
+  // En inglés: "we have a pool", "we offer delivery", "it includes breakfast", "there is parking".
+  'we have', 'we\'ve got', 'we offer', 'we provide', 'we include', 'we accept', 'we take', 'we sell', 'we rent', 'we serve',
+  'we do', 'we make', 'we allow', 'we carry', 'we feature', 'it has', 'it includes', 'it comes with', 'comes with', 'come with',
+  'includes', 'include', 'included', 'there is', 'there are', 'there\'s', 'offers', 'provides', 'features', 'allows', 'accepts',
 ];
-const VERB_G = new RegExp(`(?<![a-z])(?:${VERBS.sort((a, b) => b.length - a.length).join('|')})(?![a-z])\\s*`, 'g');
+const VERB_G = new RegExp(`(?<![a-z'])(?:${VERBS.sort((a, b) => b.length - a.length).join('|')})(?![a-z'])\\s*`, 'g');
+const ENGLISH_VERB = /^(?:we|it|there|comes?|includ|offers|provides|features|allows|accepts)/;
 /** Dónde termina el "algo" afirmado. */
-const CLAUSE_END = /\s(?:en|para|por|desde|hasta|a|que|donde|cuando|si|pero|aunque|segun|durante|mientras|sin|como|ademas|tambien)\s|[.;:!?()\n]/;
-const CONJ = /,|\s(?:y|e|o|u|ni)\s/;
+const CLAUSE_END = /\s(?:en|para|por|desde|hasta|a|que|donde|cuando|si|pero|aunque|segun|durante|mientras|sin|como|ademas|tambien|in|for|by|from|until|to|that|where|when|if|but|although|during|while|without|as|also|too|at|on|so)\s|[.;:!?()\n]/;
+const CONJ = /,|\s(?:y|e|o|u|ni|and|or|nor|plus)\s/;
 /** Pronombres que delatan una oración con verbo ("con gusto te ayudamos"), no una cosa ofrecida. */
-const CLITIC = new Set(['te', 'le', 'les', 'me', 'nos', 'se']);
+const CLITIC = new Set(['te', 'le', 'les', 'me', 'nos', 'se', 'you', 'him', 'her', 'them', 'us', 'it']);
 const FIRST_PERSON = /(?:amos|emos|imos)$/;
-const PREPOSITION_START = /^(?:con|sin|para|por|de|del|en|a|al|desde|hasta)\s/;
+const PREPOSITION_START = /^(?:con|sin|para|por|de|del|en|a|al|desde|hasta|with|without|for|by|of|in|at|from|to|on)\s/;
 
-const words = (s: string) => normalize(s).split(/[^a-z0-9ñ-]+/).filter(Boolean);
+const words = (s: string) => normalize(s).replace(/[’']/g, '').split(/[^a-z0-9ñ-]+/).filter(Boolean);
 const stemOf = (w: string) => {
   const c = canonical.get(w);
   if (c) return c;
@@ -114,8 +126,12 @@ export function claimedThings(reply: string): { sentence: string; things: string
       const before = n.slice(0, m.index!);
       // Negaciones antes del verbo ("no tenemos"): no es una promesa. Condicionales ("si tuviéramos…") tampoco.
       if (/\b(?:no|nunca|tampoco|ni)\s+(?:\w+\s+){0,2}$/.test(before + ' ') || /\b(?:no|nunca|tampoco)\s*$/.test(before)) return;
+      if (/(?:\b(?:not|never|no longer)|n't)\s+(?:\w+\s+){0,1}$/.test(before + ' ')) return;
       if (/\b(?:si|quiza|quizas|tal vez|podriamos|podria|podrian|ojala)\b/.test(before.slice(before.lastIndexOf(',') + 1))) return;
+      if (/\b(?:if|maybe|perhaps|might|could|would|wish)\b/.test(before.slice(before.lastIndexOf(',') + 1))) return;
       let object = n.slice(start, verbs[i + 1]?.index ?? n.length);
+      // En inglés "a" es un artículo ("we have a pool"), no la preposición que corta la cosa afirmada.
+      if (ENGLISH_VERB.test(m[0])) object = object.replace(/(^|\s)(?:a|an|the)(?=\s)/g, '$1');
       const end = CLAUSE_END.exec(' ' + object + ' ');
       if (end) object = (' ' + object + ' ').slice(0, end.index).trim();
       for (const p of object.split(CONJ).map((x) => x.trim()).filter(Boolean)) {
