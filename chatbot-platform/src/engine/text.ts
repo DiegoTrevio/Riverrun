@@ -10,9 +10,11 @@ export function normalize(s: string): string {
     .trim();
 }
 
-const STOPWORDS = new Set(
-  'a al algo alguna alguno algunos ante antes asi aun bien cada como con contra cual cuales cuando de del desde donde dos el ella ellas ellos en entre era es esa ese eso esta estan este esto estos fue ha hay la las le les lo los mas me mi mis mucho muy nada ni no nos o otra otro para pero poco por porque que quien se sea si sin sobre solo su sus tal tambien te tengo ti tiene tu tus un una uno unos y ya yo hola buenas buenos dias tardes noches gracias favor quiero quisiera saber puedo puede podria info informacion'.split(' '),
-);
+const STOPWORDS = new Set([
+  ...'a al algo alguna alguno algunos ante antes asi aun bien cada como con contra cual cuales cuando de del desde donde dos el ella ellas ellos en entre era es esa ese eso esta estan este esto estos fue ha hay la las le les lo los mas me mi mis mucho muy nada ni no nos o otra otro para pero poco por porque que quien se sea si sin sobre solo su sus tal tambien te tengo ti tiene tu tus un una uno unos y ya yo hola buenas buenos dias tardes noches gracias favor quiero quisiera saber puedo puede podria info informacion'.split(' '),
+  // En inglés (negocios de Estados Unidos): sin ellas, "for" o "the" bastaban para que dos frases "hablaran de lo mismo".
+  ...'the and for with you your yours our ours are was were has have had this that these those from they them their there here what when where which who will would can could should about into over just than then also its not but all any some more most very been being does did how why get got hello thanks thank please want like know tell'.split(' '),
+]);
 
 export function keywords(s: string): string[] {
   return normalize(s)
@@ -33,6 +35,10 @@ const NUMBER_WORDS: Record<string, number> = {
   un: 1, uno: 1, una: 1, dos: 2, par: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10,
   once: 11, doce: 12, trece: 13, catorce: 14, quince: 15, dieciseis: 16, diecisiete: 17, dieciocho: 18, diecinueve: 19,
   veinte: 20, treinta: 30, cuarenta: 40, cincuenta: 50, cien: 100,
+  // En inglés (negocios de Estados Unidos): "there are two of us", "a dozen".
+  one: 1, two: 2, couple: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11,
+  twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20,
+  thirty: 30, forty: 40, fifty: 50, hundred: 100,
 };
 
 /** Números que dice un texto: cifras (sin separadores de miles), palabras ("dos", "docena") y "mil". */
@@ -41,16 +47,16 @@ export function spokenNumbers(text: string): number[] {
   const out: number[] = [];
   for (let i = 0; i < ws.length; i++) {
     const w = ws[i];
-    if (w === 'docena') {
-      // "media docena" = 6, "dos docenas" = 24, "docena" = 12.
+    if (w === 'docena' || w === 'dozen') {
+      // "media docena" = 6, "dos docenas" = 24, "docena" = 12 (también "half a dozen", "two dozen").
       const prev = NUMBER_WORDS[ws[i - 1]];
       if (prev !== undefined && out.length) out.pop();
-      out.push(ws[i - 1] === 'media' ? 6 : (prev ?? 1) * 12);
+      out.push(ws[i - 1] === 'media' || (ws[i - 1] === 'a' && ws[i - 2] === 'half') ? 6 : (prev ?? 1) * 12);
       continue;
     }
     let n = /^\d+$/.test(w) ? Number(w) : NUMBER_WORDS[w];
     if (n === undefined) continue;
-    if (ws[i + 1] === 'mil') n *= 1000;
+    if (ws[i + 1] === 'mil' || ws[i + 1] === 'thousand') n *= 1000;
     out.push(n);
   }
   return out;
@@ -115,9 +121,9 @@ const EMAIL_RE = /\b[A-Z0-9._%+-]{1,64}@[A-Z0-9.-]{1,253}\.[A-Z]{2,24}\b/gi;
 const PHONE_RE = /\+?\d[\d\s().-]{6,}\d/g;
 const NUMBER_RE = /\d+(?:[.,]\d+)*/g;
 /** "15 mil", "15k", "2 millones": la cifra completa (15000), para que no se verifique solo el 15. */
-const SCALED_RE = /(\d+(?:[.,]\d+)?)\s?(mil|k|mill[oó]n|millones)(?![\p{L}\d])/giu;
+const SCALED_RE = /(\d+(?:[.,]\d+)?)\s?(mil|k|mill[oó]n|millones|thousand|million|millions)(?![\p{L}\d])/giu;
 const scaled = (n: string, unit: string) => {
-  const v = Number(canonicalNumber(n)) * (/^(?:mil|k)$/i.test(unit) ? 1000 : 1_000_000);
+  const v = Number(canonicalNumber(n)) * (/^(?:mil|k|thousand)$/i.test(unit) ? 1000 : 1_000_000);
   return Number.isFinite(v) ? String(Math.round(v * 100) / 100) : n;
 };
 
@@ -163,13 +169,13 @@ export function extractFacts(text: string): Facts {
 }
 
 /** Minúsculas y sin acentos, conservando saltos de línea y signos (para buscar frases y separar oraciones). */
-const fold = (s: string) => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+const fold = (s: string) => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[’‘]/g, "'");
 
 // Moneda antes ("$", "US$", "USD", "MXN", "€", "EUR") o después ("pesos", "dlls", "MN", "varos"…) de la cifra; la cifra
 // puede venir abreviada ("15 mil", "15k").
-const AMOUNT = String.raw`\d[\d.,]{0,24}(?:\s?(?:mil|k|mill[oó]n|millones)(?![\p{L}\d]))?`;
+const AMOUNT = String.raw`\d[\d.,]{0,24}(?:\s?(?:mil|k|mill[oó]n|millones|thousand|million|millions)(?![\p{L}\d]))?`;
 const MONEY_RE = new RegExp(
-  String.raw`(?<![\p{L}\d])(?:us\$|\$|usd|mxn|eur|€)\s?${AMOUNT}|${AMOUNT}\s?(?:pesos|mxn|m\.?\s?n\.?|usd|d[oó]lares|dlls?\.?|dls\.?|varos|euros|eur|€)(?![\p{L}])`,
+  String.raw`(?<![\p{L}\d])(?:us\$|\$|usd|mxn|eur|€)\s?${AMOUNT}|${AMOUNT}\s?(?:pesos|mxn|m\.?\s?n\.?|usd|d[oó]lares|dollars?|bucks|dlls?\.?|dls\.?|varos|euros|eur|€)(?![\p{L}])`,
   'giu',
 );
 
@@ -177,18 +183,19 @@ const MONEY_RE = new RegExp(
  * Montos tapados: «$XX,XXX», «$###», «$__», «[precio]», «{total}». La IA los usa para esquivar la revisión de precios;
  * nunca son algo que el cliente deba recibir (en ninguna cuenta).
  */
-export const MASKED_MONEY_RE = /(?:us\$|\$)\s?[xX#?*_]+(?:[.,\s]?[xX#?*_\d]+)*|\[\s*(?:precio|monto|total|importe|costo|cantidad)[^\]\n]{0,40}\]|\{\s*(?:precio|monto|total|importe|costo)[^}\n]{0,40}\}/i;
+export const MASKED_MONEY_RE = /(?:us\$|\$)\s?[xX#?*_]+(?:[.,\s]?[xX#?*_\d]+)*|\[\s*(?:precio|monto|total|importe|costo|cantidad|price|amount|cost)[^\]\n]{0,40}\]|\{\s*(?:precio|monto|total|importe|costo|price|amount|cost)[^}\n]{0,40}\}/i;
 
 /** Montos de dinero mencionados ("$1,650", "350 pesos", "USD 1200", "15 mil pesos"), en forma canónica. */
 export function extractMoney(text: string): string[] {
   return (text.match(MONEY_RE) || []).map((m) => {
     const n = canonicalNumber((m.match(/\d[\d.,]*/) || [''])[0].replace(/[.,]$/, ''));
-    const unit = /\d\s?(mil|k|mill[oó]n|millones)(?![\p{L}\d])/iu.exec(m);
+    const unit = /\d\s?(mil|k|mill[oó]n|millones|thousand|million|millions)(?![\p{L}\d])/iu.exec(m);
     return unit && n ? scaled(n, unit[1]) : n;
   }).filter(Boolean);
 }
 
 const MONTHS = '(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)';
+const MONTHS_EN = '(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sept?|oct|nov|dec)\\.?';
 /** Números que no son un precio: fechas, horas, porcentajes y cantidades con unidad ("3 noches", "20 min"). */
 const NOT_PRICE_RE = new RegExp(
   String.raw`(?<![\d.,])(?:${[
@@ -199,21 +206,43 @@ const NOT_PRICE_RE = new RegExp(
     String.raw`\d{1,2}[:h]\d{2}(?::\d{2})?(?!\d)`,
     String.raw`\d{1,2}\s+de\s+${MONTHS}(?:\s+(?:de|del)\s+\d{4})?`,
     String.raw`${MONTHS}\s+(?:de\s+|del\s+)?\d{4}`,
-    String.raw`\d+(?:[.,]\d+)?\s?(?:%|por\s?ciento)`,
+    // En inglés: "October 20", "Oct 20th, 2026", "20th of October", "October 2026".
+    String.raw`${MONTHS_EN}\s+\d{1,2}(?:st|nd|rd|th)?(?![\d\p{L}])(?:,?\s+\d{4})?`,
+    String.raw`\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?${MONTHS_EN}(?![\p{L}])(?:,?\s+\d{4})?`,
+    String.raw`${MONTHS_EN}\s+\d{4}`,
+    String.raw`\d+(?:[.,]\d+)?\s?(?:%|por\s?ciento|per\s?cent|percent)`,
     String.raw`\d+\s?(?:personas?|pax|adultos?|ninos?|noches?|dias?|horas?|hrs?|min(?:utos)?|anos?|meses|semanas?|km|kms|metros?|m2|kg|kilos?|gr|ml|lts?|litros?|piezas?|pzas?|estrellas?)(?![\p{L}])`,
+    String.raw`\d+\s?(?:people|persons?|guests?|adults?|kids?|children|nights?|days?|hours?|minutes?|mins?|years?|months?|weeks?|miles?|mi|feet|foot|ft|sq\s?ft|lbs?|pounds?|oz|ounces?|gallons?|pieces?|pcs|stars?|rooms?|seats?)(?![\p{L}])`,
   ].join('|')})`,
   'giu',
 );
 
 /** Porcentajes ("15%", "15 por ciento"). */
-const PERCENT_RE = /(\d+(?:[.,]\d+)?)\s?(?:%|por\s?ciento)/giu;
+const PERCENT_RE = /(\d+(?:[.,]\d+)?)\s?(?:%|por\s?ciento|per\s?cent|percent)/giu;
 const percentsIn = (folded: string) => [...folded.matchAll(PERCENT_RE)].map((m) => canonicalNumber(m[1]));
 
 /** Promociones "2x1", "3 x 2", "2 por 1", "dos por uno" (la primera cifra mayor: no son medidas como "4x4"). */
 // Al final puede ir un punto o una coma ("2x1."), pero no una cifra ("2x1.5", "3x2:30") ni un porcentaje.
 // «6 × 2 = 12 abrazaderas» es una cuenta, no un «6x2»: después del segundo número no puede venir «=».
 const PROMO_RE = /(?<![\d.,$])([2-9])\s?(?:x|×|por)\s?([1-8])(?!\d|[.,:]\d|\s?%)(?!\s*=)(?!\s?(?:m|cm|mts?|metros|pulgadas)(?![\p{L}]))|(?<![\p{L}])(dos|tres|cuatro)\s+por\s+(uno|dos|tres)(?![\p{L}])/giu;
-const SMALL: Record<string, number> = { uno: 1, dos: 2, tres: 3, cuatro: 4 };
+const SMALL: Record<string, number> = { uno: 1, dos: 2, tres: 3, cuatro: 4, one: 1, two: 2, three: 3, four: 4 };
+/** En inglés: "buy one get one free" = 2x1, "buy 2, get 1 free" = 3x2, "BOGO" = 2x1. */
+const PROMO_EN_RE = /(?<![\p{L}])buy\s+(one|two|three|[1-4])\s*,?\s+get\s+(one|two|[1-3])(?:\s+(?:free|for\s+free|half\s+off))?(?![\p{L}])|(?<![\p{L}])bogo(?![\p{L}])|(?<![\p{L}\d])(two|three|four|[2-5])[\s-]*for[\s-]*(?:the\s+price\s+of\s+)?(one|two|three|[1-4])(?![\p{L}\d])(?!\s*(?:people|persons?|guests?|nights?|hours?|days?|adults?|kids?|children|rooms?|minutes?|weeks?)(?![\p{L}]))/gu;
+/** "half off", "half price" = 50 %. */
+const HALF_RE = /(?<![\p{L}])half[\s-]+(?:off|price)(?![\p{L}])/gu;
+/**
+ * Escribe las promociones en inglés como "2x1" antes de partir el texto en cláusulas: "buy 3, get 1 free" no se parte en
+ * la coma, y su "free" no se revisa como un regalo aparte.
+ */
+function promosAsNx(folded: string): string {
+  return folded.replace(PROMO_EN_RE, (_m, a?: string, b?: string, n?: string, m?: string) => {
+    // "3 for 2", "three for the price of two": se lleva n y paga m.
+    if (n && m) return `${SMALL[n] ?? Number(n)}x${SMALL[m] ?? Number(m)}`;
+    if (!a || !b) return '2x1';
+    const buy = SMALL[a] ?? Number(a);
+    return `${buy + (SMALL[b] ?? Number(b))}x${buy}`;
+  }).replace(HALF_RE, '50%');
+}
 function promosIn(folded: string): string[] {
   const out: string[] = [];
   for (const m of folded.matchAll(PROMO_RE)) {
@@ -225,18 +254,22 @@ function promosIn(folded: string): string[] {
 }
 
 /** Algo "sin costo": "gratis", "de cortesía", "no se cobra", "no tiene costo"… En la información también cuenta "incluido". */
-const GIFT = String.raw`gratis|gratuit[oa]s?|sin\s+(?:ningun\s+)?(?:costo|cargo)(?:\s+(?:extra|adicional))?|libre\s+de\s+(?:costo|cargo)|de\s+cortesia|cortesia|de\s+regalo|obsequi(?:o|os|a|amos)|regalamos|te\s+regalo|le\s+regalo|bonificacion(?:es)?|bonificamos`;
-const FREE_NO = String.raw`no\s+(?:se\s+)?(?:paga|pagas|pagan|cobra|cobran|cobramos|cuesta|cuestan|tiene\s+costo|tienen\s+costo)`;
+const GIFT = String.raw`gratis|gratuit[oa]s?|sin\s+(?:ningun\s+)?(?:costo|cargo)(?:\s+(?:extra|adicional))?|libre\s+de\s+(?:costo|cargo)|de\s+cortesia|cortesia|de\s+regalo|obsequi(?:o|os|a|amos)|regalamos|te\s+regalo|le\s+regalo|bonificacion(?:es)?|bonificamos`
+  // En inglés: "free", "complimentary", "on the house", "at no cost", "no charge", "free of charge".
+  + String.raw`|free(?:\s+of\s+charge)?|complimentary|on\s+the\s+house|(?:at|with|for)\s+no\s+(?:extra\s+|additional\s+)?(?:cost|charge)|no\s+(?:extra\s+|additional\s+)?(?:cost|charge|fee)|costs?\s+nothing|we\s+throw\s+in`;
+const FREE_NO = String.raw`no\s+(?:se\s+)?(?:paga|pagas|pagan|cobra|cobran|cobramos|cuesta|cuestan|tiene\s+costo|tienen\s+costo)`
+  + String.raw`|(?:doesn't|does\s+not|don't|do\s+not|won't|will\s+not)\s+(?:cost|charge)(?:\s+(?:you|anything|extra))?|you\s+(?:don't|do\s+not|won't)\s+(?:pay|be\s+charged)|(?:isn't|is\s+not|aren't|are\s+not)\s+charged`;
 const GIFT_RE = new RegExp(String.raw`(?<![\p{L}])(?:${GIFT}|${FREE_NO})(?![\p{L}])`, 'u');
 const GIFT_G = new RegExp(GIFT_RE.source, 'gu');
 /** "No se cobra" dice que algo es gratis: no es una negación de la oferta. */
 const FREE_NO_G = new RegExp(String.raw`(?<![\p{L}])${FREE_NO}(?![\p{L}])`, 'gu');
-const GIFT_SOURCE_RE = new RegExp(String.raw`(?<![\p{L}])(?:${GIFT}|${FREE_NO}|incluid[oa]s?|incluye|incluyen)(?![\p{L}])`, 'u');
+const GIFT_SOURCE_RE = new RegExp(String.raw`(?<![\p{L}])(?:${GIFT}|${FREE_NO}|incluid[oa]s?|incluye|incluyen|included|includes)(?![\p{L}])`, 'u');
 /** Las palabras de una misma familia ("envío", "envíos"; "reservar", "reservación") se comparan por sus primeras letras. */
 const giftKey = (w: string) => w.slice(0, 4);
 /** Palabras de relleno que no dicen QUÉ es gratis ("hoy", "aprovecha", "también"). */
 const GIFT_FILLER = new Set(
-  keywords('hoy mañana ahora aprovecha aprovechar también además siempre todo toda todos todas completamente totalmente claro queda quedan sale salen aplica aplican tienes tiene tienen puedes puede pueden hay son está están será sería serían vez parte nuestro nuestra nuestros nuestras usted ustedes cliente clientes'),
+  keywords('hoy mañana ahora aprovecha aprovechar también además siempre todo toda todos todas completamente totalmente claro queda quedan sale salen aplica aplican tienes tiene tienen puedes puede pueden hay son está están será sería serían vez parte nuestro nuestra nuestros nuestras usted ustedes cliente clientes'
+    + ' today now also always totally completely course was will would its that this there here our your get gets enjoy plus include includes included customer customers guest guests'),
 );
 
 /**
@@ -244,16 +277,26 @@ const GIFT_FILLER = new Set(
  * prohíbe ("nunca prometas envío gratis"). Solo cuenta un "no" pegado a tener, haber, ofrecer, aplicar, ser…: en
  * "no olvides que tienes 30%" sí hay una oferta.
  */
-const CLAUSE_SPLIT = /[;!?¿¡\n()]+|[.:,](?=\s|$)|\s(?:y|e|o|u|pero|aunque|mientras|sino)\s/;
+const CLAUSE_SPLIT = /[;!?¿¡\n()]+|[.:,](?=\s|$)|\s(?:y|e|o|u|pero|aunque|mientras|sino|and|or|but|although|though|while|whereas|if|when|whenever|since|unless|because|who|as\s+long\s+as)\s/;
 const NEG_VERBS = 'tenemos|tengo|tiene|tienen|manejamos|maneja|manejan|hay|habra|aplica|aplican|aplicamos|ofrecemos|ofrece|ofrecen|damos|da|dan|incluye|incluyen|es|son|esta|estan|contamos|cuenta|cuentan|existe|existen|prometas|prometer|prometemos|ofrezcas|des|dar|menciones|mencionar|digas|decir|inventes|inventar|uses|usar|regales|regalar';
-const NEGATION_RE = new RegExp(String.raw`(?<![\p{L}])(?:(?:no|nunca|tampoco|jamas)\s+(?:\p{L}+\s+){0,2}(?:${NEG_VERBS})|ni)(?![\p{L}])`, 'u');
+/**
+ * En inglés: "isn't", "aren't" ya niegan; "don't/never/not" solo antes de tener, ofrecer, incluir, dar… (en "don't miss our
+ * 30% off" sí hay una oferta).
+ */
+const NEG_VERBS_EN = 'have|has|offer|offers|include|includes|give|gives|apply|applies|carry|sell|sells|provide|provides|charge|promise|mention|invent';
+/** "is not / isn't" solo niegan la oferta si van con lo que la anula ("isn't free", "is not included"), no "we are not busy". */
+const NEG_STATE_EN = 'free|included|available|offered|valid|applicable|possible|given|an?\\s+option|part';
+const NEGATION_EN = String.raw`(?:isn't|aren't|wasn't|weren't|(?:is|are|was|were)\s+not)\s+(?:\p{L}+\s+){0,1}(?:${NEG_STATE_EN})|(?:don't|doesn't|didn't|do\s+not|does\s+not|never|won't|will\s+not|can't|cannot|not|no\s+longer)\s+(?:\p{L}+\s+){0,2}(?:${NEG_VERBS_EN})|nor`;
+const NEGATION_RE = new RegExp(String.raw`(?<![\p{L}'])(?:(?:no|nunca|tampoco|jamas)\s+(?:\p{L}+\s+){0,2}(?:${NEG_VERBS})|ni|${NEGATION_EN})(?![\p{L}'])`, 'u');
 const negated = (clause: string) => NEGATION_RE.test(clause.replace(FREE_NO_G, ' '));
 
 /** Montos escritos con palabras ("mil quinientos pesos", "diez por ciento"): no se pueden comparar con la información. */
 const NUM_WORD = String.raw`(?:un|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince|dieci\p{L}+|veinte|veinti\p{L}+|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|cien|ciento|doscientos|trescientos|cuatrocientos|quinientos|seiscientos|setecientos|ochocientos|novecientos|mil|millon|millones|medio)`;
+const NUM_WORD_EN = String.raw`(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|half)`;
 const WORD_AMOUNT_RE = new RegExp(
   // No después de una cifra: "15 mil pesos" ya se revisa como 15000.
-  String.raw`(?<![\p{L}\d])(?<!\d\s)${NUM_WORD}(?:\s+(?:y\s+)?${NUM_WORD})*\s+(?:de\s+)?(?:pesos?|dolar(?:es)?|dlls?|euros?|varos|por\s?ciento)(?![\p{L}])`,
+  String.raw`(?<![\p{L}\d])(?<!\d\s)${NUM_WORD}(?:\s+(?:y\s+)?${NUM_WORD})*\s+(?:de\s+)?(?:pesos?|dolar(?:es)?|dlls?|euros?|varos|por\s?ciento)(?![\p{L}])`
+  + String.raw`|(?<![\p{L}\d])(?<!\d\s)${NUM_WORD_EN}(?:[\s-]+(?:and\s+)?${NUM_WORD_EN})*\s+(?:dollars?|bucks|percent|per\s?cent)(?![\p{L}])`,
   'gu',
 );
 
@@ -262,13 +305,15 @@ const WORD_AMOUNT_RE = new RegExp(
  * Reconoce "10:30", "7 pm", "a las 7", "de las 9 a las 6" y "de 9 a 6" (este último solo si habla de un horario o lleva
  * am/pm, y no "de 2 a 4 personas"). `loose` también toma "17 hrs" (solo para las fuentes: ahí cuenta de más, no de menos).
  */
-const TIME_NEXT_OK = new Set(['am', 'pm', 'a', 'hrs', 'hr', 'h', 'horas', 'hora', 'de', 'del', 'y', 'o', 'u', 'e', 'en', 'para', 'por', 'los', 'las', 'todos', 'todas', 'diario', 'hasta', 'que', 'con', 'al', 'como', 'cuando', 'mas', 'aprox', 'te', 'le', 'les', 'nos', 'lo', 'la', 'ya', 'sin', 'se', 'es', 'son', 'pero', 'aunque', 'si']);
-const SCHEDULE_CUE = /(?<![\p{L}])(?:abr\p{L}*|cerr\p{L}*|cierr\p{L}*|horarios?|atend\p{L}*|atencion|abiert[oa]s?|lunes|martes|miercoles|jueves|viernes|sabados?|domingos?|diario|entre semana)(?![\p{L}])/u;
+const TIME_NEXT_OK = new Set(['am', 'pm', 'a', 'hrs', 'hr', 'h', 'horas', 'hora', 'de', 'del', 'y', 'o', 'u', 'e', 'en', 'para', 'por', 'los', 'las', 'todos', 'todas', 'diario', 'hasta', 'que', 'con', 'al', 'como', 'cuando', 'mas', 'aprox', 'te', 'le', 'les', 'nos', 'lo', 'la', 'ya', 'sin', 'se', 'es', 'son', 'pero', 'aunque', 'si',
+  // En inglés: "at 8 every day", "at 9 and close at 6", "at 5 o'clock", "until 7 tonight".
+  'and', 'or', 'to', 'every', 'daily', 'on', 'in', 'the', 'sharp', 'until', 'till', 'tomorrow', 'today', 'tonight', 'this', 'is', 'are', 'but', 'if', 'when', 'so', 'we', 'you', 'then', 'with', 'at', 'for', 'please', 'ok', 'okay']);
+const SCHEDULE_CUE = /(?<![\p{L}])(?:abr\p{L}*|cerr\p{L}*|cierr\p{L}*|horarios?|atend\p{L}*|atencion|abiert[oa]s?|lunes|martes|miercoles|jueves|viernes|sabados?|domingos?|diario|entre semana|open\p{L}*|clos\p{L}*|hours|mondays?|tuesdays?|wednesdays?|thursdays?|fridays?|saturdays?|sundays?|daily|weekdays?|weekends?|every\s+day)(?![\p{L}])/u;
 const MERIDIEM = String.raw`(a\.?\s?m\.?|p\.?\s?m\.?)`;
 /** Cuándo abre o cierra el negocio: esa hora solo puede salir de su horario, nunca de la que propuso el cliente. */
-const OPEN_CUE = /(?<![\p{L}])(?:abr\p{L}*|cerr\p{L}*|cierr\p{L}*|horarios?|abiert[oa]s?)(?![\p{L}])/u;
+const OPEN_CUE = /(?<![\p{L}])(?:abr\p{L}*|cerr\p{L}*|cierr\p{L}*|horarios?|abiert[oa]s?|open\p{L}*|clos\p{L}*|hours)(?![\p{L}])/u;
 /** "9 a 18 hrs", "de 9:00 a 18:00", "9-14 h", "de las 9 a las 6 pm" (en la información del negocio). */
-const RANGE_RE = new RegExp(String.raw`(?<![\d:.,$])(\d{1,2})(?:[:h]([0-5]\d))?\s*(?:a|-|–|hasta)\s*(?:las?\s+)?(\d{1,2})(?:[:h]([0-5]\d))?(?![\d:])(?:\s?(hrs?|horas|h)\.?(?![\p{L}])|\s?${MERIDIEM}(?![\p{L}]))?`, 'gu');
+const RANGE_RE = new RegExp(String.raw`(?<![\d:.,$])(\d{1,2})(?:[:h]([0-5]\d))?\s*(?:a|-|–|hasta|to|until|till|through)\s*(?:las?\s+)?(\d{1,2})(?:[:h]([0-5]\d))?(?![\d:])(?:\s?(hrs?|horas|h)\.?(?![\p{L}])|\s?${MERIDIEM}(?![\p{L}]))?`, 'gu');
 /** Texto de la cláusula alrededor de una posición (hasta la coma, el punto o el salto de línea más cercanos). */
 function clauseAround(t: string, start: number, end: number) {
   const from = Math.max(...[',', ';', '.', '!', '?', '\n'].map((c) => t.lastIndexOf(c, start - 1))) + 1;
@@ -291,7 +336,7 @@ function timesIn(text: string, loose = false): TimeMention[] {
     else out.push({ key, label: `${hour}:${min} h`, hour: canonicalNumber(h), min: canonicalNumber(min), open });
   };
   const nextOk = (end: number) => {
-    const next = /^\s*([\p{L}]+)/u.exec(t.slice(end));
+    const next = /^\s*([\p{L}]+)/u.exec(t.slice(end, end + 40));
     return !next || TIME_NEXT_OK.has(next[1].replace(/\./g, ''));
   };
   const span = (m: RegExpMatchArray) => [m.index!, m.index! + m[0].length] as const;
@@ -300,11 +345,17 @@ function timesIn(text: string, loose = false): TimeMention[] {
   for (const m of t.matchAll(/(?<![\p{L}])(?:a|de|desde|hasta|para|entre|y|antes de|despues de)\s+las?\s+(\d{1,2})(?:[:h]([0-5]\d)|\s+y\s+(media|cuarto))?(?![\d:])/gu)) {
     if (loose || nextOk(m.index! + m[0].length)) add(m[1], m[2], m[3], ...span(m));
   }
+  // En inglés: "at 8", "from 9", "until 6", "before 10:30" (un rango "from 9 to 6" se revisa abajo, como "de 9 a 6").
+  for (const m of t.matchAll(/(?<![\p{L}])(?:at|from|until|till|before|after)\s+(\d{1,2})(?:[:h]([0-5]\d))?(?![\d:])/gu)) {
+    const end = m.index! + m[0].length;
+    if (/^\s*(?:to|-|–|until|till|through)\s*\d/u.test(t.slice(end, end + 24))) continue;
+    if (loose || nextOk(end)) add(m[1], m[2], undefined, ...span(m));
+  }
   if (loose) {
     // En la información: un rango "9 a 18 hrs" aunque no lleve "de", si dice la unidad, los minutos o habla de horario.
     for (const m of t.matchAll(RANGE_RE)) {
       const line = t.slice(t.lastIndexOf('\n', m.index!) + 1, t.indexOf('\n', m.index!) < 0 ? t.length : t.indexOf('\n', m.index!));
-      const afterDe = /(?:^|[^\p{L}])de\s*$/u.test(t.slice(Math.max(0, m.index! - 4), m.index!));
+      const afterDe = /(?:^|[^\p{L}])(?:de|from)\s*$/u.test(t.slice(Math.max(0, m.index! - 6), m.index!));
       if (!(m[2] || m[4] || m[5] || m[6] || afterDe || SCHEDULE_CUE.test(line))) continue;
       add(m[1], m[2], undefined, ...span(m));
       add(m[3], m[4], undefined, ...span(m));
@@ -312,6 +363,15 @@ function timesIn(text: string, loose = false): TimeMention[] {
     for (const m of t.matchAll(/(?<![\d:.,$])(\d{1,2})\s?(?:hrs?|h)\.?(?![\p{L}\d])/gu)) add(m[1], undefined, undefined, ...span(m));
   } else {
     for (const m of t.matchAll(new RegExp(String.raw`(?<![\p{L}])de\s+(\d{1,2})(?:[:h]([0-5]\d))?\s*(?:a|-|–)\s*(\d{1,2})(?:[:h]([0-5]\d))?(?![\d:])(\s?${MERIDIEM})?`, 'gu'))) {
+      const end = m.index! + m[0].length;
+      const sentence = t.slice(t.lastIndexOf('\n', m.index!) + 1, end);
+      if ((m[5] || SCHEDULE_CUE.test(sentence)) && nextOk(end)) {
+        add(m[1], m[2], undefined, ...span(m));
+        add(m[3], m[4], undefined, ...span(m));
+      }
+    }
+    // En inglés: "from 9 to 6", "9 to 6", "9-5" (con am/pm o si habla de un horario, y no "2 to 4 people").
+    for (const m of t.matchAll(new RegExp(String.raw`(?<![\p{L}\d:.,$])(?:from\s+)?(\d{1,2})(?:[:h]([0-5]\d))?\s*(?:to|-|–|until|till)\s*(\d{1,2})(?:[:h]([0-5]\d))?(?![\d:])(\s?${MERIDIEM})?`, 'gu'))) {
       const end = m.index! + m[0].length;
       const sentence = t.slice(t.lastIndexOf('\n', m.index!) + 1, end);
       if ((m[5] || SCHEDULE_CUE.test(sentence)) && nextOk(end)) {
@@ -367,7 +427,7 @@ export class FactCorpus {
     const plain = extractFacts(fold(all).replace(NOT_PRICE_RE, ' ')).numbers;
     this.priceNumbers = new Set([...this.moneyAmounts, ...plain]);
     // Ofertas de la información, sin lo que se niega o prohíbe ("nunca prometas envío gratis", "ni descuentos del 20%").
-    const offered = this.folded.split(/[.!?\n;]+/).map((s) => s.split(CLAUSE_SPLIT).filter((c) => c && !negated(c)).join(' '));
+    const offered = promosAsNx(this.folded).split(/[.!?\n;]+/).map((s) => s.split(CLAUSE_SPLIT).filter((c) => c && !negated(c)).join(' '));
     this.percents = new Set(offered.flatMap(percentsIn));
     this.promos = new Set(offered.flatMap(promosIn));
     this.times = new Set(timesIn(all, true).map((x) => x.key));
@@ -466,7 +526,7 @@ export class FactCorpus {
    */
   private unsupportedOffers(reply: string): string[] {
     const bad: string[] = [];
-    for (const clause of fold(reply).split(CLAUSE_SPLIT)) {
+    for (const clause of promosAsNx(fold(reply)).split(CLAUSE_SPLIT)) {
       if (!clause?.trim() || negated(clause)) continue;
       for (const p of percentsIn(clause)) if (!this.percents.has(p)) bad.push(`${p}%`);
       for (const p of promosIn(clause)) if (!this.promos.has(p)) bad.push(p);
@@ -482,7 +542,7 @@ export class FactCorpus {
     for (const m of fold(reply).matchAll(WORD_AMOUNT_RE)) {
       if (this.folded.includes(m[0])) continue;
       // "cien por ciento", "diez por ciento": un porcentaje como cualquier otro (el 100% también debe estar en la información).
-      const percent = /por\s?ciento$/.test(m[0]) ? spokenNumbers(m[0]).reduce((a, b) => a + b, 0) : 0;
+      const percent = /(?:por\s?ciento|per\s?cent|percent)$/.test(m[0]) ? spokenNumbers(m[0]).reduce((a, b) => a + b, 0) : 0;
       if (percent) {
         if (!this.percents.has(String(percent))) bad.push(`${percent}%`);
       } else bad.push(`«${m[0]}» (escribe la cantidad con cifras)`);
