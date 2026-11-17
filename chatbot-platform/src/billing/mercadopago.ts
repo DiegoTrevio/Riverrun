@@ -178,7 +178,8 @@ export const mercadopago: BillingProvider = {
   label: 'Mercado Pago',
   // Con una credencial de producción en sandbox no se ofrece el pago: no se puede completar.
   enabled: () => !!(cfg().accessToken && mpWebhookSecret()) && credentialAllowed(cfg().accessToken, TEST_TOKENS),
-  supportsPlan: () => true,
+  // Mercado Pago México solo cobra en pesos: un plan en dólares se paga con Stripe.
+  supportsPlan: (plan) => plan.currency.toUpperCase() === 'MXN',
 
   async createCheckout({ accountId, email, plan, successUrl, startAt }) {
     const p = await call('POST', '/preapproval', {

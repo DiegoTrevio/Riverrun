@@ -304,6 +304,8 @@ export const config = {
     cancelAfterPauseDays: Number(env('BILLING_CANCEL_AFTER_PAUSE_DAYS', '30')),
     /** IVA que se suma al precio de los planes (los precios se capturan sin IVA). 0 = no se suma. */
     taxPercent: Number(env('BILLING_TAX_PERCENT', '16')),
+    /** Monedas a las que se suma ese IVA (los planes en otra moneda, como USD para Estados Unidos, se cobran sin IVA). */
+    taxCurrencies: env('BILLING_TAX_CURRENCIES', 'MXN').split(',').map((c) => c.trim().toUpperCase()).filter(Boolean),
     stripe: {
       secretKey: env('STRIPE_SECRET_KEY', ''),
       webhookSecret: env('STRIPE_WEBHOOK_SECRET', ''),

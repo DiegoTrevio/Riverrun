@@ -38,6 +38,8 @@ function planCard(p: Offered, o: { signup: boolean; trialDays: number }) {
   const per = p.billing_interval === 'year' ? 'año' : 'mes';
   const lim = (p.limits ?? {}) as Record<string, number | null | undefined>;
   const limits = LIMITS.filter(([k]) => lim[k]).map(([k, pl, sg]) => `<li>${esc(Number(lim[k]).toLocaleString('es-MX'))} ${lim[k] === 1 ? sg : pl}</li>`);
+  // Un plan con otros límites pero sin tope de mensajes lo dice (si no tiene ninguno, sale «Sin límites de uso»).
+  if (limits.length && !lim.messages_per_month) limits.unshift('<li>Mensajes del asistente sin límite</li>');
   return `<article class="plan">
   <h2>${esc(p.name)}</h2>
   <p class="price"><strong>$${esc(amount(p.price))}</strong> <span>${esc(p.currency)}${p.tax_percent ? ' + IVA' : ''} / ${per}</span></p>
@@ -57,7 +59,7 @@ export function pricingPage(o: { brand: ReturnType<typeof publicBrand>; plans: O
     ...(o.trialDays > 0 ? [['¿Necesito tarjeta para probar?', o.cardRequired
       ? `Sí. Tu prueba de ${o.trialDays} días empieza al agregar tu tarjeta, y no se cobra nada hasta que termina; si cancelas antes desde Mi plan, no se cobra.`
       : `No. Tienes ${o.trialDays} días gratis para configurar y probar tu asistente; eliges plan cuando quieras.`] as [string, string]] : []),
-    ['¿El precio incluye IVA?', o.plans.some((p) => p.tax_percent) ? 'No: los precios son más IVA. Antes de pagar ves el total con IVA.' : 'Ves el total exacto antes de pagar.'],
+    ['¿El precio incluye IVA?', o.plans.some((p) => p.tax_percent) ? 'No: los precios en pesos son más IVA. Antes de pagar ves el total con IVA.' : 'Ves el total exacto antes de pagar.'],
     ['¿Cómo pago?', 'Con tarjeta en la página segura de Stripe o de Mercado Pago. Nosotros nunca vemos los datos de tu tarjeta.'],
     ['¿Puedo cancelar?', 'Sí, cuando quieras desde tu panel. Sigues usando tu plan hasta el final del periodo pagado.'],
   ];
