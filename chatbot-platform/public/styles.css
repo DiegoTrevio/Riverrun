@@ -433,6 +433,9 @@ code { background: var(--raised); color: var(--text); padding: 1px 6px; border-r
 .auth-stack > .card { width: 100%; }
 .auth-legal { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 16px; font-size: 14px; }
 .auth-legal a { color: var(--muted); }
+.lang-links { display: inline-flex; gap: 10px; }
+.lang-links strong { color: var(--text); font-weight: 600; }
+.lang-links a { color: var(--muted); }
 .auth-privacy-note { margin: 4px 0 12px; }
 .auth-signup a { font-weight: 600; }
 

@@ -47,7 +47,7 @@ export async function tabPlayground(root, bot) {
     : live ? h('button', { class: 'chip', onclick: () => send({ text: b.label, button: b.payload }) }, b.label) : h('span', { class: 'chip' }, b.label))));
 
   const bubble = (cls, content, img, extra = null) =>
-    h('div', { class: `bubble ${cls}` }, img ? h('img', { src: `/api/images/${img.id}/file`, alt: img.code || 'Foto del catálogo', loading: 'lazy' }) : null, img ? h('div', { class: 'small muted with-icon' }, icon('image', 14), img.code) : null, content || null, extra);
+    h('div', { class: `bubble ${cls}` }, img ? h('img', { src: `/api/images/${img.id}/file`, alt: img.code || 'Foto del catálogo', loading: 'lazy' }) : null, img ? h('div', { class: 'small muted with-icon' }, icon('image', 14), img.code) : null, typeof content === 'string' && content ? h('span', { translate: 'no' }, content) : content || null, extra);
 
   const load = async () => {
     const d = await api('GET', `/api/chatbots/${bot.id}/playground/${session}`);

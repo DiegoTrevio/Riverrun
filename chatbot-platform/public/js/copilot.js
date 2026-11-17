@@ -1,6 +1,6 @@
 // Copiloto: panel lateral desde el que se le pide al Copiloto lo que se necesita. Vive fuera de #app (navegar no lo
 // borra), tiene sus propios temporizadores (la navegación limpia los del panel) y sabe qué página está abierta.
-import { api, h, fill, invalidateReads, state, toast } from './core.js';
+import { api, h, fill, invalidateReads, state, toast, LOCALE } from './core.js';
 import { copilotAvailable, isAdmin, withAcct, aiPaused } from './session.js';
 import { icon } from './icons.js';
 import { actionCard, readsGroup, renderText } from './copilot-cards.js';
@@ -370,7 +370,7 @@ async function showThreads() {
       h('div', { class: 'row between cp-pad' }, h('h3', {}, 'Conversaciones'), h('button', { type: 'button', class: 'small', onclick: newThread }, icon('plus', 14), 'Nueva')),
       list.length
         ? h('ul', { class: 'cp-thread-list' }, list.map((t) => h('li', {}, h('button', { type: 'button', class: `cp-thread${t.id === s.threadId ? ' active' : ''}`, onclick: () => loadThread(t.id) },
-          h('span', { class: 'cp-thread-title' }, t.title), h('span', { class: 'help' }, new Date(t.updated_at).toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' }))))))
+          h('span', { class: 'cp-thread-title' }, t.title), h('span', { class: 'help' }, new Date(t.updated_at).toLocaleString(LOCALE, { dateStyle: 'medium', timeStyle: 'short' }))))))
         : h('p', { class: 'help cp-pad' }, 'Aún no hay conversaciones con el Copiloto.')));
   } catch (e) {
     fill(el.body, h('p', { class: 'cp-error cp-pad' }, e.message));
@@ -445,7 +445,7 @@ function timeline() {
     const m = it.m;
     if (m.role === 'user') {
       const refs = (m.refs || []).map((id) => s.actions.get(id)).filter(Boolean);
-      out.push(h('div', { class: 'cp-msg is-user', 'data-key': `m:${m.id}` }, h('span', { class: 'sr-only' }, 'Tú: '), m.redacted ? '(mensaje borrado)' : m.content,
+      out.push(h('div', { class: 'cp-msg is-user', 'data-key': `m:${m.id}` }, h('span', { class: 'sr-only' }, 'Tú: '), m.redacted ? '(mensaje borrado)' : h('span', { translate: 'no' }, m.content),
         refs.length ? h('div', { class: 'cp-msg-refs' }, refs.map((a) => h('span', { class: 'cp-chip ref' }, `Sobre: ${a.title}`))) : null,
         (m.files || []).length ? h('div', { class: 'cp-msg-refs' }, m.files.map((id) => {
           const f = s.fileMeta.get(id);

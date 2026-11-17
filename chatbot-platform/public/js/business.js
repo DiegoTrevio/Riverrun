@@ -1,8 +1,8 @@
-import { api, fmtDate, h } from './core.js';
+import { api, fmtDate, h, LOCALE } from './core.js';
 
 /* ------------------------------ Tu negocio (superadmin) ------------------------------ */
 
-const money = (n, currency) => `$${Number(n).toLocaleString('es-MX', { maximumFractionDigits: 2 })} ${currency}`;
+const money = (n, currency) => `$${Number(n).toLocaleString(LOCALE, { maximumFractionDigits: 2 })} ${currency}`;
 
 function tile(value, label, sub, warn = false) {
   return h('div', { class: 'card' },

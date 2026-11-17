@@ -1,6 +1,6 @@
 // Copiloto: lo que se pinta en su panel. El texto del modelo se arma como nodos (nunca HTML) y los enlaces solo van a
 // rutas conocidas del panel.
-import { h } from './core.js';
+import { h, LOCALE } from './core.js';
 import { icon } from './icons.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -39,7 +39,7 @@ const STATUS = {
   undone: ['Deshecho', ''], failed: ['No se pudo', 'red'], executing: ['En curso', 'accent'], undoing: ['Deshaciendo', 'accent'], unknown: ['Revisar', 'red'],
 };
 
-const timeOf = (d) => new Date(d).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', hour12: false });
+const timeOf = (d) => new Date(d).toLocaleTimeString(LOCALE, { hour: '2-digit', minute: '2-digit', hour12: false });
 
 /** Antes y después por renglón (instrucciones del agente): lo que cambia con un renglón de contexto, plegado. */
 function diffBlock(diff, key) {

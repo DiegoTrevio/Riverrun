@@ -3,7 +3,7 @@
  * Gráficas en SVG hechas a mano (sin librerías). Cada gráfica tiene su tabla ("Ver datos") y se puede usar con el teclado.
  * Los nombres y textos que llegan del servidor se escriben con textContent, nunca como HTML.
  */
-import { api, poll, fill, h, state } from './core.js';
+import { api, poll, fill, h, state, LOCALE } from './core.js';
 import { icon, networkIcon, okMark } from './icons.js';
 import { acct } from './session.js';
 
@@ -22,8 +22,8 @@ const CHANNEL_NAMES = { whatsapp: 'WhatsApp', webchat: 'Chat web', email: 'Corre
 const KIND_NAMES = { decision: 'Respuestas', summary: 'Resúmenes', transcription: 'Transcripciones', import: 'Importaciones de conocimiento', report: 'Reportes', social_reply: 'Respuestas a comentarios', flow_ai: 'Flujos creados con IA', prompt_edit: 'Cambios de instrucciones con IA', quote_builder: 'Cotizador escrito' };
 const ROLE_NAMES = { admin: 'Administrador', agent: 'Operador' };
 
-const nf = new Intl.NumberFormat('es-MX');
-const usdf = new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
+const nf = new Intl.NumberFormat(LOCALE);
+const usdf = new Intl.NumberFormat(LOCALE, { style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
 const fmt = (n) => (n === null || n === undefined || Number.isNaN(Number(n)) ? '—' : nf.format(Math.round(Number(n))));
 const usd = (n) => usdf.format(Number(n) || 0);
 const minutesText = (m) => {
@@ -32,7 +32,7 @@ const minutesText = (m) => {
   return `${Math.floor(m / 60)} h ${Math.round(m % 60)} min`;
 };
 const shortDate = (iso) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`;
-const longDate = (iso) => new Date(`${iso}T12:00:00`).toLocaleDateString('es-MX', { weekday: 'short', day: 'numeric', month: 'short' });
+const longDate = (iso) => new Date(`${iso}T12:00:00`).toLocaleDateString(LOCALE, { weekday: 'short', day: 'numeric', month: 'short' });
 /** Días que se rotulan en el eje X: cada cierto paso, y siempre el último sin encimarse con el anterior. */
 function xTicks(n) {
   const step = Math.max(1, Math.ceil(n / 7));
@@ -312,7 +312,7 @@ export async function viewAnalytics(root, params = new URLSearchParams()) {
       if (mine !== seq) return; // llegó una respuesta más nueva: esta ya no hace falta
       render(data);
       loadedOnce = true;
-      stamp.textContent = `Actualizado ${new Date().toLocaleTimeString('es-MX')} · se actualiza solo cada ${REFRESH_MS / 1000} s`;
+      stamp.textContent = `Actualizado ${new Date().toLocaleTimeString(LOCALE)} · se actualiza solo cada ${REFRESH_MS / 1000} s`;
     } catch (e) {
       if (mine === seq && !silent) stamp.textContent = `No se pudieron cargar las estadísticas: ${e?.message ?? e}`;
     } finally {

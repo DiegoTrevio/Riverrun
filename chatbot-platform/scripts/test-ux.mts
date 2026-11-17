@@ -4,6 +4,7 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { chromium } from 'playwright';
+import './ux-locale.mts'; // el panel en español (el navegador de pruebas viene en inglés)
 import { createHarness, pool, waitFor, evo, ext, zer } from '../test/harness.js';
 import { seedUxFixture } from './ux-fixture.mts';
 const store = await import('../src/store/index.js');
@@ -534,6 +535,8 @@ try {
     // Menú de la cuenta con teclado.
     await page.getByRole('button', { name: /menú de tu cuenta$/ }).click();
     assert.equal(await page.evaluate(() => document.activeElement?.textContent), 'Mi perfil');
+    await page.keyboard.press('ArrowDown');
+    assert.equal(await page.evaluate(() => document.activeElement?.textContent), 'English', 'el otro idioma, escrito en ese idioma');
     await page.keyboard.press('ArrowDown');
     assert.equal(await page.evaluate(() => document.activeElement?.textContent), 'Cerrar sesión');
     await page.keyboard.press('Escape');

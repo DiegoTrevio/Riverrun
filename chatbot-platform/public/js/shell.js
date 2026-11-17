@@ -1,6 +1,7 @@
 import { brand, brandMark, productMark, resetBrand } from './brand.js';
-import { api, h, inBackground, invalidateReads, run, state } from './core.js';
+import { api, h, inBackground, invalidateReads, run, state, LOCALE } from './core.js';
 import { icon } from './icons.js';
+import { LANGS, currentLang, setLang } from './i18n.js';
 import { render } from './main.js';
 import { accountPicker, masterBanner } from './account-switch.js';
 import { ROLE_LABEL, copilotAvailable, isAdmin, isSuper, isOwner } from './session.js';
@@ -135,6 +136,8 @@ export function shell(active, content) {
       else if (e.key === 'Tab') setMenu(false);
     } },
     h('a', { href: '#/password', role: 'menuitem' }, icon('user'), 'Mi perfil'),
+    // El otro idioma, escrito en ese idioma: «English» en el panel en español y «Español» en el panel en inglés.
+    LANGS.filter(([code]) => code !== currentLang()).map(([code, name]) => h('a', { href: '#', role: 'menuitem', lang: code, translate: 'no', onclick: (e) => { e.preventDefault(); setLang(code); } }, icon('globe'), name)),
     h('a', { href: '#', role: 'menuitem', onclick: async (e) => { e.preventDefault(); await api('POST', '/api/logout'); state.me = null; state.ux = []; window.dispatchEvent(new Event('sessionended')); invalidateReads(); resetBrand(); location.hash = '#/login'; } }, icon('logout'), 'Cerrar sesión'));
   const menu = h('div', { class: 'user-menu', hidden: true },
     h('div', { class: 'user-menu-head' }, h('strong', {}, user.name || user.email), h('span', { class: 'small muted' }, `${user.email} · ${ROLE_LABEL[user.role]}`)),
@@ -225,18 +228,18 @@ function accountBanner() {
   const notice = (cls, text, action = null, attrs = {}) => h('div', { class: `banner ${cls}`, ...attrs }, h('span', { class: 'text' }, text), action);
   if (account.deletion_scheduled_for && isAdmin()) {
     items.push(notice('danger', [h('strong', {}, 'Tu cuenta se va a borrar. '),
-      `Pediste borrarla y se borrará el ${new Date(account.deletion_scheduled_for).toLocaleDateString('es-MX', { day: 'numeric', month: 'long' })}. `],
+      `Pediste borrarla y se borrará el ${new Date(account.deletion_scheduled_for).toLocaleDateString(LOCALE, { day: 'numeric', month: 'long' })}. `],
       location.hash.split('?')[0] === '#/plan' ? null : h('a', { class: 'btn', href: '#/plan' }, 'Cancelar el borrado'), { role: 'status' }));
   }
   const due = account.payment_due;
   if (due && /^https:\/\//i.test(due.action_url || '') && account.status !== 'paused' && isAdmin()) {
     // El banco detuvo el cobro hasta que se confirme (3DS): la tarjeta está bien, solo hay que confirmarlo.
     items.push(notice('warn', [h('strong', {}, 'Tu banco pide que confirmes el pago de tu plan. '),
-      `Confírmalo antes del ${new Date(due.grace_ends_at).toLocaleDateString('es-MX', { day: 'numeric', month: 'long' })} para que tu asistente siga respondiendo. `],
+      `Confírmalo antes del ${new Date(due.grace_ends_at).toLocaleDateString(LOCALE, { day: 'numeric', month: 'long' })} para que tu asistente siga respondiendo. `],
       h('a', { class: 'btn', href: due.action_url, target: '_blank', rel: 'noopener' }, 'Confirmar pago'), { role: 'status' }));
   } else if (due && account.status !== 'paused' && isAdmin()) {
     items.push(notice('warn', [h('strong', {}, 'No pudimos cobrar tu plan. '),
-      `Actualiza tu forma de pago antes del ${new Date(due.grace_ends_at).toLocaleDateString('es-MX', { day: 'numeric', month: 'long' })} para que tu asistente siga respondiendo. `],
+      `Actualiza tu forma de pago antes del ${new Date(due.grace_ends_at).toLocaleDateString(LOCALE, { day: 'numeric', month: 'long' })} para que tu asistente siga respondiendo. `],
       location.hash.split('?')[0] === '#/plan' ? null : h('a', { class: 'btn', href: '#/plan' }, 'Actualizar pago'), { role: 'status' }));
   }
   const cc = state.me.card_check;
@@ -256,13 +259,13 @@ function accountBanner() {
       items.push(notice('warn', [h('strong', {}, 'Ya usaste tu prueba gratis. '), 'Elige tu plan para activar tu asistente.'], go('Contratar'), { role: 'status' }));
     } else {
       const days = cc?.trial_days || 14;
-      const until = new Date(Date.now() + days * 86400000).toLocaleDateString('es-MX', { day: 'numeric', month: 'long' });
+      const until = new Date(Date.now() + days * 86400000).toLocaleDateString(LOCALE, { day: 'numeric', month: 'long' });
       items.push(notice('', [h('strong', {}, `Activa tu prueba gratis de ${days} días: agrega tu tarjeta. `), `No se cobra nada hasta el ${until}.`], go('Agregar tarjeta'), { role: 'status' }));
     }
   } else if (account.status === 'paused') {
     items.push(notice('danger', [h('strong', {}, 'Tu cuenta está en pausa. '),
       'Tu asistente no está respondiendo ni enviando mensajes; tu configuración y tus conversaciones se conservan',
-      account.deletion_date ? ` hasta el ${new Date(account.deletion_date).toLocaleDateString('es-MX', { day: 'numeric', month: 'long' })}.` : '.',
+      account.deletion_date ? ` hasta el ${new Date(account.deletion_date).toLocaleDateString(LOCALE, { day: 'numeric', month: 'long' })}.` : '.',
       !(state.meta.billing_enabled && isAdmin()) && state.meta.support_contact ? [' Para activarla escribe a ', h('strong', {}, state.meta.support_contact), '.'] : ''],
       state.meta.billing_enabled && isAdmin() ? h('a', { class: 'btn', href: '#/plan' }, 'Activar mi plan') : null));
   } else if (account.status === 'trial' && account.trial_ends_at) {

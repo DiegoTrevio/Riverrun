@@ -7,6 +7,7 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { chromium } from 'playwright';
+import './ux-locale.mts'; // el panel en español (el navegador de pruebas viene en inglés)
 import { createHarness, pool } from '../test/harness.js';
 
 assert.ok(process.env.TEST_DATABASE_URL, 'Define TEST_DATABASE_URL para una base de pruebas aislada; el arnés reinicia public.');

@@ -1,4 +1,4 @@
-import { api, check, clearFieldErrors, field, fill, h, num, run, select, showFieldErrors, state, text, toast, confirmAction } from './core.js';
+import { api, check, clearFieldErrors, field, fill, h, num, run, select, showFieldErrors, state, text, toast, confirmAction, LOCALE } from './core.js';
 import { okMark } from './icons.js';
 import { render } from './main.js';
 import { isOwner, ownerOnlyText, withAcct } from './session.js';
@@ -8,7 +8,7 @@ import { needsOnboarding } from './shell.js';
 
 const SUB_LABEL = { incomplete: ['', 'Pago pendiente'], active: ['green', 'Al corriente'], past_due: ['orange', 'Pago pendiente'], canceled: ['red', 'Cancelado'] };
 
-const amount = (n) => new Intl.NumberFormat('es-MX', { minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2 }).format(n);
+const amount = (n) => new Intl.NumberFormat(LOCALE, { minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2 }).format(n);
 /** Precio publicado: sin IVA, "+ IVA". */
 export const planPrice = (p) => `$${amount(p.price)} ${p.currency}${p.tax_percent ? ' + IVA' : ''}`;
 /** Periodo de cobro del plan. */
@@ -20,7 +20,7 @@ export const totalText = (p) => (p.tax_percent ? `Total con IVA (${p.tax_percent
 const PROVIDER_NAME = { stripe: 'Stripe', mercadopago: 'Mercado Pago' };
 
 const PAY_LABEL = { paid: ['green', 'Pagado'], partially_refunded: ['orange', 'Reembolso parcial'], refunded: ['', 'Reembolsado'] };
-const money = (n, currency) => `$${new Intl.NumberFormat('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)} ${currency}`;
+const money = (n, currency) => `$${new Intl.NumberFormat(LOCALE, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)} ${currency}`;
 
 /** Enlaces de descarga del PDF y el XML de un CFDI. */
 const cfdiLinks = (id, what) => [
@@ -41,11 +41,11 @@ function cfdiCell(c, p) {
   return '—';
 }
 
-const longDate = (d) => (d ? new Date(d).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' }) : '');
+const longDate = (d) => (d ? new Date(d).toLocaleDateString(LOCALE, { day: 'numeric', month: 'long', year: 'numeric' }) : '');
 
 const LIMIT_SHORT = { messages_per_month: ['mensajes al mes', 'mensaje al mes'], channels: ['canales', 'canal'], users: ['usuarios', 'usuario'], chatbots: ['asistentes', 'asistente'], social_accounts: ['redes sociales', 'red social'], storage_mb: ['MB de archivos', 'MB de archivos'] };
 /** "hasta 1,000 mensajes al mes · 1 canal · …" (vacío si el plan no tiene límites). */
-export const limitsText = (limits = {}) => Object.entries(LIMIT_SHORT).filter(([k]) => limits[k]).map(([k, [pl, sg]]) => `${limits[k].toLocaleString('es-MX')} ${limits[k] === 1 ? sg : pl}`).join(' · ');
+export const limitsText = (limits = {}) => Object.entries(LIMIT_SHORT).filter(([k]) => limits[k]).map(([k, [pl, sg]]) => `${limits[k].toLocaleString(LOCALE)} ${limits[k] === 1 ? sg : pl}`).join(' · ');
 
 /** Persona del RFC: 12 caracteres = empresa (moral), 13 = persona física. */
 const personaOf = (rfc) => (rfc.length === 12 ? 'moral' : rfc.length === 13 ? 'fisica' : '');
@@ -283,7 +283,7 @@ export async function viewPlan(root, params) {
     ? h('div', { class: 'card' },
       h('h2', { style: 'margin-top:0' }, 'Tu uso', ' ', h('span', { class: 'muted small' }, b.limits.source === 'trial' ? '(periodo de prueba)' : b.limits.source === 'override' ? '(límites especiales)' : '')),
       b.limits.items.filter((i) => i.max).map((i) => h('div', { style: 'margin:10px 0' },
-        h('div', { class: 'row between small' }, h('span', {}, i.label), h('span', { class: i.percent >= 100 ? 'error' : 'muted' }, `${i.used.toLocaleString('es-MX')} de ${i.max.toLocaleString('es-MX')}`)),
+        h('div', { class: 'row between small' }, h('span', {}, i.label), h('span', { class: i.percent >= 100 ? 'error' : 'muted' }, `${i.used.toLocaleString(LOCALE)} de ${i.max.toLocaleString(LOCALE)}`)),
         h('div', { class: 'bar' }, h('div', { class: `bar-fill ${i.percent >= 100 ? 'full' : i.percent >= 80 ? 'warn' : ''}`, style: `width:${i.percent}%` })))),
       b.limits.items.some((i) => i.key === 'messages_per_month' && i.max) ? h('p', { class: 'muted small', style: 'margin-bottom:0' }, 'Se cuentan por mes (el día 1 vuelven a cero). Al llegar al límite el asistente deja de responder; las conversaciones se siguen guardando.') : null)
     : null;
@@ -336,7 +336,7 @@ function dataCard() {
   const { user, account } = state.me || {};
   if (!account || user?.role !== 'admin') return null;
   const owner = isOwner();
-  const fmtDay = (d) => new Date(d).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' });
+  const fmtDay = (d) => new Date(d).toLocaleDateString(LOCALE, { day: 'numeric', month: 'long', year: 'numeric' });
   const confirm = { text: '' };
   const removal = account.deletion_scheduled_for
     ? [h('p', { class: 'banner danger' }, `Tu cuenta se borrará el ${fmtDay(account.deletion_scheduled_for)}.`),
@@ -406,7 +406,7 @@ export async function viewPlans(root) {
   // Cada proveedor: qué falta, la dirección de avisos y cómo dejar listo el webhook (Stripe con un botón; Mercado Pago a mano).
   const providerCard = (pr) => {
     const secretTxt = pr.webhook_secret === 'server' ? 'secreto de firma en el servidor' : pr.webhook_secret === 'panel' ? 'secreto de firma guardado aquí' : 'falta el secreto de firma';
-    const last = pr.last_event_at ? `Último aviso recibido: ${new Date(pr.last_event_at).toLocaleString('es-MX')}` : 'Todavía no llega ningún aviso.';
+    const last = pr.last_event_at ? `Último aviso recibido: ${new Date(pr.last_event_at).toLocaleString(LOCALE)}` : 'Todavía no llega ningún aviso.';
     const stripe = pr.name === 'stripe';
     const mpSecret = { value: '' };
     return h('div', { class: 'card' },
@@ -447,15 +447,15 @@ export async function viewPlans(root) {
         h('thead', {}, h('tr', {}, h('th', {}, 'Cuenta'), h('th', {}, 'Fecha'), h('th', { class: 'num' }, 'Total'), h('th', {}, 'Pesos por unidad'))),
         h('tbody', {}, ov.awaiting_rate.map((p) => {
           const input = h('input', { type: 'number', min: 0, step: 0.0001, 'aria-label': `Tipo de cambio del pago de ${p.account}`, style: 'width:8em' });
-          return h('tr', {}, h('td', {}, p.account), h('td', {}, new Date(p.paid_at).toLocaleDateString('es-MX')),
-            h('td', { class: 'num' }, `${(p.total_cents / 100).toLocaleString('es-MX')} ${p.currency}`),
+          return h('tr', {}, h('td', {}, p.account), h('td', {}, new Date(p.paid_at).toLocaleDateString(LOCALE)),
+            h('td', { class: 'num' }, `${(p.total_cents / 100).toLocaleString(LOCALE)} ${p.currency}`),
             h('td', {}, h('div', { class: 'row' }, input, h('button', { class: 'small', onclick: async () => {
               const rate = Number(input.value);
               if (!(rate > 0)) return toast('Escribe el tipo de cambio', true);
               if (await run(() => api('PUT', `/api/billing/payments/${p.id}/exchange-rate`, { rate }), 'Guardado: la factura sale en la siguiente revisión')) render();
             } }, 'Guardar'))));
         })))) : null,
-    ...(ov.monthly_revenue.length ? [h('p', {}, h('strong', {}, 'Ingreso mensual recurrente: '), ov.monthly_revenue.map((m) => `${m.amount.toLocaleString('es-MX')} ${m.currency}`).join(' · '))] : []),
+    ...(ov.monthly_revenue.length ? [h('p', {}, h('strong', {}, 'Ingreso mensual recurrente: '), ov.monthly_revenue.map((m) => `${m.amount.toLocaleString(LOCALE)} ${m.currency}`).join(' · '))] : []),
     h('h2', {}, 'Planes'),
     h('p', { class: 'muted' }, `Si un cobro falla, la cuenta sigue funcionando ${ov.grace_days} días y luego se pausa sola; al pagar, se reactiva sola.`),
     ...plans.map((p) => editor(p, false)),

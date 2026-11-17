@@ -1,4 +1,4 @@
-import { api, confirmAction, field, fill, h, poll, run, state, toast } from './core.js';
+import { api, confirmAction, field, fill, h, poll, run, state, toast, LOCALE } from './core.js';
 import { icon, networkIcon } from './icons.js';
 import { render } from './main.js';
 import { withAcct } from './session.js';
@@ -21,8 +21,8 @@ const graphemes = (t) => {
 };
 const dayKey = (iso, tz) => new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(iso));
 const upperFirst = (t) => t.charAt(0).toUpperCase() + t.slice(1);
-const dayLabel = (iso, tz) => upperFirst(new Intl.DateTimeFormat('es-MX', { timeZone: tz, weekday: 'long', day: 'numeric', month: 'long' }).format(new Date(iso)));
-const timeLabel = (iso, tz) => new Intl.DateTimeFormat('es-MX', { timeZone: tz, hour: '2-digit', minute: '2-digit' }).format(new Date(iso));
+const dayLabel = (iso, tz) => upperFirst(new Intl.DateTimeFormat(LOCALE, { timeZone: tz, weekday: 'long', day: 'numeric', month: 'long' }).format(new Date(iso)));
+const timeLabel = (iso, tz) => new Intl.DateTimeFormat(LOCALE, { timeZone: tz, hour: '2-digit', minute: '2-digit' }).format(new Date(iso));
 const whenOf = (p) => p.scheduled_for || p.published_at || p.created_at;
 
 export async function viewSocialPosts(root, sub, params) {
@@ -59,7 +59,7 @@ async function list(root, params) {
     root.append(h('div', { class: 'card' }, h('p', {}, 'Conecta Instagram, Facebook, LinkedIn, TikTok, YouTube u otra red para publicar desde aquí.'), h('a', { class: 'btn', href: '#/redes' }, 'Conectar redes')));
     if (!data.items.length) return;
   }
-  const monthName = (k) => upperFirst(new Intl.DateTimeFormat('es-MX', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${k}-15T12:00:00Z`)));
+  const monthName = (k) => upperFirst(new Intl.DateTimeFormat(LOCALE, { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${k}-15T12:00:00Z`)));
   root.append(h('div', { class: 'row wrap', style: 'gap:8px;align-items:center;margin:8px 0' },
     h('div', { class: 'tabs', role: 'group', 'aria-label': 'Cómo ver' },
       h('button', { class: calendar ? 'secondary small' : 'small', 'aria-pressed': String(!calendar), onclick: () => go(month ? `mes=${month}` : '') }, 'Lista'),
@@ -113,7 +113,7 @@ function monthGrid(month, items, tz) {
     const k = `${month}-${String(d).padStart(2, '0')}`;
     const ps = byDay.get(k) || [];
     cells.push(h('button', {
-      class: `cal-cell${ps.length ? ' has' : ''}`, 'aria-label': `${d}: ${ps.length} publicación${ps.length === 1 ? '' : 'es'}`,
+      class: `cal-cell${ps.length ? ' has' : ''}`, 'aria-label': ps.length === 1 ? `${d}: 1 publicación` : `${d}: ${ps.length} publicaciones`,
       onclick: () => { location.hash = `#/publicaciones?vista=calendario&mes=${month}&dia=${k}`; },
     }, h('span', { class: 'cal-day' }, String(d)),
     ps.slice(0, 3).map((p) => h('span', { class: `cal-item ${STATUS[p.status]?.[0] || ''}` }, `${timeLabel(whenOf(p), tz)} `, p.targets.map((t) => networkIcon(t.platform, 12)))),

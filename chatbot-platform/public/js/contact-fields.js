@@ -1,4 +1,4 @@
-import { api, dialog, field, fill, h, run, select, state, text, toast } from './core.js';
+import { api, dialog, field, fill, h, run, select, state, text, toast, LOCALE } from './core.js';
 import { isAdmin, isSuper, withAcct } from './session.js';
 import { dataLabel } from './bot.js';
 import { resetVarsCache } from './vars-help.js';
@@ -30,7 +30,7 @@ export function fieldControl(f, obj, key = f.key) {
 
 /** Cómo se lee un dato en una ficha: la fecha AAAA-MM-DD en palabras. */
 export function fieldText(f, v) {
-  if (f?.type === 'date' && /^\d{4}-\d{2}-\d{2}$/.test(v)) return new Date(`${v}T12:00:00Z`).toLocaleDateString('es-MX', { timeZone: 'UTC', day: 'numeric', month: 'long', year: 'numeric' });
+  if (f?.type === 'date' && /^\d{4}-\d{2}-\d{2}$/.test(v)) return new Date(`${v}T12:00:00Z`).toLocaleDateString(LOCALE, { timeZone: 'UTC', day: 'numeric', month: 'long', year: 'numeric' });
   return String(v);
 }
 

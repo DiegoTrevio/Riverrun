@@ -1,14 +1,14 @@
 import { varsField } from './vars-help.js';
-import { api, area, check, confirmAction, dialog, field, fill, fmtDate, h, run, settingsSection, state, text, toast } from './core.js';
+import { api, area, check, confirmAction, dialog, field, fill, fmtDate, h, run, settingsSection, state, text, toast, LOCALE } from './core.js';
 import { isAdmin, withAcct } from './session.js';
 import { waTemplateField } from './wa-template-field.js';
 
 /* ------------------------------ Cobros: lo que deben tus clientes y sus recordatorios de pago ------------------------------ */
 
 const money = (cents, currency = 'MXN') => {
-  try { return new Intl.NumberFormat('es-MX', { style: 'currency', currency }).format(cents / 100); } catch { return `$${(cents / 100).toFixed(2)} ${currency}`; }
+  try { return new Intl.NumberFormat(LOCALE, { style: 'currency', currency }).format(cents / 100); } catch { return `$${(cents / 100).toFixed(2)} ${currency}`; }
 };
-const day = (iso) => new Date(`${iso}T12:00:00`).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' });
+const day = (iso) => new Date(`${iso}T12:00:00`).toLocaleDateString(LOCALE, { day: 'numeric', month: 'short', year: 'numeric' });
 const STATUS = { pending: 'Pendiente', paid: 'Pagado', canceled: 'Cancelado' };
 const parseDays = (s) => {
   const days = String(s).split(',').map((x) => x.trim()).filter(Boolean).map(Number);

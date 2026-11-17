@@ -1,6 +1,7 @@
 import { brand, brandMark, productMark } from './brand.js';
 import { limitsText, per, planPrice, totalText } from './billing.js';
 import { $app, api, field, fill, h, run, select, state, text, toast } from './core.js';
+import { LANGS, currentLang, setLang } from './i18n.js';
 
 const GOOGLE_MSG = {
   cancelado: 'Cancelaste el acceso con Google.',
@@ -109,7 +110,15 @@ function publicPage(card) {
 /** Enlaces a los avisos debajo de cada pantalla pública (entrar, registro, recuperar contraseña). */
 function legalLinks() {
   return h('nav', { class: 'auth-legal', 'aria-label': 'Avisos y ayuda' },
-    h('a', { href: '/privacidad' }, 'Aviso de privacidad'), h('a', { href: '/proteccion-de-datos' }, 'Protección de datos'), h('a', { href: '/ayuda.html' }, 'Ayuda'));
+    h('a', { href: '/privacidad' }, 'Aviso de privacidad'), h('a', { href: '/proteccion-de-datos' }, 'Protección de datos'), h('a', { href: '/ayuda.html' }, 'Ayuda'),
+    langLinks());
+}
+
+/** Español · English: cada idioma escrito en su propio idioma (sin traducir), para que lo encuentre quien no lee el otro. */
+export function langLinks() {
+  return h('span', { class: 'lang-links', translate: 'no' }, LANGS.map(([code, name]) => (code === currentLang()
+    ? h('strong', { lang: code, 'aria-current': 'true' }, name)
+    : h('a', { href: '#', lang: code, hreflang: code, onclick: (e) => { e.preventDefault(); setLang(code); } }, name))));
 }
 
 /**
@@ -131,7 +140,7 @@ function termsCheck(info, f) {
 function captcha(siteKey, f) {
   if (!siteKey) return null;
   const box = h('div', { class: 'captcha' });
-  const draw = () => window.turnstile.render(box, { sitekey: siteKey, language: 'es', callback: (t) => (f.turnstile_token = t), 'expired-callback': () => (f.turnstile_token = '') });
+  const draw = () => window.turnstile.render(box, { sitekey: siteKey, language: currentLang(), callback: (t) => (f.turnstile_token = t), 'expired-callback': () => (f.turnstile_token = '') });
   if (window.turnstile) setTimeout(draw, 0);
   else {
     const s = document.createElement('script');

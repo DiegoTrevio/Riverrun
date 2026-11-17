@@ -1,4 +1,4 @@
-import { api, confirmAction, field, fill, fmtDate, h, run, toast } from './core.js';
+import { api, confirmAction, field, fill, fmtDate, h, run, toast, LOCALE } from './core.js';
 import { icon, networkIcon, okMark } from './icons.js';
 
 /**
@@ -68,7 +68,7 @@ export async function viewZernioAdmin(root) {
     h('td', { class: 'small' }, t.profile_id ? [okMark(true), ' Perfil'] : h('span', { class: 'muted' }, 'Sin perfil')),
     h('td', {}, t.accounts.length ? t.accounts.map((a) => h('span', { class: `badge ${STATUS_COLOR[a.status] || ''}`, style: 'margin:2px', title: `${label(a.platform)} · ${a.status}` },
       networkIcon(a.platform, 16), ' ', a.username ? `@${a.username}` : label(a.platform))) : h('span', { class: 'muted small' }, '—')),
-    h('td', { class: 'num' }, (t.outbound_month || 0).toLocaleString('es-MX')),
+    h('td', { class: 'num' }, (t.outbound_month || 0).toLocaleString(LOCALE)),
     h('td', {}, h('div', { class: 'stack' },
       h('div', { class: 'row' },
         !t.profile_id ? h('button', { class: 'small', onclick: async () => { if (await run(() => api('POST', `/api/system/zernio/tenants/${t.account_id}/profile`), 'Perfil creado')) refresh(); } }, 'Crear perfil') : null,
@@ -111,7 +111,7 @@ export async function viewZernioAdmin(root) {
   root.append(
     h('div', { class: 'card' },
       h('h2', { style: 'margin-top:0' }, 'Resumen'),
-      h('p', {}, `Cuentas conectadas: ${totalAccounts} · Mensajes salientes este mes: ${totalOutbound.toLocaleString('es-MX')}`),
+      h('p', {}, `Cuentas conectadas: ${totalAccounts} · Mensajes salientes este mes: ${totalOutbound.toLocaleString(LOCALE)}`),
       h('p', { class: 'small muted' }, `Costo estimado de Zernio: ~${estimate(totalAccounts, totalOutbound)} USD al mes (según su tabla pública: 2 cuentas gratis, luego por cuenta; 10 000 mensajes salientes gratis). Lo cobra Zernio a la llave de la plataforma.`),
       budget ? h('p', { class: 'small' }, `Llamadas a Zernio disponibles ahora: ${Math.floor(budget.tokens)} de ${budget.capacity} por minuto (compartidas entre todos los negocios).`) : null),
     h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Salud de las redes'),

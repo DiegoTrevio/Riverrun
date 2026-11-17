@@ -4,7 +4,7 @@ import { needAccount } from './admin.js';
 import { hoursEditor } from './automation.js';
 import { varsField } from './vars-help.js';
 import { saveBar } from './bot.js';
-import { api, area, check, clone, field, fill, fmtPhone, h, dialog, num, run, select, state, text, toast, confirmAction, ask } from './core.js';
+import { api, area, check, clone, field, fill, fmtPhone, h, dialog, num, run, select, state, text, toast, confirmAction, ask, LOCALE } from './core.js';
 import { icon } from './icons.js';
 import { render } from './main.js';
 import { isAdmin, withAcct } from './session.js';
@@ -162,16 +162,16 @@ const addDaysIso = (iso, n) => { const d = new Date(iso + 'T12:00:00Z'); d.setUT
 
 const capital = (x) => x.charAt(0).toUpperCase() + x.slice(1);
 
-const dayTitle = (iso) => capital(new Date(iso + 'T12:00:00Z').toLocaleDateString('es-MX', { timeZone: 'UTC', weekday: 'long', day: 'numeric', month: 'long' }));
+const dayTitle = (iso) => capital(new Date(iso + 'T12:00:00Z').toLocaleDateString(LOCALE, { timeZone: 'UTC', weekday: 'long', day: 'numeric', month: 'long' }));
 
 /** Partes de una fecha en la hora del negocio: día (AAAA-MM-DD) y minutos desde la medianoche. */
 const tzParts = (d, tz) => {
   const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(d)).map((x) => [x.type, x.value]));
   return { date: `${p.year}-${p.month}-${p.day}`, minutes: Number(p.hour) * 60 + Number(p.minute) };
 };
-const monthTitle = (iso) => capital(new Date(iso + 'T12:00:00Z').toLocaleDateString('es-MX', { timeZone: 'UTC', month: 'long', year: 'numeric' }));
-const shortMonth = (iso) => new Date(iso + 'T12:00:00Z').toLocaleDateString('es-MX', { timeZone: 'UTC', month: 'short' }).replace('.', '');
-const shortDay = (iso) => new Date(iso + 'T12:00:00Z').toLocaleDateString('es-MX', { timeZone: 'UTC', weekday: 'short' }).replace('.', '');
+const monthTitle = (iso) => capital(new Date(iso + 'T12:00:00Z').toLocaleDateString(LOCALE, { timeZone: 'UTC', month: 'long', year: 'numeric' }));
+const shortMonth = (iso) => new Date(iso + 'T12:00:00Z').toLocaleDateString(LOCALE, { timeZone: 'UTC', month: 'short' }).replace('.', '');
+const shortDay = (iso) => new Date(iso + 'T12:00:00Z').toLocaleDateString(LOCALE, { timeZone: 'UTC', weekday: 'short' }).replace('.', '');
 const dayNum = (iso) => Number(iso.slice(8, 10));
 /** Colores de las personas (y gris para las citas sin persona). */
 const PALETTE = ['#155eef', '#12b76a', '#f79009', '#0e9384', '#ee46bc', '#06aed4', '#f04438', '#669f2a'];
@@ -209,7 +209,7 @@ async function agendaWeek(root, params) {
     location.hash = `#/agenda/citas?${q}`;
   };
   const step = (n) => go({ date: view === 'month' ? `${addDaysIso(monthStart, n * 31).slice(0, 8)}01` : addDaysIso(anchor, n * (view === 'week' ? 7 : 1)) });
-  const hhmm = (d) => new Date(d).toLocaleTimeString('es-MX', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+  const hhmm = (d) => new Date(d).toLocaleTimeString(LOCALE, { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
 
   // Color de cada persona (por su orden en el equipo).
   const people = new Map(team.map((p, i) => [p.id, { name: p.name || p.email, color: PALETTE[i % PALETTE.length] }]));
@@ -342,7 +342,7 @@ async function agendaWeek(root, params) {
         a.notes ? [h('dt', {}, 'Notas'), h('dd', {}, a.notes)] : null,
         a.cancel_reason ? [h('dt', {}, 'Motivo'), h('dd', {}, a.cancel_reason)] : null,
         a.deposit ? [h('dt', {}, 'Anticipo'), h('dd', {},
-          `${new Intl.NumberFormat('es-MX', { style: 'currency', currency: a.deposit.currency || 'MXN' }).format(Number(a.deposit.amount_cents) / 100)} · `,
+          `${new Intl.NumberFormat(LOCALE, { style: 'currency', currency: a.deposit.currency || 'MXN' }).format(Number(a.deposit.amount_cents) / 100)} · `,
           a.deposit.status === 'paid' ? 'pagado' : a.deposit.status === 'canceled' ? 'cancelado' : `pendiente (vence ${a.deposit.due_date})`, ' · ',
           h('a', { href: `#/cobros?status=${a.deposit.status === 'pending' ? 'pending' : ''}`, onclick: close }, 'Ver en Cobros'))] : null),
       h('div', { class: 'row' },
