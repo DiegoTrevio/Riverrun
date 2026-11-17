@@ -118,6 +118,25 @@ export function spanishTime(at: Date, tz: string) {
   return localParts(at, tz).time;
 }
 
+const DAYS_EN = { mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday', fri: 'Friday', sat: 'Saturday', sun: 'Sunday' } as const;
+const MONTHS_EN = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+/** La fecha para el cliente en su idioma: "martes 29 de septiembre" o "Tuesday, September 29". */
+export function localDate(at: Date, tz: string, lang: 'es' | 'en' = 'es') {
+  if (lang !== 'en') return spanishDate(at, tz);
+  const lp = localParts(at, tz);
+  const [, m, d] = lp.date.split('-').map(Number);
+  return `${DAYS_EN[lp.day]}, ${MONTHS_EN[m - 1]} ${d}`;
+}
+
+/** La hora para el cliente: "10:00" en español, "10:00 AM" en inglés (como se escribe en Estados Unidos). */
+export function localTime(at: Date, tz: string, lang: 'es' | 'en' = 'es') {
+  const t = spanishTime(at, tz);
+  if (lang !== 'en') return t;
+  const [h, min] = t.split(':').map(Number);
+  return `${h % 12 || 12}:${String(min).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
+}
+
 /** Clave de horario que ve la IA: "2026-09-29T10:00" (hora local). */
 export function slotKey(at: Date, tz: string) {
   const lp = localParts(at, tz);

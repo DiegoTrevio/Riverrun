@@ -1,6 +1,7 @@
 import { config } from '../config.js';
 import type { Contact, Conversation } from '../types.js';
-import { spanishDate, spanishTime } from './time.js';
+import type { Lang } from '../locale.js';
+import { localDate, localTime } from './time.js';
 import type { Appointment } from './types.js';
 
 export interface TemplateContext {
@@ -15,6 +16,8 @@ export interface TemplateContext {
   /** Variables propias del contexto (p. ej. las de un cobro: pago.monto, pago.vencimiento…). */
   vars?: Record<string, string>;
   now?: Date;
+  /** Idioma del negocio con sus clientes (fecha y hora de la cita, tipo de cita). Sin él, español. */
+  lang?: Lang;
 }
 
 /**
@@ -38,13 +41,13 @@ export function renderTemplate(template: string, ctx: TemplateContext): string {
     mensaje: (ctx.message ?? '').slice(0, 500),
     link: ctx.conversation ? `${config.publicBaseUrl}/#/conversation/${ctx.conversation.id}` : '',
     'cita.servicio': a?.service_name ?? '',
-    'cita.fecha': a ? spanishDate(new Date(a.starts_at), ctx.timezone) : '',
-    'cita.hora': a ? spanishTime(new Date(a.starts_at), ctx.timezone) : '',
+    'cita.fecha': a ? localDate(new Date(a.starts_at), ctx.timezone, ctx.lang) : '',
+    'cita.hora': a ? localTime(new Date(a.starts_at), ctx.timezone, ctx.lang) : '',
     'cita.lugar': ctx.location ?? '',
-    'cita.tipo': a ? (a.kind === 'call' ? 'llamada' : 'cita') : '',
+    'cita.tipo': a ? (ctx.lang === 'en' ? (a.kind === 'call' ? 'call' : 'appointment') : (a.kind === 'call' ? 'llamada' : 'cita')) : '',
     'cita.persona': a?.assigned_user_name ?? '',
     'cita.enlace': a?.meeting_url ?? '',
-    fecha_hoy: spanishDate(ctx.now ?? new Date(), ctx.timezone),
+    fecha_hoy: localDate(ctx.now ?? new Date(), ctx.timezone, ctx.lang),
     ...ctx.vars,
   };
   return template

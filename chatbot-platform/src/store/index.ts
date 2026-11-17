@@ -8,6 +8,7 @@ import { removeAccountAttachments } from '../attachments.js';
 import { perRequestKeys } from '../engine/questions.js';
 import { closeCardForRequest } from './pipelines.js';
 import { phoneVariants } from '../contacts/phone.js';
+import { englishAgent } from '../locale.js';
 import {
   channelConfig,
   hydrateChatbot,
@@ -401,7 +402,10 @@ export interface ChatbotInput {
 const CHATBOT_JSON_COLS = ['personality', 'rules', 'data_fields', 'flow', 'ai', 'saved_messages'] as const;
 const CHATBOT_PLAIN_COLS = ['name', 'active', 'start_on_connect'] as const;
 
-export async function createChatbot(accountId: string, input: ChatbotInput, client?: Queryable): Promise<Chatbot> {
+export async function createChatbot(accountId: string, given: ChatbotInput, client?: Queryable): Promise<Chatbot> {
+  // Un negocio en inglés recibe el agente de fábrica en inglés (idioma, mensajes fijos, palabras de transferencia).
+  const [acc] = await rowsOf(client, `SELECT settings->>'language' AS lang FROM accounts WHERE id = $1`, [accountId]);
+  const input = acc?.lang === 'en' ? englishAgent(given) : given;
   const rows = await rowsOf(client,
     `INSERT INTO chatbots (account_id, name, active, personality, rules, data_fields, flow, ai, saved_messages, start_on_connect, creation_ref)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,

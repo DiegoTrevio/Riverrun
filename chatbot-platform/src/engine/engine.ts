@@ -34,6 +34,7 @@ import type { AgendaContext, BookResult } from '../automation/agenda.js';
 import type { AutomationEvent } from '../automation/types.js';
 import type { PipelineContext } from '../automation/pipelines.js';
 import type { ChannelType } from '../types.js';
+import { ENGLISH_AGENT, voiceOf } from '../locale.js';
 
 /** Conexiones opcionales del motor con la automatización y la agenda. */
 export interface EngineExtensions {
@@ -138,8 +139,10 @@ export function savedItems(bot: Chatbot, codes: string[], imagesById: Map<string
 /** El mensaje de «sigue atendiendo» en el trato del agente (si nadie lo cambió, el de fábrica de tú o de usted). */
 export function keepAnsweringMessage(bot: Chatbot): string {
   const msg = bot.rules.keep_answering_message.trim();
-  const factory: string[] = Object.values(FIXED_MESSAGES).map((m) => m.keep_answering_message);
-  if (!msg || factory.includes(msg)) return FIXED_MESSAGES[bot.personality.formality].keep_answering_message;
+  const factory: string[] = [...Object.values(FIXED_MESSAGES).map((m) => m.keep_answering_message), ENGLISH_AGENT.rules.keep_answering_message];
+  if (!msg || factory.includes(msg)) {
+    return voiceOf(bot.personality) === 'en' ? ENGLISH_AGENT.rules.keep_answering_message : FIXED_MESSAGES[bot.personality.formality].keep_answering_message;
+  }
   return msg;
 }
 
@@ -845,7 +848,7 @@ export class Engine {
         else if (this.ext.quotes && quote.quote) {
           // La plataforma rechazó el archivo: el cliente recibe el enlace al PDF.
           const link = this.ext.quotes.link(quote.quote);
-          const again = await this.sendOut(bot, conv, transport, { sender: 'bot', text: `${bot.personality.formality === 'usted' ? 'Puede' : 'Puedes'} ver la cotización aquí: ${link}`, delay: 0, meta: quoteMeta });
+          const again = await this.sendOut(bot, conv, transport, { sender: 'bot', text: ({ en: `You can see the quote here: ${link}`, usted: `Puede ver la cotización aquí: ${link}`, tu: `Puedes ver la cotización aquí: ${link}` })[voiceOf(bot.personality)], delay: 0, meta: quoteMeta });
           if (again) quote.delivered = 'link';
         }
       }

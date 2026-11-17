@@ -905,8 +905,8 @@ export class ChatService {
     const settings = await astore.getSettings(conv.account_id);
     const bot = conv.chatbot_id ? await store.getChatbot(conv.chatbot_id) : null;
     const businessName = bot?.name ?? (await store.getAccount(conv.account_id))?.name ?? '';
-    const vars = await lookupVars(params, { accountId: conv.account_id, contactId: contact.id, data: contact.data, assignedUserId: conv.assigned_user_id, timezone: settings.timezone });
-    const values = params.map((p) => renderTemplate(p, { contact, conversation: conv, businessName, channelName: channel.name, timezone: settings.timezone, vars }).trim());
+    const vars = await lookupVars(params, { accountId: conv.account_id, contactId: contact.id, data: contact.data, assignedUserId: conv.assigned_user_id, timezone: settings.timezone, lang: settings.language });
+    const values = params.map((p) => renderTemplate(p, { contact, conversation: conv, businessName, channelName: channel.name, timezone: settings.timezone, lang: settings.language, vars }).trim());
     const n = templateVarCount(t.components);
     const empty = Array.from({ length: n }, (_, i) => i).find((i) => !values[i]);
     if (empty !== undefined) throw new Error(`Escribe el valor de la variable {{${empty + 1}}}`);

@@ -44,16 +44,19 @@ export function acceptedTotal(q: Pick<Quote, 'total_min' | 'total_max' | 'open_e
 }
 
 /** Los cobros del plan: los centavos que no se reparten parejo van en el último, así la suma es exactamente el total. */
-export function planCharges(folio: string, total: number, plan: AcceptPlan): PlannedCharge[] {
-  const base = `Cotización ${folio}`;
+export function planCharges(folio: string, total: number, plan: AcceptPlan, lang: 'es' | 'en' = 'es'): PlannedCharge[] {
+  // El concepto lo ve el cliente en sus recordatorios de pago ({{pago.concepto}}): en el idioma del negocio.
+  const en = lang === 'en';
+  const base = en ? `Quote ${folio}` : `Cotización ${folio}`;
+  const of = en ? 'of' : 'de';
   if (plan.type === 'full') return [{ amount_cents: total, due_date: plan.due_date, concept: base, installment: '' }];
   if (plan.type === 'deposit') {
     if (plan.rest_due_date < plan.due_date) throw new Error('El resto no puede vencer antes que el anticipo');
     const deposit = Math.round((total * plan.percent) / 100);
     if (deposit < 1 || deposit >= total) throw new Error('El anticipo debe ser menor que el total');
     return [
-      { amount_cents: deposit, due_date: plan.due_date, concept: `${base}: anticipo (${plan.percent} %)`, installment: '1 de 2' },
-      { amount_cents: total - deposit, due_date: plan.rest_due_date, concept: `${base}: resto`, installment: '2 de 2' },
+      { amount_cents: deposit, due_date: plan.due_date, concept: en ? `${base}: deposit (${plan.percent}%)` : `${base}: anticipo (${plan.percent} %)`, installment: `1 ${of} 2` },
+      { amount_cents: total - deposit, due_date: plan.rest_due_date, concept: en ? `${base}: balance` : `${base}: resto`, installment: `2 ${of} 2` },
     ];
   }
   const each = Math.floor(total / plan.count);
@@ -61,7 +64,7 @@ export function planCharges(folio: string, total: number, plan: AcceptPlan): Pla
   return Array.from({ length: plan.count }, (_, i) => ({
     amount_cents: i === plan.count - 1 ? total - each * (plan.count - 1) : each,
     due_date: plan.every === 'month' ? addMonths(plan.first_due, i) : addDays(plan.first_due, i * (plan.every === 'week' ? 7 : 15)),
-    concept: `${base}: pago ${i + 1} de ${plan.count}`,
-    installment: `${i + 1} de ${plan.count}`,
+    concept: en ? `${base}: payment ${i + 1} of ${plan.count}` : `${base}: pago ${i + 1} de ${plan.count}`,
+    installment: `${i + 1} ${of} ${plan.count}`,
   }));
 }

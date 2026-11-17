@@ -19,6 +19,7 @@ import { ADVISOR_MESSAGE, evaluateCalculator, prepareCalculator, type Calculator
 import { formatTotals } from './format.js';
 import { failedMessage, pendingMessage, quoteMessage, summaryMessage } from './messages.js';
 import { localDate, renderQuote } from './render.js';
+import { voiceOf } from '../locale.js';
 
 /** Lo que el asistente sabe para cotizar en esta conversación. */
 export interface QuoteCatalog {
@@ -122,7 +123,7 @@ export class Quotes {
    */
   async prepare(o: { bot: Chatbot; conv: Conversation; contact: Contact; planned: PlannedQuote; catalog: QuoteCatalog; operation?: string }): Promise<PreparedQuote> {
     const { bot, conv, contact, planned, catalog } = o;
-    const formality = bot.personality.formality;
+    const formality = voiceOf(bot.personality);
     const calc = planned.calculate && catalog.calculator ? catalog.calculator : null;
     const legend = calc?.definition.legend ?? '';
     let quote = o.operation ? await qstore.quoteByOperation(conv.account_id, o.operation) : null;
@@ -251,8 +252,8 @@ export class Quotes {
    * total; en ambos casos con el enlace si el canal no envía archivos.
    */
   message(bot: Chatbot, quote: qstore.Quote, link?: string, o: { summary?: boolean; legend?: string } = {}) {
-    if (o.summary) return summaryMessage(quote, bot.personality.formality, { legend: o.legend, link });
-    return quoteMessage(quote, bot.personality.formality, link);
+    if (o.summary) return summaryMessage(quote, voiceOf(bot.personality), { legend: o.legend, link });
+    return quoteMessage(quote, voiceOf(bot.personality), link);
   }
 
   /** Llegó al cliente: queda enviada y, si la oportunidad aún no tiene valor, toma el total de la cotización. */

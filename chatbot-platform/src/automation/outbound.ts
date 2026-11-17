@@ -130,7 +130,7 @@ export class Outbound {
     const settings = await astore.getSettings(conv.account_id);
     const account = await store.getAccount(conv.account_id);
     // Las variables que consultan la base (saldo, próxima cita, asesor, campo.*): solo las que el texto usa.
-    const looked = await lookupVars([o.text, ...(o.waTemplate?.params ?? [])], { accountId: conv.account_id, contactId: contact.id, data: contact.data, assignedUserId: conv.assigned_user_id, timezone: settings.timezone });
+    const looked = await lookupVars([o.text, ...(o.waTemplate?.params ?? [])], { accountId: conv.account_id, contactId: contact.id, data: contact.data, assignedUserId: conv.assigned_user_id, timezone: settings.timezone, lang: settings.language });
     const render = (s: string) => renderTemplate(s, {
       contact,
       conversation: conv,
@@ -139,6 +139,7 @@ export class Outbound {
       appointment: o.appointment,
       location: o.location,
       timezone: settings.timezone,
+      lang: settings.language,
       vars: { ...looked, ...o.vars },
     });
     const text = o.text ? render(o.text) : '';

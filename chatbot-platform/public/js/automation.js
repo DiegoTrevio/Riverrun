@@ -741,6 +741,8 @@ async function editSettings(root) {
   const secretsBox = h('div', {}, h('p', { class: 'muted small' }, 'La URL del calendario y la clave de los webhooks están ocultas.'));
   const copy = (v) => h('button', { class: 'small', onclick: async () => { try { await navigator.clipboard.writeText(v); toast('Copiado'); } catch { toast('No se pudo copiar', true); } } }, 'Copiar');
   root.append(
+    settingsSection('Idioma con tus clientes', 'En este idioma salen los mensajes automáticos a tus clientes: confirmaciones y recordatorios de citas, cotizaciones, cobros y bajas, con fechas y montos en su formato. Es aparte del idioma del panel.',
+      field('Idioma', select(s, 'language', [['es', 'Español (México)'], ['en', 'Inglés (Estados Unidos)']]), 'Al guardarlo, los textos que no has cambiado (aquí y en tus asistentes) pasan al otro idioma; lo que escribiste tú se queda igual.')),
     settingsSection('Horario del negocio', 'Por día: 09:00-14:00, 16:00-19:00 (vacío = cerrado). Lo usan el asistente, la agenda, los flujos y las campañas.',
       field('Zona horaria', text(s, 'timezone')),
       hoursEditor(s.business_hours),

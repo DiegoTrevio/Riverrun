@@ -208,8 +208,11 @@ export async function agendaRoutes(api: FastifyInstance, service: ChatService) {
     const cancelled = await service.agenda.cancel(a.id, b.reason, 'panel');
     if (!cancelled) throw new HttpError(400, 'La cita ya no está confirmada');
     if (b.notify_customer && a.conversation_id) {
+      const lang = (await astore.getSettings(a.account_id)).language;
       await service.outbound.send(a.conversation_id, {
-        text: 'Hola {{nombre}}, tu {{cita.tipo}} de {{cita.servicio}} del {{cita.fecha}} a las {{cita.hora}} fue cancelada. Si quieres agendar otra, respóndenos por aquí.',
+        text: lang === 'en'
+          ? 'Hi {{nombre}}, your {{cita.tipo}} for {{cita.servicio}} on {{cita.fecha}} at {{cita.hora}} was canceled. If you want to book another one, just reply here.'
+          : 'Hola {{nombre}}, tu {{cita.tipo}} de {{cita.servicio}} del {{cita.fecha}} a las {{cita.hora}} fue cancelada. Si quieres agendar otra, respóndenos por aquí.',
         source: 'booking',
         transactional: true,
         allowWhenHuman: true,
