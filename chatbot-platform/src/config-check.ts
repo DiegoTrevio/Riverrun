@@ -449,7 +449,7 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
     .filter((k) => !get(k) && !(k === 'PRIVACY_CONTACT' && (get('SUPPORT_CONTACT') || get('SUPERADMIN_EMAIL'))));
   if (prod && privacyMissing.length) {
     add('warning', 'security', 'privacy.responsible_missing', privacyMissing,
-      `Los avisos de privacidad (${ownPrivacy ? '/proteccion-de-datos' : '/privacidad y /proteccion-de-datos'}) no dicen ${privacyMissing.map((k) => PRIVACY_FIELD[k]).join(', ')}: se ven como marcador pendiente.`,
+      `Los avisos de privacidad (${ownPrivacy ? '/proteccion-de-datos y /data-protection' : '/privacidad, /privacy, /proteccion-de-datos y /data-protection'}) no dicen ${privacyMissing.map((k) => PRIVACY_FIELD[k]).join(', ')}: se ven como marcador pendiente.`,
       'Define PRIVACY_COMPANY (razón social), PRIVACY_ADDRESS (domicilio) y PRIVACY_CONTACT (correo para privacidad) en .env, o publica tu propio aviso en PRIVACY_URL.');
   }
   // /privacidad lleva a PRIVACY_URL: debe ser una página https de otro lugar (si apunta a /privacidad, se repite sin fin).

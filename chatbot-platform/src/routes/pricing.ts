@@ -8,7 +8,7 @@ import { config } from '../config.js';
 import { offeredPlans } from './billing.js';
 import { cardRequired } from '../billing/card-check.js';
 import { privacyUrl } from './self-service.js';
-import { dataProtectionUrl } from '../signup-guard.js';
+import { dataProtectionUrl, helpUrl } from '../signup-guard.js';
 import { publicPalette } from '../public-colors.js';
 import { visitorLang, type Lang } from '../locale.js';
 import { toEnglish } from '../mail-language.js';
@@ -204,7 +204,7 @@ export function pricingPage(o: { brand: ReturnType<typeof publicBrand>; plans: O
     ${o.terms ? `<a href="${esc(o.terms)}">${t.terms}</a>` : ''}
     ${o.privacy ? `<a href="${esc(o.privacy)}">${t.privacy}</a>` : ''}
     <a href="${dataProtectionUrl(lang)}">${t.dataProtection}</a>
-    <a href="${lang === 'en' ? '/help.html' : '/ayuda.html'}">${t.help}</a>
+    <a href="${helpUrl(lang)}">${t.help}</a>
     <a href="/estado">${t.status}</a>
     <a href="/contacto">${t.write}</a>
     ${o.support ? `<span>${t.contactLabel}: ${esc(o.support)}</span>` : ''}

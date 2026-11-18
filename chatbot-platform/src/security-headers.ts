@@ -12,15 +12,15 @@ import type { FastifyInstance } from 'fastify';
 
 const TURNSTILE = 'https://challenges.cloudflare.com';
 /** Páginas que un negocio puede incrustar en su sitio con un iframe. */
-const EMBEDDABLE = [/^\/reservar\//, /^\/ayuda(\.html)?(\/|$)/];
+const EMBEDDABLE = [/^\/reservar\//, /^\/ayuda(\.html)?(\/|$)/, /^\/help\.html$/];
 /**
  * Páginas del servidor que llevan su <style> y algún <script> dentro (IN-20): solo ellas reciben 'unsafe-inline'. Todo lo
  * demás (el panel, sus variantes de URL y cualquier página nueva) recibe la CSP estricta: el error seguro es el de por
  * omisión. Se compara contra la ruta ya decodificada y normalizada, como la ve @fastify/static.
  */
 const SERVER_PAGES = [
-  /^\/precios$/, /^\/estado$/, /^\/privacidad(\/simplificado)?$/, /^\/proteccion-de-datos$/, /^\/contacto$/, /^\/borrar-cuenta$/, /^\/baja-recordatorios$/,
-  /^\/reservar\/[^/]+$/, /^\/ayuda(\.html)?$/, /^\/api-docs\.html$/, /^\/api\/v1\/docs$/, /^\/webchat-demo\.html$/,
+  /^\/precios$/, /^\/estado$/, /^\/privacidad(\/simplificado)?$/, /^\/proteccion-de-datos$/, /^\/privacy$/, /^\/data-protection$/, /^\/contacto$/, /^\/borrar-cuenta$/, /^\/baja-recordatorios$/,
+  /^\/reservar\/[^/]+$/, /^\/ayuda(\.html)?$/, /^\/help\.html$/, /^\/api-docs\.html$/, /^\/api\/v1\/docs$/, /^\/webchat-demo\.html$/,
   /^\/wa\/[^/]+$/, /^\/conectar-red\/[^/]+$/, /^\/zernio\/(return|callback)\//, /^\/meta\/callback$/, /^\/oauth\//, /^\/pago\//,
 ];
 
