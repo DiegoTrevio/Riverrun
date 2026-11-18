@@ -44,7 +44,7 @@ try {
   await pool.query(`UPDATE accounts SET deletion_nonce = 'ux' WHERE id = $1`, [h.accountId]);
   const pages: [string, string][] = [
     ['precios', '/precios'], ['estado', '/estado'], ['contacto', '/contacto'], ['privacidad', '/privacidad'],
-    ['privacidad-simplificado', '/privacidad/simplificado'], ['proteccion-de-datos', '/proteccion-de-datos'],
+    ['privacidad-simplificado', '/privacidad/simplificado'], ['proteccion-de-datos', '/proteccion-de-datos'], ['privacy', '/privacy'], ['data-protection', '/data-protection'],
     ['borrar-cuenta', `/borrar-cuenta?t=${encodeURIComponent(deletionToken(h.accountId, 'ux'))}`],
     ['baja-recordatorios', `/baja-recordatorios?c=${h.accountId}&s=${unsubscribeSig(h.accountId)}`],
     ['ayuda', '/ayuda.html'], ['help', '/help.html'], ['login', '/#/login'], ['registro', '/#/registro'],

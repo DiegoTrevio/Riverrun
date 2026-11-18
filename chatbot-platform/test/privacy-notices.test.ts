@@ -1,6 +1,7 @@
 /**
  * Avisos de privacidad (LFPDPPP): integral en /privacidad, simplificado en /privacidad/simplificado y protección de
  * datos (encargados) en /proteccion-de-datos; el registro los enlaza siempre y la constancia guarda la versión.
+ * En inglés, para Estados Unidos: /privacy y /data-protection.
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,6 +13,7 @@ const t = (name: string, fn: () => Promise<void>) => test(name, { skip: !ok && '
 let h: Awaited<ReturnType<typeof createHarness>>;
 const { config } = await import('../src/config.js');
 const { PROCESSORS } = await import('../src/routes/legal-pages.js');
+const { PROCESSORS_EN } = await import('../src/routes/legal-pages-en.js');
 const { PRIVACY_NOTICE_VERSION } = await import('../src/signup-guard.js');
 
 /** Cambia datos del responsable solo durante una prueba. */
@@ -126,6 +128,67 @@ t('registro: sin PRIVACY_URL enlaza el aviso incluido y la constancia guarda su 
   });
   await withPrivacy({ privacyUrl: 'https://legal.ejemplo.mx/privacidad' }, async () => {
     assert.equal((await get('/api/signup/info')).json().privacy_url, 'https://legal.ejemplo.mx/privacidad');
+  });
+});
+
+t('Privacy Policy en inglés: responsable, datos, que no se venden, derechos de EE. UU., cookies, conservación y menores', async () => {
+  await withPrivacy({ privacyCompany: 'Riverrun LLC', privacyAddress: '1 Main St, Austin, TX', privacyContact: 'privacy@riverrun.test', privacyUrl: '' }, async () => {
+    const r = await get('/privacy');
+    assert.equal(r.statusCode, 200);
+    assert.match(r.body, /<html lang="en">/);
+    assert.match(r.body, /<title>Privacy Policy/);
+    assert.match(r.body, /Riverrun LLC, located at 1 Main St, Austin, TX/);
+    assert.match(r.body, /privacy@riverrun\.test/);
+    assert.match(r.body, /We don't sell your personal information/);
+    for (const s of ['Know and access', 'Correct', 'Delete', 'Opt out', 'appeal', 'authorized agent', 'under 13', 'Cookies', 'One free trial per person', 'based in Mexico']) assert.ok(r.body.includes(s), s);
+    assert.match(r.body, /href="\/data-protection#providers"/);
+    assert.match(r.body, /href="\/privacy">Privacy Policy<\/a>/, 'el pie en inglés enlaza la versión en inglés');
+    assert.match(r.body, /href="\/help\.html">Help<\/a>/);
+    const text = r.body.replace(/<style>[\s\S]*?<\/style>/g, '').replace(/<[^>]+>/g, ' ');
+    assert.doesNotMatch(text, /Aviso|privacidad|ARCO|Secretaría|responsable/, 'sin textos en español');
+  });
+  // Lo que falta se ve como marcador en inglés.
+  await withPrivacy({ privacyCompany: '', privacyAddress: '', privacyContact: '', privacyUrl: '' }, async () => {
+    const body = (await get('/privacy')).body;
+    assert.match(body, /<mark>\[Company legal name\]<\/mark>/);
+    assert.match(body, /<mark>\[Company address\]<\/mark>/);
+  });
+});
+
+t('Data protection en inglés: proveedor de servicio, los mismos proveedores que en español y texto para sus clientes', async () => {
+  const r = await get('/data-protection');
+  assert.equal(r.statusCode, 200);
+  assert.match(r.body, /<html lang="en">/);
+  assert.match(r.body, /<strong>service provider<\/strong>/);
+  assert.deepEqual(PROCESSORS_EN.map((p) => p.name.split(' ')[0]), PROCESSORS.map((p) => p.name.split(' ')[0]), 'la misma lista en los dos idiomas');
+  for (const p of PROCESSORS_EN) assert.ok(r.body.includes(p.name.replace(/'/g, '&#39;')), p.name);
+  assert.match(r.body, /id="providers"/);
+  assert.match(r.body, /replies STOP/);
+  assert.match(r.body, /<blockquote>\[Your business name\]/);
+});
+
+t('en inglés, el registro enlaza la Privacy Policy y la constancia guarda esa; con aviso propio, /privacy lleva a ese', async () => {
+  await withPrivacy({ privacyUrl: '' }, async () => {
+    const en = { 'accept-language': 'en-US,en;q=0.9' };
+    assert.equal((await h.app.inject({ method: 'GET', url: '/api/signup/info', headers: en })).json().privacy_url, '/privacy');
+    const r = await h.app.inject({
+      method: 'POST', url: '/api/signup', remoteAddress: '10.66.0.2', headers: en,
+      payload: { name: 'Mia Policy', company: 'Sunny Policy', business_type: 'tienda', email: 'mia@policy.test', password: 'Pz-152-Qx-352-Kv', accept_terms: true },
+    });
+    assert.equal(r.statusCode, 200, r.body);
+    const row = (await pool.query(`SELECT privacy_url FROM terms_acceptances WHERE user_id = $1`, [r.json().user.id])).rows[0];
+    assert.equal(row.privacy_url, `${config.publicBaseUrl}/privacy?version=${PRIVACY_NOTICE_VERSION}`);
+    const precios = (await h.app.inject({ method: 'GET', url: '/precios', headers: en })).body;
+    assert.match(precios, /href="\/privacy">Privacy Policy<\/a>/);
+    assert.match(precios, /href="\/data-protection">Data protection<\/a>/);
+  });
+  await withPrivacy({ privacyUrl: 'https://legal.example.com/privacy' }, async () => {
+    const r = await get('/privacy');
+    assert.equal(r.statusCode, 302);
+    assert.equal(r.headers.location, 'https://legal.example.com/privacy');
+  });
+  await withPrivacy({ privacyUrl: '/privacy' }, async () => {
+    assert.equal((await get('/privacy')).statusCode, 200, 'si apunta a sí misma, no se repite sin fin');
   });
 });
 

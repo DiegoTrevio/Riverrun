@@ -20,7 +20,7 @@ import { sendMail } from '../mailer.js';
 import { cachedChecks } from '../monitor.js';
 import { toComponents } from '../observability/health.js';
 import { STATE_LABEL, overallState } from '../observability/status.js';
-import { CAPTCHA_MESSAGE, captchaEnabled, captchaRequired, privacyUrl, verifyCaptcha } from '../signup-guard.js';
+import { CAPTCHA_MESSAGE, captchaEnabled, captchaRequired, dataProtectionUrl, privacyUrl, verifyCaptcha } from '../signup-guard.js';
 import { registerLegalPages } from './legal-pages.js';
 import * as store from '../store/index.js';
 import { publicPalette } from '../public-colors.js';
@@ -106,8 +106,8 @@ ${o.head ?? ''}
   <a href="${tx(lang, '/ayuda.html', '/help.html')}">${tx(lang, 'Ayuda', 'Help')}</a>
   <a href="/estado">${tx(lang, 'Estado del servicio', 'Service status')}</a>
   <a href="/contacto">${tx(lang, 'Contacto', 'Contact')}</a>
-  <a href="${esc(privacyUrl())}">${tx(lang, 'Aviso de privacidad', 'Privacy notice')}</a>
-  <a href="/proteccion-de-datos">${tx(lang, 'Protección de datos', 'Data protection')}</a>
+  <a href="${esc(privacyUrl(lang))}">${tx(lang, 'Aviso de privacidad', 'Privacy Policy')}</a>
+  <a href="${dataProtectionUrl(lang)}">${tx(lang, 'Protección de datos', 'Data protection')}</a>
   <a href="/#/login">${tx(lang, 'Entrar a mi panel', 'Log in to my dashboard')}</a>
 </footer>
 </body>

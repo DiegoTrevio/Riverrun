@@ -114,16 +114,18 @@ export const termsVersion = () => config.signup.termsVersion || config.signup.te
  * src/routes/legal-pages.ts en el historial del repositorio a esa fecha.
  */
 export const PRIVACY_NOTICE_VERSION = '2026-11-15';
-/** Aviso de privacidad que se enlaza: el propio del operador (PRIVACY_URL) o el incluido en la plataforma. */
-export const privacyUrl = () => config.signup.privacyUrl || '/privacidad';
-/** Dirección completa del aviso que se guarda en la constancia: con el incluido, también su versión. */
-export const acceptedPrivacyUrl = () => config.signup.privacyUrl || `${config.publicBaseUrl}/privacidad?version=${PRIVACY_NOTICE_VERSION}`;
+/** Aviso de privacidad que se enlaza: el propio del operador (PRIVACY_URL) o el incluido, en el idioma de la persona. */
+export const privacyUrl = (lang: 'es' | 'en' = 'es') => config.signup.privacyUrl || (lang === 'en' ? '/privacy' : '/privacidad');
+/** Dirección completa del aviso que se guarda en la constancia (el que vio la persona): con el incluido, también su versión. */
+export const acceptedPrivacyUrl = (lang: 'es' | 'en' = 'es') => config.signup.privacyUrl || `${config.publicBaseUrl}${privacyUrl(lang)}?version=${PRIVACY_NOTICE_VERSION}`;
+/** Página de cómo cuidamos los datos de los clientes de cada negocio, en el idioma de la persona. */
+export const dataProtectionUrl = (lang: 'es' | 'en' = 'es') => (lang === 'en' ? '/data-protection' : '/proteccion-de-datos');
 
 /** Guarda la constancia de aceptación de términos (dentro de la transacción que crea la cuenta). */
-export async function recordTermsAcceptance(client: PoolClient, o: { userId: string; accountId: string; email: string; ip: string; userAgent: string; source: 'signup' | 'google' | 'reaccept' | 'invite' }) {
+export async function recordTermsAcceptance(client: PoolClient, o: { userId: string; accountId: string; email: string; ip: string; userAgent: string; source: 'signup' | 'google' | 'reaccept' | 'invite'; lang?: 'es' | 'en' }) {
   await client.query(
     `INSERT INTO terms_acceptances (user_id, account_id, email, terms_version, terms_url, privacy_url, ip, user_agent, source) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-    [o.userId, o.accountId, o.email, termsVersion(), config.signup.termsUrl, acceptedPrivacyUrl(), o.ip, o.userAgent.slice(0, 300), o.source],
+    [o.userId, o.accountId, o.email, termsVersion(), config.signup.termsUrl, acceptedPrivacyUrl(o.lang), o.ip, o.userAgent.slice(0, 300), o.source],
   );
 }
 

@@ -24,7 +24,7 @@ import { DISPOSABLE_MESSAGE, GOOGLE_PASS_COOKIE, googlePassCookie, isDisposableE
 import * as store from '../store/index.js';
 import type { User } from '../types.js';
 import { parse } from './util.js';
-import type { Lang } from '../locale.js';
+import { visitorLang, type Lang } from '../locale.js';
 import { recipientLang } from '../mail-language.js';
 import { actor, recordSecurity } from '../security-log.js';
 
@@ -272,7 +272,7 @@ export async function invitationPublicRoutes(app: FastifyInstance) {
       // Solo en el dominio principal: Google exige registrar la dirección de regreso.
       google_login: !google && googleConfigured() && hostOf(req) === new URL(config.publicBaseUrl).hostname,
       terms_url: config.signup.termsUrl,
-      privacy_url: privacyUrl(),
+      privacy_url: privacyUrl(visitorLang(req)),
       terms_version: termsVersion(),
     };
   });
@@ -309,7 +309,7 @@ export async function invitationPublicRoutes(app: FastifyInstance) {
       const created = await store.createUser({ account_id: inv.account_id, role: inv.role, name: b.name, email: inv.email, password_hash: hash, verified: true }, client);
       if (google) await client.query(`UPDATE users SET google_sub = $2 WHERE id = $1`, [created.id, google.sub]);
       await client.query(`UPDATE account_invitations SET accepted_at = now(), accepted_user_id = $2 WHERE id = $1`, [inv.id, created.id]);
-      await recordTermsAcceptance(client, { userId: created.id, accountId: inv.account_id, email: inv.email, ip: req.ip, userAgent: String(req.headers['user-agent'] ?? ''), source: 'invite' });
+      await recordTermsAcceptance(client, { userId: created.id, accountId: inv.account_id, email: inv.email, ip: req.ip, userAgent: String(req.headers['user-agent'] ?? ''), source: 'invite', lang: visitorLang(req) });
       return created;
     });
     // Una cuenta sin dueño válido lo tiene en cuanto entra un administrador: el activo más antiguo (quien acaba de

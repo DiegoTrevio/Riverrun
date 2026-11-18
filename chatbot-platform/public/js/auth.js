@@ -110,7 +110,7 @@ function publicPage(card) {
 /** Enlaces a los avisos debajo de cada pantalla pública (entrar, registro, recuperar contraseña). */
 function legalLinks() {
   return h('nav', { class: 'auth-legal', 'aria-label': 'Avisos y ayuda' },
-    h('a', { href: '/privacidad' }, 'Aviso de privacidad'), h('a', { href: '/proteccion-de-datos' }, 'Protección de datos'), h('a', { href: helpUrl() }, 'Ayuda'),
+    h('a', { href: currentLang() === 'en' ? '/privacy' : '/privacidad' }, 'Aviso de privacidad'), h('a', { href: currentLang() === 'en' ? '/data-protection' : '/proteccion-de-datos' }, 'Protección de datos'), h('a', { href: helpUrl() }, 'Ayuda'),
     langLinks());
 }
 
@@ -126,7 +126,7 @@ export function langLinks() {
  * simplificado: para qué usamos los datos y dónde está el aviso completo.
  */
 function termsCheck(info, f) {
-  const privacy = info.privacy_url || '/privacidad';
+  const privacy = info.privacy_url || (currentLang() === 'en' ? '/privacy' : '/privacidad');
   return h('div', {},
     h('label', { class: 'check small' }, h('input', { type: 'checkbox', onchange: (e) => (f.accept_terms = e.target.checked) }),
       [info.terms_url ? ['Acepto los ', h('a', { href: info.terms_url, target: '_blank', rel: 'noopener' }, 'términos del servicio')] : 'Acepto los términos del servicio',
