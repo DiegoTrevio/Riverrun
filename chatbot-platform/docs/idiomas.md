@@ -51,7 +51,19 @@ El asistente contesta en el idioma de su personalidad (Agente → Personalidad �
 
 Las pruebas están en `test/anti-invention-en.test.ts` y al final de `test/claims.test.ts`.
 
+## Idioma con tus clientes (mensajes automáticos)
+
+Cada negocio elige en **Ajustes → Idioma con tus clientes** si atiende en español (México) o en inglés (Estados Unidos). Es aparte del idioma del panel: una persona puede usar el panel en español y tener un negocio que atiende en inglés.
+
+- **Lo que sale en ese idioma:** confirmación, recordatorios y cancelación de citas (también por correo, con el anticipo, y el correo para confirmar una reserva de la página), cancelación por anticipo no pagado, recordatorios de pago y sus textos «Paga aquí» y «Cómo pagar», los conceptos del plan de pagos de una cotización aceptada, la respuesta a la baja (en inglés solo STOP, UNSUBSCRIBE y STOP ALL, y START para volver: «cancel» o «yes» siguen siendo respuestas normales) y el consentimiento para promociones (I AGREE).
+- **Formato:** en inglés, «Tuesday, November 17», «9:30 AM» y montos como `$1,650.00`; también en las variables `{{cita.fecha}}`, `{{cita.hora}}`, `{{cita.tipo}}`, `{{pago.monto}}`, `{{pago.vencimiento}}`, `{{saldo}}`, `{{proxima_cita.*}}` y `{{cotizacion.vigencia}}` de las reglas, flujos y plantillas.
+- **Al cambiarlo:** los textos que siguen como venían de fábrica (en Ajustes y en cada asistente: idioma, mensajes de respaldo, de pase a persona, palabras para pedir a una persona, frases prohibidas) pasan al otro idioma. Lo que el negocio escribió a mano se queda igual. Los asistentes nuevos nacen en el idioma del negocio.
+- **Cotizaciones:** el mensaje que acompaña la cotización y el desglose en el chat salen en el idioma del asistente (Agente → Personalidad → Idioma): «Here is your FINAL quote… including tax». La moneda la pone la lista de precios o la calculadora.
+
+Las pruebas están en `test/business-language.test.ts`.
+
 ## Lo que todavía está solo en español
 
-- Los mensajes fijos que el sistema le manda al cliente (confirmación de cita, cotización, cobros, baja de promociones), los correos, las cotizaciones y los PDF (siguiente fase: idioma de cada negocio).
+- Los avisos y correos al equipo del negocio (alertas, resúmenes) y el PDF de la cotización.
+- Las plantillas por giro de un asistente nuevo (saludo, preguntas, mensajes guardados): en inglés solo cambia lo de fábrica general.
 - La ayuda (`ayuda.html`), la página para reservar, el chat web y los avisos legales (fase de páginas públicas, con Privacy Policy y Terms para Estados Unidos).

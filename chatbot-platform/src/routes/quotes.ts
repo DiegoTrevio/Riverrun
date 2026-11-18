@@ -36,6 +36,7 @@ import * as store from '../store/index.js';
 import * as qstore from '../store/quotes.js';
 import * as calcstore from '../store/quote-calculators.js';
 import { parse } from './util.js';
+import { voiceOf } from '../locale.js';
 
 const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
@@ -466,7 +467,7 @@ export async function quoteRoutes(api: FastifyInstance, service: ChatService) {
     const canFile = sendsAnyFile(service.transportFor(channel, contact));
     const link = canFile ? undefined : service.quotes.link(fresh);
     const sent = await service.outbound.send(conv.id, {
-      text: quoteMessage(fresh, bot?.personality.formality ?? 'tu', link),
+      text: quoteMessage(fresh, voiceOf(bot?.personality), link),
       file: canFile ? { id: fresh.id, name: rendered.fileName, mime: 'application/pdf', kind: 'document', absPath: attachmentAbsolutePath(rendered.pdfPath), url: service.quotes.link(fresh) } : undefined,
       source: 'quote', transactional: true, allowWhenHuman: true, meta: { quote_message: true, quote_id: fresh.id, quote_kind: fresh.kind },
     });
@@ -521,7 +522,7 @@ export async function quoteRoutes(api: FastifyInstance, service: ChatService) {
     try {
       if (body.plan) {
         total = acceptedTotal(quote, body.amount_cents);
-        charges = planCharges(quote.folio, total, body.plan);
+        charges = planCharges(quote.folio, total, body.plan, (await astore.getSettings(quote.account_id)).language);
       }
     } catch (e: any) { throw new HttpError(400, e?.message ?? 'Plan de pago inválido'); }
     // Primero los cobros (cada uno con su folio de origen: si algo falla a la mitad, repetir no duplica) y después el

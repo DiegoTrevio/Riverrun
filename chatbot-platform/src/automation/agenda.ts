@@ -12,13 +12,14 @@ import { mailBrand } from '../brands.js';
 import { appointmentEvent } from '../integrations/webhooks.js';
 import { config } from '../config.js';
 import { formatMoney } from '../quotes/format.js';
+import type { Lang } from '../locale.js';
 import { getReceivableSettings, receivableBySource, todayIn, type Receivable } from '../receivables/index.js';
 import { sendMail } from '../mailer.js';
 import { activeStaff, assignmentStats, isOff, pickStaff, staffInfo, staffNames, worksDuring, type StaffInfo } from './staff.js';
 import * as astore from './store.js';
 import { renderTemplate } from './templates.js';
-import { addDays, dayOf, fromMinutes, localParts, slotKey, spanishDate, spanishTime, toMinutes, zonedToUtc } from './time.js';
-import { DEFAULT_REMINDER, type AccountSettings, type Appointment, type Service } from './types.js';
+import { addDays, dayOf, fromMinutes, localDate, localParts, localTime, slotKey, spanishDate, spanishTime, toMinutes, zonedToUtc } from './time.js';
+import { DEFAULT_REMINDER, DEFAULT_REMINDER_EN, type AccountSettings, type Appointment, type Service } from './types.js';
 
 export interface Slot {
   start: Date;
@@ -344,29 +345,48 @@ export class Agenda {
     const settings = await astore.getSettings(a.account_id);
     const acc = await store.getAccount(a.account_id);
     const mb = await mailBrand(a.account_id);
-    const business = mb.fromName || acc?.name || 'tu reservación';
-    const when = `${spanishDate(new Date(a.starts_at), settings.timezone)} a las ${spanishTime(new Date(a.starts_at), settings.timezone)}`;
+    const en = settings.language === 'en';
+    const business = mb.fromName || acc?.name || (en ? 'your booking' : 'tu reservación');
+    const at = new Date(a.starts_at);
+    const when = en ? `${localDate(at, settings.timezone, 'en')} at ${localTime(at, settings.timezone, 'en')}` : `${spanishDate(at, settings.timezone)} a las ${spanishTime(at, settings.timezone)}`;
     const call = a.kind === 'call';
-    const kind = call ? (a.meeting_url ? 'videollamada' : 'llamada') : 'cita';
-    const subject = what === 'booked' ? `Tu ${kind} quedó agendada: ${a.service_name} · ${when}`
-      : what === 'reminder' ? `Recordatorio: tu ${kind} de ${a.service_name} · ${when}` : `Tu ${kind} se canceló: ${a.service_name} · ${when}`;
+    const kind = en ? (call ? (a.meeting_url ? 'video call' : 'call') : 'appointment') : (call ? (a.meeting_url ? 'videollamada' : 'llamada') : 'cita');
     const service = a.service_id ? await astore.getService(a.service_id) : null;
     const first = (a.customer_name || '').split(/\s+/)[0];
-    const main = what === 'cancelled'
-      ? [`Tu ${kind} de ${a.service_name} del ${when} se canceló.`]
-      : [
-          `Tu ${kind} de ${a.service_name} es el ${when}${a.assigned_user_name ? ` con ${a.assigned_user_name}` : ''}.`,
-          a.meeting_url ? `Entra a la videollamada aquí: ${a.meeting_url}` : '',
-          call && !a.meeting_url && a.customer_phone ? `Te llamaremos al +${a.customer_phone.replace(/^\+/, '')}.` : '',
-          call && !a.meeting_url && !a.customer_phone ? 'Antes de la hora te enviaremos el enlace o los datos para la llamada.' : '',
-          !call && service?.location ? `Lugar: ${service.location}` : '',
-        ].filter(Boolean);
+    const phone = a.customer_phone ? `+${a.customer_phone.replace(/^\+/, '')}` : '';
     const deposit = what === 'booked' ? await this.depositOf(a) : null;
-    if (deposit?.status === 'pending') {
-      const how = (await getReceivableSettings(a.account_id)).payment_instructions.trim();
-      main.push('', `Para confirmar tu ${kind} te pedimos un anticipo de ${formatMoney(Number(deposit.amount_cents), deposit.currency)}.`, ...(how ? ['Cómo pagar:', how] : []));
+    const how = deposit?.status === 'pending' ? (await getReceivableSettings(a.account_id)).payment_instructions.trim() : '';
+    const depositAmount = deposit?.status === 'pending' ? formatMoney(Number(deposit.amount_cents), deposit.currency, settings.language) : '';
+    const subject = en
+      ? (what === 'booked' ? `Your ${kind} is booked: ${a.service_name} · ${when}`
+        : what === 'reminder' ? `Reminder: your ${kind} for ${a.service_name} · ${when}` : `Your ${kind} was canceled: ${a.service_name} · ${when}`)
+      : (what === 'booked' ? `Tu ${kind} quedó agendada: ${a.service_name} · ${when}`
+        : what === 'reminder' ? `Recordatorio: tu ${kind} de ${a.service_name} · ${when}` : `Tu ${kind} se canceló: ${a.service_name} · ${when}`);
+    const main = en
+      ? (what === 'cancelled'
+        ? [`Your ${kind} for ${a.service_name} on ${when} was canceled.`]
+        : [
+            `Your ${kind} for ${a.service_name} is on ${when}${a.assigned_user_name ? ` with ${a.assigned_user_name}` : ''}.`,
+            a.meeting_url ? `Join the video call here: ${a.meeting_url}` : '',
+            call && !a.meeting_url && phone ? `We'll call you at ${phone}.` : '',
+            call && !a.meeting_url && !phone ? "We'll send you the link or call details before your appointment." : '',
+            !call && service?.location ? `Location: ${service.location}` : '',
+          ].filter(Boolean))
+      : (what === 'cancelled'
+        ? [`Tu ${kind} de ${a.service_name} del ${when} se canceló.`]
+        : [
+            `Tu ${kind} de ${a.service_name} es el ${when}${a.assigned_user_name ? ` con ${a.assigned_user_name}` : ''}.`,
+            a.meeting_url ? `Entra a la videollamada aquí: ${a.meeting_url}` : '',
+            call && !a.meeting_url && phone ? `Te llamaremos al ${phone}.` : '',
+            call && !a.meeting_url && !phone ? 'Antes de la hora te enviaremos el enlace o los datos para la llamada.' : '',
+            !call && service?.location ? `Lugar: ${service.location}` : '',
+          ].filter(Boolean));
+    if (depositAmount) {
+      main.push('', en ? `To confirm your ${kind}, we ask for a deposit of ${depositAmount}.` : `Para confirmar tu ${kind} te pedimos un anticipo de ${depositAmount}.`,
+        ...(how ? [en ? 'How to pay:' : 'Cómo pagar:', how] : []));
     }
-    const text = [first ? `Hola ${first},` : 'Hola,', '', ...main, '', `— ${business}`].join('\n');
+    const hello = en ? (first ? `Hi ${first},` : 'Hi,') : (first ? `Hola ${first},` : 'Hola,');
+    const text = [hello, '', ...main, '', `— ${business}`].join('\n');
     return sendMail({ fromName: mb.fromName, to: a.customer_email, subject, text });
   }
 
@@ -484,10 +504,13 @@ export class Agenda {
   private async createDeposit(a: Appointment, service: Service, tz: string) {
     if (!service.deposit_cents || !config.receivables.enabled) return null;
     const { limit, due } = this.depositDue(a, service, tz);
-    const when = `${spanishDate(new Date(a.starts_at), tz)} a las ${spanishTime(new Date(a.starts_at), tz)}`;
+    // El concepto lo ve el cliente en sus recordatorios de pago: va en el idioma del negocio.
+    const en = (await astore.getSettings(a.account_id)).language === 'en';
+    const at = new Date(a.starts_at);
+    const concept = en ? `Deposit: ${service.name} on ${localDate(at, tz, 'en')} at ${localTime(at, tz, 'en')}` : `Anticipo: ${service.name} del ${spanishDate(at, tz)} a las ${spanishTime(at, tz)}`;
     const { receivable, existed } = await this.chat.receivables.create({
       accountId: a.account_id, contactId: a.contact_id, conversationId: a.conversation_id,
-      concept: `Anticipo: ${service.name} del ${when}`, amountCents: service.deposit_cents, currency: service.deposit_currency,
+      concept, amountCents: service.deposit_cents, currency: service.deposit_currency,
       dueDate: due, source: 'appointment', sourceId: a.id, actor: 'la agenda',
     });
     if (existed) return receivable;
@@ -521,8 +544,12 @@ export class Agenda {
     const cancelled = await this.cancel(a.id, 'no se recibió el anticipo a tiempo', 'sistema');
     if (!cancelled) return;
     if (a.conversation_id) {
+      const lang = (await astore.getSettings(a.account_id)).language;
+      const amount = formatMoney(Number(deposit.amount_cents), deposit.currency, lang);
       await this.chat.outbound.send(a.conversation_id, {
-        text: `Hola {{nombre}}, tu {{cita.tipo}} de {{cita.servicio}} del {{cita.fecha}} a las {{cita.hora}} se canceló porque no recibimos el anticipo de ${formatMoney(Number(deposit.amount_cents), deposit.currency)}. Si ya pagaste o quieres agendar otra vez, escríbenos por aquí.`,
+        text: lang === 'en'
+          ? `Hi {{nombre}}, your {{cita.tipo}} for {{cita.servicio}} on {{cita.fecha}} at {{cita.hora}} was canceled because we didn't receive the ${amount} deposit. If you already paid or want to book again, just message us here.`
+          : `Hola {{nombre}}, tu {{cita.tipo}} de {{cita.servicio}} del {{cita.fecha}} a las {{cita.hora}} se canceló porque no recibimos el anticipo de ${amount}. Si ya pagaste o quieres agendar otra vez, escríbenos por aquí.`,
         source: 'booking', transactional: true, allowWhenHuman: true, appointment: cancelled,
       });
     } else if (a.customer_email) await this.mailCustomer(cancelled, 'cancelled').catch(() => undefined);
@@ -561,8 +588,9 @@ export class Agenda {
       if (a.customer_email) await this.mailCustomer(a, 'reminder');
       return;
     }
+    const lang = (await astore.getSettings(a.account_id)).language;
     const r = await this.chat.outbound.send(a.conversation_id, {
-      text: withLink(service?.reminder_message || DEFAULT_REMINDER, a),
+      text: withLink(service?.reminder_message || (lang === 'en' ? DEFAULT_REMINDER_EN : DEFAULT_REMINDER), a, lang),
       source: 'reminder',
       transactional: true,
       allowWhenHuman: true,
@@ -582,8 +610,9 @@ export class Agenda {
   async sendConfirmation(a: Appointment) {
     if (!a.conversation_id) return { sent: false, reason: 'sin conversación' };
     const service = a.service_id ? await astore.getService(a.service_id) : null;
+    const lang = (await astore.getSettings(a.account_id)).language;
     return this.chat.outbound.send(a.conversation_id, {
-      text: withLink(`Hola {{nombre}}, tu {{cita.tipo}} de {{cita.servicio}} quedó agendada para el {{cita.fecha}} a las {{cita.hora}}${a.assigned_user_name ? ' con {{cita.persona}}' : ''}.${service?.location && !/^https:\/\//.test(service.location) ? ' Lugar: {{cita.lugar}}.' : ''}`, a),
+      text: withLink(confirmationText(a, service, lang), a, lang),
       source: 'booking',
       transactional: true,
       allowWhenHuman: true,
@@ -593,10 +622,18 @@ export class Agenda {
   }
 }
 
+/** La confirmación al cliente de una cita agendada desde el panel, en el idioma del negocio. */
+export function confirmationText(a: Pick<Appointment, 'assigned_user_name'>, service: Pick<Service, 'location'> | null, lang: Lang = 'es'): string {
+  const place = !!service?.location && !/^https:\/\//.test(service.location);
+  return lang === 'en'
+    ? `Hi {{nombre}}, your {{cita.tipo}} for {{cita.servicio}} is booked for {{cita.fecha}} at {{cita.hora}}${a.assigned_user_name ? ' with {{cita.persona}}' : ''}.${place ? ' Location: {{cita.lugar}}.' : ''}`
+    : `Hola {{nombre}}, tu {{cita.tipo}} de {{cita.servicio}} quedó agendada para el {{cita.fecha}} a las {{cita.hora}}${a.assigned_user_name ? ' con {{cita.persona}}' : ''}.${place ? ' Lugar: {{cita.lugar}}.' : ''}`;
+}
+
 /** Un mensaje al cliente de una videollamada lleva su enlace (si el texto no lo trae ya con {{cita.enlace}}). */
-export function withLink(text: string, a: Pick<Appointment, 'meeting_url'>): string {
+export function withLink(text: string, a: Pick<Appointment, 'meeting_url'>, lang: Lang = 'es'): string {
   if (!a.meeting_url || /\{\{\s*cita\.enlace\s*\}\}/i.test(text)) return text;
-  return `${text}\n\nEnlace para la videollamada: {{cita.enlace}}`;
+  return `${text}\n\n${lang === 'en' ? 'Video call link' : 'Enlace para la videollamada'}: {{cita.enlace}}`;
 }
 
 /* ------------------------------ Calendario .ics ------------------------------ */

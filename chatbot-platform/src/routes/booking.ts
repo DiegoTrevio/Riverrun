@@ -9,7 +9,7 @@ import { HttpError, requireRole, targetAccount } from '../access.js';
 import { freeSlots } from '../automation/agenda.js';
 import { activeStaff, staffNames } from '../automation/staff.js';
 import * as astore from '../automation/store.js';
-import { spanishDate, spanishTime } from '../automation/time.js';
+import { localDate, localTime, spanishDate, spanishTime } from '../automation/time.js';
 import type { Service } from '../automation/types.js';
 import { brandOfAccount, mailBrand, publicBrand } from '../brands.js';
 import { canonicalEmail } from '../billing/trial-claims.js';
@@ -267,14 +267,18 @@ export async function bookingPublicRoutes(app: FastifyInstance, service: ChatSer
     );
     const settings = await astore.getSettings(found.link.account_id);
     const slot = (await freeSlots(svc, settings, new Date(), { days: Math.min(svc.max_days_ahead, 30) })).find((s) => s.key === b.slot);
-    const when = slot ? `${spanishDate(slot.start, settings.timezone)} a las ${spanishTime(slot.start, settings.timezone)}` : '';
+    const en = settings.language === 'en';
+    const when = !slot ? '' : en ? `${localDate(slot.start, settings.timezone, 'en')} at ${localTime(slot.start, settings.timezone, 'en')}` : `${spanishDate(slot.start, settings.timezone)} a las ${spanishTime(slot.start, settings.timezone)}`;
     const mb = await mailBrand(found.link.account_id);
     const business = mb.fromName || found.link.account_name;
+    const confirmUrl = `${linkUrl(String(req.params.token))}?confirmar=${token}`;
     // Texto fijo: ni el nombre ni las notas que escribió quien reserva (no sirve para mandar mensajes a otros).
     const emailSent = await sendMail({
       fromName: mb.fromName, to: b.email,
-      subject: `Confirma tu reserva con ${business}`,
-      text: `Hola,\n\nPara confirmar tu reserva de ${svc.name}${when ? ` el ${when}` : ''} con ${business}, abre este enlace (vence en una hora):\n\n${linkUrl(String(req.params.token))}?confirmar=${token}\n\nSi no la pediste, ignora este correo: no se agenda nada.`,
+      subject: en ? `Confirm your booking with ${business}` : `Confirma tu reserva con ${business}`,
+      text: en
+        ? `Hi,\n\nTo confirm your booking for ${svc.name}${when ? ` on ${when}` : ''} with ${business}, open this link (it expires in one hour):\n\n${confirmUrl}\n\nIf you didn't request it, ignore this email: nothing will be booked.`
+        : `Hola,\n\nPara confirmar tu reserva de ${svc.name}${when ? ` el ${when}` : ''} con ${business}, abre este enlace (vence en una hora):\n\n${confirmUrl}\n\nSi no la pediste, ignora este correo: no se agenda nada.`,
     }).catch(() => false);
     return { ok: true, pending: true, email: b.email, email_sent: emailSent };
   });

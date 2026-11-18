@@ -358,8 +358,8 @@ export class Automator {
     await astore.markAutomationRun(rule.id);
     const texts = rule.actions.flatMap((a) => Object.values(a).filter((v): v is string => typeof v === 'string'));
     // Si una consulta de variables falla, las acciones corren igual (esas variables quedan vacías).
-    const looked = await lookupVars(texts, { accountId: ctx.conv.account_id, contactId: ctx.contact.id, data: ctx.contact.data, assignedUserId: ctx.conv.assigned_user_id, timezone: ctx.settings.timezone }).catch(() => ({}));
-    ctx = { ...ctx, vars: { ...looked, ...eventVars(e, ctx.settings.timezone) } };
+    const looked = await lookupVars(texts, { accountId: ctx.conv.account_id, contactId: ctx.contact.id, data: ctx.contact.data, assignedUserId: ctx.conv.assigned_user_id, timezone: ctx.settings.timezone, lang: ctx.settings.language }).catch(() => ({}));
+    ctx = { ...ctx, vars: { ...looked, ...eventVars(e, ctx.settings.timezone, ctx.settings.language) } };
     await logEvent({ level: 'info', source: 'engine', message: `Regla ejecutada: "${rule.name}"`, accountId: ctx.conv.account_id, chatbotId: ctx.conv.chatbot_id, channelId: ctx.conv.channel_id, conversationId: ctx.conv.id });
     for (const [i, action] of rule.actions.entries()) {
       try {
@@ -379,7 +379,8 @@ export class Automator {
       message: e.text,
       appointment: e.appointment,
       timezone: ctx.settings.timezone,
-      vars: ctx.vars ?? eventVars(e, ctx.settings.timezone),
+      lang: ctx.settings.language,
+      vars: ctx.vars ?? eventVars(e, ctx.settings.timezone, ctx.settings.language),
     });
   }
 

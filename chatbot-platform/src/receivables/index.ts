@@ -13,9 +13,10 @@ import { countHit } from '../identity/rate-limit.js';
 import { logEvent } from '../logs.js';
 import { paymentEvent } from '../integrations/webhooks.js';
 import { formatMoney } from '../quotes/format.js';
+import type { Lang } from '../locale.js';
 import type { ChatService } from '../service.js';
 import * as astore from '../automation/store.js';
-import { addDays, isOpen, localParts, nextOpen, spanishDate, zonedToUtc } from '../automation/time.js';
+import { addDays, isOpen, localDate, localParts, nextOpen, zonedToUtc } from '../automation/time.js';
 import type { WaTemplateRef } from '../automation/types.js';
 import type { Contact, Conversation, Message } from '../types.js';
 
@@ -32,6 +33,18 @@ export const DEFAULT_MESSAGES = {
   before: 'Hola {{nombre}}, te recordamos que tu pago de {{pago.concepto}} por {{pago.monto}} vence el {{pago.vencimiento}}.',
   due: 'Hola {{nombre}}, hoy vence tu pago de {{pago.concepto}} por {{pago.monto}}.',
   overdue: 'Hola {{nombre}}, tu pago de {{pago.concepto}} por {{pago.monto}} venció el {{pago.vencimiento}}. Si ya pagaste, envíanos tu comprobante por aquí.',
+};
+
+/** Los mismos, para un negocio que atiende en inglés (Ajustes → Idioma con tus clientes). */
+export const DEFAULT_MESSAGES_EN = {
+  before: 'Hi {{nombre}}, this is a reminder that your payment for {{pago.concepto}} of {{pago.monto}} is due on {{pago.vencimiento}}.',
+  due: 'Hi {{nombre}}, your payment for {{pago.concepto}} of {{pago.monto}} is due today.',
+  overdue: 'Hi {{nombre}}, your payment for {{pago.concepto}} of {{pago.monto}} was due on {{pago.vencimiento}}. If you already paid, please send us your receipt here.',
+};
+
+const EXTRA = {
+  es: { link: 'Paga aquí: {{pago.link}}', how: 'Cómo pagar:\n{{pago.instrucciones}}', ref: 'Referencia: {{pago.referencia}}' },
+  en: { link: 'Pay here: {{pago.link}}', how: 'How to pay:\n{{pago.instrucciones}}', ref: 'Reference: {{pago.referencia}}' },
 };
 
 export interface Receivable {
@@ -190,13 +203,13 @@ export function daysBetween(from: string, to: string) {
 }
 
 /** Las variables del cobro para los mensajes: {{pago.concepto}}, {{pago.monto}}, {{pago.vencimiento}}… */
-export function paymentVars(r: Pick<Receivable, 'concept' | 'amount_cents' | 'currency' | 'due_date' | 'payment_link' | 'reference'> & { installment?: string }, s: Pick<ReceivableSettings, 'payment_instructions'>, tz: string, now = new Date()): Record<string, string> {
+export function paymentVars(r: Pick<Receivable, 'concept' | 'amount_cents' | 'currency' | 'due_date' | 'payment_link' | 'reference'> & { installment?: string }, s: Pick<ReceivableSettings, 'payment_instructions'>, tz: string, now = new Date(), lang: Lang = 'es'): Record<string, string> {
   const late = daysBetween(r.due_date, todayIn(tz, now));
   return {
     'pago.concepto': r.concept,
-    'pago.monto': formatMoney(Number(r.amount_cents), r.currency),
+    'pago.monto': formatMoney(Number(r.amount_cents), r.currency, lang),
     // A mediodía: el día no cambia por la zona horaria.
-    'pago.vencimiento': spanishDate(zonedToUtc(r.due_date, '12:00', tz), tz),
+    'pago.vencimiento': localDate(zonedToUtc(r.due_date, '12:00', tz), tz, lang),
     'pago.dias_atraso': late > 0 ? String(late) : '0',
     'pago.dias_para_vencer': late < 0 ? String(-late) : '0',
     'pago.link': r.payment_link,
@@ -208,14 +221,18 @@ export function paymentVars(r: Pick<Receivable, 'concept' | 'amount_cents' | 'cu
 
 export const reminderKind = (daysFromDue: number): 'before' | 'due' | 'overdue' => (daysFromDue < 0 ? 'before' : daysFromDue === 0 ? 'due' : 'overdue');
 
-/** El texto del recordatorio: el del momento (antes, el día o vencido) más cómo pagar, si el texto no lo trae ya. */
-export function reminderText(kind: 'before' | 'due' | 'overdue', s: ReceivableSettings, r: Pick<Receivable, 'payment_link' | 'reference'>) {
-  const base = (kind === 'before' ? s.message_before : kind === 'due' ? s.message_due : s.message_overdue).trim() || DEFAULT_MESSAGES[kind];
+/**
+ * El texto del recordatorio: el del momento (antes, el día o vencido) más cómo pagar, si el texto no lo trae ya. Sin texto
+ * propio sale el de fábrica en el idioma del negocio.
+ */
+export function reminderText(kind: 'before' | 'due' | 'overdue', s: ReceivableSettings, r: Pick<Receivable, 'payment_link' | 'reference'>, lang: Lang = 'es') {
+  const base = (kind === 'before' ? s.message_before : kind === 'due' ? s.message_due : s.message_overdue).trim() || (lang === 'en' ? DEFAULT_MESSAGES_EN : DEFAULT_MESSAGES)[kind];
+  const words = EXTRA[lang];
   const has = (v: string) => new RegExp(`\\{\\{\\s*pago\\.${v}\\s*\\}\\}`, 'i').test(base);
   const extra: string[] = [];
-  if (r.payment_link && !has('link')) extra.push('Paga aquí: {{pago.link}}');
-  if (s.payment_instructions.trim() && !has('instrucciones')) extra.push('Cómo pagar:\n{{pago.instrucciones}}');
-  if (r.reference && !has('referencia')) extra.push('Referencia: {{pago.referencia}}');
+  if (r.payment_link && !has('link')) extra.push(words.link);
+  if (s.payment_instructions.trim() && !has('instrucciones')) extra.push(words.how);
+  if (r.reference && !has('referencia')) extra.push(words.ref);
   return extra.length ? `${base}\n\n${extra.join('\n')}` : base;
 }
 
@@ -343,9 +360,9 @@ export class Receivables {
     const [s, st] = await Promise.all([getReceivableSettings(r.account_id), astore.getSettings(r.account_id)]);
     // El texto según el día real (un recordatorio movido por el horario puede salir otro día).
     const kind = reminderKind(daysBetween(r.due_date, todayIn(st.timezone, now)));
-    const vars = paymentVars(r, s, st.timezone, now);
+    const vars = paymentVars(r, s, st.timezone, now, st.language);
     const res = await this.chat.outbound.send(conversationId, {
-      text: reminderText(kind, s, r),
+      text: reminderText(kind, s, r, st.language),
       source: 'payment_reminder',
       transactional: true,
       allowWhenHuman: true,
@@ -414,6 +431,8 @@ export class Receivables {
     if (!r) return;
     const [s, st] = await Promise.all([getReceivableSettings(r.account_id), astore.getSettings(r.account_id)]);
     const vars = paymentVars(r, s, st.timezone);
+    // Para el cliente (las reglas de «pago vencido»), en el idioma del negocio; el aviso al equipo sigue en español.
+    const customerVars = st.language === 'en' ? paymentVars(r, s, st.timezone, undefined, 'en') : vars;
     const conversationId = r.conversation_id ?? (r.contact_id ? await latestConversationOf(r.contact_id) : null);
     try {
       if (s.notify_team_on_overdue) await this.alertOverdue(r, vars, conversationId);
@@ -422,7 +441,7 @@ export class Receivables {
       await query(`UPDATE receivables SET overdue_notified_at = NULL WHERE id = $1`, [r.id]);
       throw e;
     }
-    if (conversationId) this.chat.automator.emit({ type: 'payment_overdue', conversationId, payment: vars });
+    if (conversationId) this.chat.automator.emit({ type: 'payment_overdue', conversationId, payment: customerVars });
     await paymentEvent('payment.overdue', r, { conversationId });
   }
 
@@ -451,7 +470,7 @@ export class Receivables {
       const conversationId = updated.conversation_id ?? (updated.contact_id ? await latestConversationOf(updated.contact_id) : null);
       if (conversationId) {
         const [s, st] = await Promise.all([getReceivableSettings(r.account_id), astore.getSettings(r.account_id)]);
-        this.chat.automator.emit({ type: 'payment_paid', conversationId, payment: paymentVars(updated, s, st.timezone) });
+        this.chat.automator.emit({ type: 'payment_paid', conversationId, payment: paymentVars(updated, s, st.timezone, undefined, st.language) });
       }
       await paymentEvent('payment.paid', updated, { conversationId, origin: by.origin });
     }
@@ -515,7 +534,7 @@ export class Receivables {
     const [s, st] = await Promise.all([getReceivableSettings(conv.account_id), astore.getSettings(conv.account_id)]);
     return {
       items: pending.map((r) => {
-        const v = paymentVars(r, s, st.timezone);
+        const v = paymentVars(r, s, st.timezone, undefined, st.language);
         return { concept: r.concept, amount: v['pago.monto'], due: v['pago.vencimiento'], overdueDays: Number(v['pago.dias_atraso']), link: r.payment_link, reference: r.reference };
       }),
       instructions: s.payment_instructions.trim(),

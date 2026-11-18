@@ -9,6 +9,7 @@ import { cardNumbersIn, isSensitiveField } from './safety.js';
 import { checkInputs, evaluateCalculator, parseHumanNumber, type CalculatorDefinition } from '../quotes/calculator.js';
 import { countEmojis, deepClean, FactCorpus, limitEmojis, MASKED_MONEY_RE, normalize, stripEmojis, toWhatsappFormat, truncateChars } from './text.js';
 import { fixArithmetic, fixHiddenArithmetic } from './arithmetic.js';
+import { voiceOf } from '../locale.js';
 
 /** Plan final ya validado que el backend ejecutará. */
 export interface ExecutionPlan {
@@ -1020,7 +1021,9 @@ export function validateDecision(input: ValidationInput): ValidationResult {
           // Sin cotización, la respuesta no puede decir que la envía: se pide lo que falta (o se avisa que ya está en revisión).
           const tu = bot.personality.formality !== 'usted';
           const needed = missing.map((f) => f.label || f.key).join(', ');
-          messages = [qv.open ? `${tu ? 'Tu' : 'Su'} cotización está en revisión con el equipo; ${tu ? 'te' : 'se'} la enviamos en cuanto esté lista.`
+          messages = voiceOf(bot.personality) === 'en' ? [qv.open ? "Our team is reviewing your quote; we'll send it as soon as it's ready."
+            : missing.length ? `To prepare your quote I need: ${needed}. Could you share it with me?`
+            : 'To prepare your quote, could you confirm what you need and how many?'] : [qv.open ? `${tu ? 'Tu' : 'Su'} cotización está en revisión con el equipo; ${tu ? 'te' : 'se'} la enviamos en cuanto esté lista.`
             : missing.length ? `Para ${tu ? 'prepararte' : 'prepararle'} la cotización necesito: ${needed}. ¿Me lo ${tu ? 'compartes' : 'comparte'}?`
             : `Para ${tu ? 'prepararte' : 'prepararle'} la cotización, ¿me ${tu ? 'confirmas' : 'confirma'} qué ${tu ? 'necesitas' : 'necesita'} y en qué cantidad?`];
           fixes.push(`Cotización no preparada: ${problems.join(' ')}`);
@@ -1098,7 +1101,9 @@ export function validateDecision(input: ValidationInput): ValidationResult {
         if (input.final) {
           const tu = bot.personality.formality !== 'usted';
           const first = check.invalid[0]?.label ?? check.missing[0]?.label ?? missingFields[0]?.label;
-          messages = [qv.open ? `${tu ? 'Tu' : 'Su'} cotización está en revisión con el equipo; ${tu ? 'te' : 'se'} la enviamos en cuanto esté lista.`
+          messages = voiceOf(bot.personality) === 'en' ? [qv.open ? "Our team is reviewing your quote; we'll send it as soon as it's ready."
+            : first ? `To give you a quote I need you to tell me: ${first}.`
+            : 'To give you a quote, could you confirm the details?'] : [qv.open ? `${tu ? 'Tu' : 'Su'} cotización está en revisión con el equipo; ${tu ? 'te' : 'se'} la enviamos en cuanto esté lista.`
             : first ? `Para ${tu ? 'cotizarte' : 'cotizarle'} necesito ${tu ? 'que me digas' : 'que me diga'}: ${first}.`
             : `Para ${tu ? 'cotizarte' : 'cotizarle'}, ¿me ${tu ? 'confirmas' : 'confirma'} los datos?`];
           fixes.push(`Cotización no calculada: ${problems.join(' ')}`);

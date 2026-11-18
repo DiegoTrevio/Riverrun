@@ -122,6 +122,8 @@ export const ConnectionAlertsSchema = z.object({
 export type ConnectionAlerts = z.infer<typeof ConnectionAlertsSchema>;
 
 export const AccountSettingsSchema = z.object({
+  /** Idioma del negocio con sus clientes: mensajes fijos, moneda y formato (src/locale.ts). El panel tiene el suyo. */
+  language: z.enum(['es', 'en']).default('es'),
   timezone: TimezoneSchema.default('America/Mexico_City'),
   business_hours: WeeklyHoursSchema.default(DEFAULT_HOURS),
   /** Días cerrados (YYYY-MM-DD). */
@@ -432,6 +434,8 @@ export interface Appointment {
 }
 
 export const DEFAULT_REMINDER = 'Hola {{nombre}}, te recordamos tu {{cita.tipo}} de {{cita.servicio}} el {{cita.fecha}} a las {{cita.hora}}. Si necesitas cambiarla, responde a este mensaje.';
+/** El mismo, para un negocio que atiende en inglés. */
+export const DEFAULT_REMINDER_EN = 'Hi {{nombre}}, this is a reminder of your {{cita.tipo}} for {{cita.servicio}} on {{cita.fecha}} at {{cita.hora}}. If you need to change it, just reply to this message.';
 
 /* ------------------------------ Eventos ------------------------------ */
 

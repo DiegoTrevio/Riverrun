@@ -18,6 +18,7 @@ import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
 import type { User } from '../types.js';
 import { parse } from './util.js';
+import { agentForLanguage, settingsForLanguage } from '../locale.js';
 import { localParts, zonedToUtc } from '../automation/time.js';
 
 /**
@@ -198,12 +199,23 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
     // Lo que solo se muestra (los secretos ocultos y su marca) no se guarda desde aquí.
     const { secrets_hidden: _hidden, ics_url: _ics, ...raw } = (req.body ?? {}) as Record<string, unknown>;
     // Los secretos no se cambian desde aquí (se regeneran con su propia ruta).
-    const next = parse(AccountSettingsSchema, { ...current, ...raw, calendar_token: current.calendar_token, webhook_secret: current.webhook_secret });
+    let next = parse(AccountSettingsSchema, { ...current, ...raw, calendar_token: current.calendar_token, webhook_secret: current.webhook_secret });
+    // Cambiar el idioma del negocio pasa al otro idioma los textos de fábrica (bajas, consentimiento y los de cada agente).
+    // Corre cada vez que se guarda el idioma (no solo al cambiarlo): si un guardado anterior falló a la mitad, el siguiente
+    // termina de pasar a los asistentes que faltaban. Lo que ya está en el idioma no cambia.
+    const languageChanged = 'language' in raw || next.language !== current.language;
+    if (languageChanged) next = settingsForLanguage(next, next.language);
     next.retention = await nextRetention(req, accountId, current.retention, next.retention, (raw.retention as any)?.pending === null);
     // Se escala solo a administradores activos de esta cuenta: lo demás se descarta al guardar.
     const admins = new Set((await astore.teamMembers(accountId, ['admin'])).map((u) => u.id));
     next.alert_timing.escalate_user_ids = next.alert_timing.escalate_user_ids.filter((id) => admins.has(id));
     await astore.saveSettings(accountId, next);
+    if (languageChanged) {
+      for (const bot of await store.listChatbots(accountId)) {
+        const moved = agentForLanguage({ personality: bot.personality, rules: bot.rules }, next.language);
+        if (JSON.stringify(moved) !== JSON.stringify({ personality: bot.personality, rules: bot.rules })) await store.updateChatbot(bot.id, moved);
+      }
+    }
     // Guardar el horario lo da por revisado en «Ajustes» (aunque sea el que venía de ejemplo).
     if ('business_hours' in raw) await store.markOnboarding(accountId, { hours: true });
     await logEvent({ level: 'info', source: 'admin', message: 'Configuración de la cuenta actualizada', accountId });
