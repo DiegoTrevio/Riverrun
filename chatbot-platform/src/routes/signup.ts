@@ -129,7 +129,7 @@ export async function signupRoutes(app: FastifyInstance) {
     card_required: await cardRequired(),
     support_contact: config.signup.supportContact,
     terms_url: config.signup.termsUrl,
-    privacy_url: privacyUrl(),
+    privacy_url: privacyUrl(visitorLang(req)),
     terms_version: termsVersion(),
     // Clave pública del captcha (vacía si no está activo).
     turnstile_site_key: captchaEnabled() ? config.signup.turnstile.siteKey : '',
@@ -199,7 +199,7 @@ export async function signupRoutes(app: FastifyInstance) {
         await client.query(`UPDATE users SET lang = 'en' WHERE id = $1`, [user.id]);
         await client.query(`UPDATE accounts SET settings = $2 WHERE id = $1`, [account.id, JSON.stringify(settingsForLanguage(AccountSettingsSchema.parse({}), 'en'))]);
       }
-      await recordTermsAcceptance(client, { userId: user.id, accountId: account.id, email: user.email, ip: req.ip, userAgent: String(req.headers['user-agent'] ?? ''), source: 'signup' });
+      await recordTermsAcceptance(client, { userId: user.id, accountId: account.id, email: user.email, ip: req.ip, userAgent: String(req.headers['user-agent'] ?? ''), source: 'signup', lang });
       return { account, user };
     }).catch(async (e) => {
       await release(); // no se creó: no cuenta para los topes de cuentas

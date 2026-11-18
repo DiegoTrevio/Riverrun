@@ -19,6 +19,7 @@ import { HttpError } from '../access.js';
 import { BUSINESS_TYPES } from '../templates/business.js';
 import { assertCaptcha, captchaEnabled, DISPOSABLE_MESSAGE, GOOGLE_PASS_COOKIE, googlePassCookie, googleSignupPass, isDisposableEmail, readGoogleSignupPass, privacyUrl, recordTermsAcceptance, termsVersion } from '../signup-guard.js';
 import { parse } from './util.js';
+import { visitorLang } from '../locale.js';
 import { recordSecurity, recordSecurityOnce } from '../security-log.js';
 
 const HOUR = 3600_000;
@@ -141,7 +142,7 @@ export async function googleLoginRoutes(app: FastifyInstance) {
       email: p.email,
       name: p.name,
       terms_url: config.signup.termsUrl,
-      privacy_url: privacyUrl(),
+      privacy_url: privacyUrl(visitorLang(req)),
       terms_version: termsVersion(),
       // El captcha va también antes de crear la cuenta con Google (clave vacía si no está activo).
       turnstile_site_key: captchaEnabled() ? config.signup.turnstile.siteKey : '',
@@ -178,7 +179,7 @@ export async function googleLoginRoutes(app: FastifyInstance) {
       const created = await store.createUser({ account_id: account.id, role: 'admin', name: name || email.split('@')[0], email, password_hash: hash, verified: true }, client);
       await client.query(`UPDATE users SET google_sub = $2 WHERE id = $1`, [created.id, sub]);
       await client.query(`UPDATE accounts SET owner_user_id = $2, brand_id = $3 WHERE id = $1`, [account.id, created.id, brand?.id ?? null]);
-      await recordTermsAcceptance(client, { userId: created.id, accountId: account.id, email, ip: req.ip, userAgent: String(req.headers['user-agent'] ?? ''), source: 'google' });
+      await recordTermsAcceptance(client, { userId: created.id, accountId: account.id, email, ip: req.ip, userAgent: String(req.headers['user-agent'] ?? ''), source: 'google', lang: visitorLang(req) });
       return { account, created };
     }).catch(async (e) => {
       await release();

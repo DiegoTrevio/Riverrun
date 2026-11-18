@@ -48,7 +48,7 @@ t('variantes de la URL del panel (codificada, con ? codificado o con //) llevan 
 });
 
 t('precios, estado y ayuda llevan la suya (con inline); solo ellas', async () => {
-  for (const url of ['/precios', '/estado', '/ayuda', '/ayuda.html', '/privacidad']) {
+  for (const url of ['/precios', '/estado', '/ayuda', '/ayuda.html', '/help.html', '/privacidad', '/privacy', '/data-protection']) {
     const r = await get(url);
     if (!String(r.headers['content-type'] ?? '').startsWith('text/html')) continue;
     assert.match(String(r.headers['content-security-policy']), /'unsafe-inline'/, url);
@@ -70,9 +70,12 @@ t('reservar y la ayuda sí se pueden poner en el sitio del negocio', async () =>
   assert.equal(r.headers['x-frame-options'], undefined);
   assert.match(String(r.headers['content-security-policy']), /frame-ancestors \*/);
   assert.equal(r.headers['referrer-policy'], 'no-referrer', 'conserva el que pone la ruta');
-  const help = await get('/ayuda.html');
-  assert.equal(help.headers['x-frame-options'], undefined);
-  assert.match(String(help.headers['content-security-policy']), /frame-ancestors \*/);
+  for (const url of ['/ayuda.html', '/help.html']) {
+    const help = await get(url);
+    assert.equal(help.statusCode, 200, url);
+    assert.equal(help.headers['x-frame-options'], undefined, url);
+    assert.match(String(help.headers['content-security-policy']), /frame-ancestors \*/, url);
+  }
 });
 
 t('el widget, el chat web y la API no llevan restricciones de página', async () => {

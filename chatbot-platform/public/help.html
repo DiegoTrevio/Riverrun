@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Quick guide — your WhatsApp assistant</title>
+  <meta name="robots" content="noindex" />
+  <style>
+    :root { --accent: #0f766b; --accent-ink: #fff; --link: #0f766b; --soft: #e3f4f1; --text: #1b2430; --muted: #5d6b7a; --border: #dbe3ea; --bg: #f5f7fa; --panel: #fff; }
+    @media (prefers-color-scheme: dark) { :root { --accent: #5fd4c1; --accent-ink: #0b1a17; --link: #5fd4c1; --soft: #123a35; --text: #e8edf2; --muted: #9aa8b6; --border: #2c3a48; --bg: #10161d; --panel: #18212b; } }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--text); background: var(--bg); }
+    main { max-width: 820px; margin: 0 auto; padding: 24px 16px 16px; }
+    /* Colores con 4.5:1 en claro y oscuro; todos los enlaces con el mismo color (no el azul del navegador). */
+    a { color: var(--link); }
+    :focus-visible { outline: 3px solid var(--link); outline-offset: 2px; }
+    header { margin-bottom: 20px; }
+    h1 { font-size: 28px; margin: 0 0 6px; }
+    .lead { color: var(--muted); font-size: 17px; margin: 0; }
+    .top { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0 0; }
+    .btn { display: inline-block; background: var(--accent); color: var(--accent-ink); border: 1px solid var(--accent); font: inherit; cursor: pointer; padding: 9px 16px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 15px; }
+    .btn.ghost { background: transparent; color: var(--link); border: 1px solid var(--link); }
+    ol.steps { list-style: none; counter-reset: s; padding: 0; margin: 28px 0; display: grid; gap: 16px; }
+    ol.steps > li { counter-increment: s; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px 18px 18px 64px; position: relative; }
+    ol.steps > li::before { content: counter(s); position: absolute; left: 18px; top: 16px; width: 32px; height: 32px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; font-weight: 700; }
+    h2 { font-size: 19px; margin: 0 0 4px; }
+    .time { color: var(--muted); font-weight: 400; font-size: 14px; }
+    p { margin: 6px 0; }
+    figure { margin: 12px 0 4px; }
+    figure img { width: 100%; height: auto; border: 1px solid var(--border); border-radius: 8px; display: block; }
+    figcaption { color: var(--muted); font-size: 13px; margin-top: 4px; }
+    .tip { background: var(--soft); border-radius: 8px; padding: 10px 14px; margin: 10px 0 0; font-size: 15px; }
+    .warn { background: #fdf0d8; color: #6d4a07; border-radius: 8px; padding: 10px 14px; margin: 10px 0 0; font-size: 15px; }
+    @media (prefers-color-scheme: dark) { .warn { background: #3a2f12; color: #f0d9a0; } }
+    h2.faq { margin: 36px 0 10px; font-size: 21px; }
+    details { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 16px; margin: 8px 0; }
+    summary { cursor: pointer; font-weight: 600; }
+    details p { color: var(--text); }
+    footer { max-width: 820px; margin: 20px auto 0; padding: 14px 16px 48px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--border); }
+    .toc { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 18px 0 0; font-size: 15px; }
+    h2.faq[id], ol.steps > li[id] { scroll-margin-top: 16px; }
+    kbd { background: var(--soft); border-radius: 4px; padding: 1px 6px; font: inherit; font-weight: 600; }
+    @media (max-width: 560px) { ol.steps > li { padding-left: 16px; padding-top: 58px; } }
+    @media print { body { background: #fff; color: #000; } .top, footer a.btn { display: none; } ol.steps > li, details { break-inside: avoid; } details { border: 0; } details[open] summary ~ * { display: block; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Your WhatsApp assistant, in 15 minutes</h1>
+    <p class="lead">It answers your customers with your business information, books appointments and lets you know when a person is needed. This guide takes you from zero to up and running.</p>
+    <div class="top">
+      <a class="btn" href="/#/agentes">Go to my dashboard</a>
+      <button type="button" class="btn ghost" id="imprimir">Print this guide</button>
+      <a class="btn ghost" href="/ayuda.html" hreflang="es" lang="es">Ver en español</a>
+    </div>
+    <nav class="toc" aria-label="Help sections">
+      <a href="#empezar">Getting started</a>
+      <a href="#whatsapp">WhatsApp</a>
+      <a href="#pagos">Payments and plan</a>
+      <a href="#facturas">Receipts</a>
+      <a href="#cuenta">Your account and privacy</a>
+      <a href="#preguntas">Frequently asked questions</a>
+      <a href="/contacto">Contact us</a>
+      <a href="/estado">Service status</a>
+    </nav>
+  </header>
+
+  <ol class="steps" id="empezar">
+    <li>
+      <h2>Create your account <span class="time">· 1 minute</span></h2>
+      <p>Enter your name, your business name and your email, and accept the terms. Confirm your email with the link we send you (check your spam folder).</p>
+    </li>
+
+    <li>
+      <h2>Tell your assistant about your business <span class="time">· 3 minutes</span></h2>
+      <p>When you create your account you land on <strong>Create your agent</strong>, which has 3 screens. On the first one you choose where your assistant learns from; <strong>it only answers with what you give it</strong>, so it doesn't make up prices or services:</p>
+      <p><strong>My website</strong> (or your online menu, or a shared Google Sheet) · <strong>A file</strong>: a PDF, a photo of your price list or a CSV (if you use Excel, save it as CSV or PDF) · <strong>I'll write it myself</strong>. Press <kbd>Next →</kbd>: it reads it and organizes it for you.</p>
+      <p>On the second one you choose <strong>what your agent will do</strong>: answer questions, book appointments, take orders, or just collect details and hand the customer over to you. What works best for your type of business is already selected. You also choose <strong>when your business is open</strong>: if your information already includes your hours, they show up as we read them; if not, typical hours for your type of business. Change them with one click or leave them for later. Everything else (how it talks, what details it asks for, what it must not touch) is under <em>Customize</em>, in case you want to change it. Press <kbd>Create my agent</kbd>.</p>
+      <figure>
+        <picture>
+          <source srcset="/img/ayuda/01-importar.avif" type="image/avif" />
+          <source srcset="/img/ayuda/01-importar.webp" type="image/webp" />
+          <img src="/img/ayuda/01-importar.jpg" alt="The agent's knowledge screen with the File, Website or Text options" width="1440" height="1801" loading="lazy" decoding="async" />
+        </picture>
+        <figcaption>Paste your website or upload your price list: everything fills in on its own.</figcaption>
+      </figure>
+      <p>Later you can teach it more in <strong>Agents → your agent → Knowledge</strong>.</p>
+      <div class="tip"><strong>Tip:</strong> include your hours, address, payment methods and the questions you get asked the most. For anything that isn't here, the assistant will say it will check with your team.</div>
+    </li>
+
+    <li>
+      <h2>Test it as if you were your customer <span class="time">· 2 minutes</span></h2>
+      <p>On the third screen, <strong>Test your agent and connect it</strong>, type what a customer would ask: prices, hours, location… and something you <em>didn't</em> add, to see that it doesn't make it up. If you don't like something, adjust the information and test again. None of this is sent to your customers; you can also test it later in <strong>Agents → your agent → Test</strong>.</p>
+      <figure>
+        <picture>
+          <source srcset="/img/ayuda/03-probar.avif" type="image/avif" />
+          <source srcset="/img/ayuda/03-probar.webp" type="image/webp" />
+          <img src="/img/ayuda/03-probar.jpg" alt="Conversation simulator with sample questions and the assistant's answers" width="1440" height="1323" loading="lazy" decoding="async" />
+        </picture>
+        <figcaption>The simulator answers just like it will on WhatsApp.</figcaption>
+      </figure>
+    </li>
+
+    <li id="whatsapp">
+      <h2>Connect your WhatsApp <span class="time">· 2 minutes</span></h2>
+      <p>On that same screen press <kbd>Connect my WhatsApp</kbd> (you need to have confirmed your email). In WhatsApp open <em>Settings → Linked devices → Link a device</em> and scan the code. If you opened the dashboard on the same phone, the screen starts on <kbd>With my number</kbd>: tap <kbd>Get code</kbd> and type it in WhatsApp (<em>Link with phone number instead</em>); if the code changes while you type it, use the newest one. <strong>The first time you connect it, your agent turns on by itself</strong> and starts answering; you can pause it anytime in <strong>Set up</strong>.</p>
+      <p>Do customers also write to you on Instagram, Facebook or TikTok? On that same screen tap the network and log in to it: your agent answers there too.</p>
+      <p>For more phones or other channels go to <strong>Agents → your agent → Connections</strong>. Each profile can have up to four WhatsApp phones, each with its own QR code, and you can assign several to one agent.</p>
+      <p>It can be regular WhatsApp or WhatsApp Business, and <strong>you keep using it as always</strong>. If you answer a conversation yourself, the assistant pauses in it.</p>
+      <div class="warn"><strong>Important:</strong> WhatsApp connects as a "linked device", not through its official API. Avoid sending mass messages to people who didn't write to you: WhatsApp may block the number.</div>
+    </li>
+
+    <li>
+      <h2>Handle conversations from the dashboard <span class="time">· every day</span></h2>
+      <p>In <strong>Conversations</strong> you see everything the assistant talks about. Open any of them and press <kbd>Take conversation</kbd> when you want to answer yourself; when you're done, hand it back with <kbd>Return to bot</kbd>. If a customer asks to talk to a person, you get a notification.</p>
+      <figure>
+        <picture>
+          <source srcset="/img/ayuda/05-conversacion.avif" type="image/avif" />
+          <source srcset="/img/ayuda/05-conversacion.webp" type="image/webp" />
+          <img src="/img/ayuda/05-conversacion.jpg" alt="A conversation with the Take conversation button and the customer's details" width="1440" height="2384" loading="lazy" decoding="async" />
+        </picture>
+        <figcaption>You see what the customer said and what the assistant answered. You decide when to step in.</figcaption>
+      </figure>
+    </li>
+
+    <li>
+      <h2>Keep everything up to date</h2>
+      <p>When your prices or hours change, update <strong>Agents → your agent → Knowledge</strong> (or press <kbd>Sync again</kbd> if you imported it from your website). The rest of the options (appointments, team, automatic replies, your plan and payments) are in <strong>Settings</strong>.</p>
+      <figure>
+        <picture>
+          <source srcset="/img/ayuda/06-ajustes.avif" type="image/avif" />
+          <source srcset="/img/ayuda/06-ajustes.webp" type="image/webp" />
+          <img src="/img/ayuda/06-ajustes.jpg" alt="Settings page with hours, services, team, integrations, usage and logs" width="1440" height="1005" loading="lazy" decoding="async" />
+        </picture>
+        <figcaption>Everything else is in Settings, each with a one-line explanation.</figcaption>
+      </figure>
+    </li>
+  </ol>
+
+  <h2 class="faq" id="pagos">Payments and plan</h2>
+  <details>
+    <summary>How do I pay and when am I charged?</summary>
+    <p>Choose your plan in <strong>Settings → My plan and payments</strong> and pay on Stripe's secure page (we never see your card). The charge repeats automatically every month. If you pay during your free trial, the first charge comes when the trial ends, so you don't lose any days.</p>
+  </details>
+  <details>
+    <summary>My bank asks me to confirm the payment</summary>
+    <p>Some banks ask you to authenticate the charge (3D Secure). You get an email and a notice in the dashboard with the link to confirm it: open it and confirm in your bank's app or message.</p>
+  </details>
+  <details>
+    <summary>What happens if a charge fails?</summary>
+    <p>Your assistant keeps working for a few days while you sort it out; we let you know by email and in the dashboard with the link to update your card. If it isn't sorted out, the account is paused (without losing anything) and, after 30 days paused, the subscription is canceled. Once you pay, everything starts working again on its own.</p>
+  </details>
+  <details>
+    <summary>Can I change my card or cancel?</summary>
+    <p>Yes, from <strong>Settings → My plan and payments</strong>: <kbd>Switch to…</kbd>, <kbd>Manage payment</kbd> or <kbd>Change card</kbd>, and <kbd>Cancel</kbd>. When you cancel you keep the service until the end of the period you paid for, and you can reactivate it before that date.</p>
+  </details>
+  <details>
+    <summary>I reached a limit of my plan, what do I do?</summary>
+    <p>The dashboard tells you which limit you reached (channels, agents, team members or storage). <a href="/contacto">Contact us</a> and we'll help you with what your business needs.</p>
+  </details>
+
+  <h2 class="faq" id="facturas">Receipts</h2>
+  <details>
+    <summary>Where do I see what I paid?</summary>
+    <p>Every payment is listed in the payment history in <strong>Settings → My plan and payments</strong>. Tax invoices (CFDI) are only issued to businesses in Mexico.</p>
+  </details>
+
+  <h2 class="faq" id="cuenta">Your account and privacy</h2>
+  <details>
+    <summary>How do I download all my data?</summary>
+    <p>In <strong>Settings → My plan and payments → Your details</strong> press <kbd>Download all my data (ZIP)</kbd>: you get a ZIP with your team, agents, knowledge, contacts, conversations, appointments, quotes and payments. The account owner can do this.</p>
+  </details>
+  <details>
+    <summary>How do I delete my account?</summary>
+    <p>On that same card, the owner types the account name and presses <kbd>Delete my account</kbd>. We send you an email to confirm it; once you confirm, your subscription is canceled and the account is deleted in 7 days. Until then you can press <kbd>Cancel the deletion</kbd>. We only keep what the law requires us to (payments and invoices).</p>
+  </details>
+  <details>
+    <summary>What do you do with my data?</summary>
+    <p>Read our <a href="/privacy">Privacy Policy</a> and how we protect your customers' data, and with which providers, in <a href="/data-protection">Data protection</a>.</p>
+  </details>
+
+  <h2 class="faq" id="preguntas">Frequently asked questions</h2>
+
+  <details id="copiloto">
+    <summary>What is the Copilot and how do I ask it for things?</summary>
+    <p>It's an AI helper inside the dashboard: you write what you want and it does it for you with your own permissions. Open it with the <kbd>Copilot</kbd> button in the menu (or <kbd>Ctrl</kbd> + <kbd>.</kbd>) and ask it, for example, "Tag this contact as VIP", "Book Ana on Saturday at 11", "Remove the free shipping part from the instructions" or "How many appointments do I have this week?". It understands the page you have open: "this contact" is the one you're looking at.</p>
+    <p>What can be undone it does right away and leaves you a card with <kbd>Undo</kbd>. What reaches your customers or can't be undone (sending a message, charging, publishing a flow, launching a campaign, deleting) it shows you first and only happens if you press <kbd>Confirm</kbd>. To fix something it did, press <kbd>Change this</kbd> on its card and write the change. It uses your account's AI budget; if you don't see it in your menu, ask for it to be turned on for your account.</p>
+  </details>
+
+  <details>
+    <summary>How do I connect Instagram, Facebook, X or other social networks?</summary>
+    <p>Go to <strong>Settings → Social media</strong> and press the network. You log in to that network and authorize access; when you're done you're back in the dashboard with the account connected. On networks with direct messages you choose which agent answers; the others (LinkedIn, TikTok, YouTube…) are for comments, posts and stats. If someone from support sends you a <em>connection link</em>, open it and authorize your network: you don't need to log in to the dashboard. Your plan shows how many networks you can connect.</p>
+  </details>
+
+  <details>
+    <summary>With official WhatsApp, why can't I write to a customer after a day?</summary>
+    <p>WhatsApp (official API) only lets you write freely during the 24 hours after the customer's last message. After that, only with a <strong>template</strong> approved by Meta. Create them in <strong>Settings → Social media → Templates</strong>; in your rules, sequences and campaigns choose the template to send if 24 hours have passed, and in a conversation use the <kbd>Template</kbd> button. If your number has a two-step verification PIN and messages don't go out, register it with the <kbd>PIN</kbd> button.</p>
+  </details>
+
+  <details>
+    <summary>How do I post or schedule on my social networks?</summary>
+    <p>In <strong>Posts</strong> press <kbd>+ New post</kbd>: choose the accounts, write the text (each network shows how many characters you have left), add photos or a video and choose <em>Post now</em>, <em>Schedule</em> (date and time of your business) or <em>Save as draft</em>. You can use different text for each network and, on YouTube or Pinterest, the title. In the list or the calendar you see whether it went out on each network, with its link; if one fails we let you know and you can retry it. You can change or cancel scheduled posts until a few minutes before.</p>
+  </details>
+
+  <details>
+    <summary>Where do I see how my social networks are doing?</summary>
+    <p>In <strong>Reports → Social media</strong> you see, for each network, followers and how much they changed, impressions, reach, interactions (likes, comments, shares and saves) and posts for the last 7, 30 or 90 days, with the trend and a day-by-day table. The numbers come from each network and are updated once a day. If a network disconnects or its permission is about to expire, we let you know and the <kbd>Reconnect</kbd> button shows up in <strong>Settings → Social media</strong>.</p>
+  </details>
+
+  <details>
+    <summary>How do I answer comments and reviews on my social networks?</summary>
+    <p>In <strong>Comments</strong> you see what people write on your posts (Instagram, Facebook, X, LinkedIn, YouTube…) and your business reviews on Google and Facebook. Press <kbd>Suggest reply</kbd> for the AI to propose one with your agent's information, edit it if you want and press <kbd>Reply</kbd>. On Instagram and Facebook you can also <em>reply privately</em> (it arrives as a direct message, once and up to 7 days later). If you want the AI to answer positive ones on its own, turn it on in <strong>Settings → Social media → Comment replies</strong>: it never answers complaints or bad reviews, and we let you know about those right away.</p>
+  </details>
+
+  <details>
+    <summary>How do my customers book a call with someone on my team?</summary>
+    <p>In <strong>Calendar → Services</strong> create a service of type <em>Call</em> (phone or video call) and choose who handles it. Decide how they're shared: by rotation, by percentage, first with whoever already handles the customer, or letting the customer ask for someone by name. Your assistant books them in the chat, you from the dashboard, and in <strong>Calendar → Booking links</strong> you create a link so customers book on their own (confirmation and reminders by email). For video calls, each person connects their calendar (the Meet or Teams room is created) or adds their fixed link in <strong>Calendar → Team</strong>.</p>
+  </details>
+
+  <details>
+    <summary>How do I send several messages in a row with buttons (for example, 3 messages over 3 days)?</summary>
+    <p>In <strong>Automation → Flows</strong> press <kbd>+ New flow</kbd> and add the messages with their wait (for example, 1 day between each). In each message you can add up to 3 buttons and choose what happens when they're tapped: continue with the next message right then, end, start another flow, add a tag or hand it over to you; also up to 2 link buttons. On WhatsApp with QR the buttons arrive as numbered options and the customer replies with the number. To send it to many customers press <kbd>Send to a group of customers</kbd>: you choose who and when, and each one gets their messages on time. If you take the conversation, the flow stops on its own.</p>
+  </details>
+
+  <details>
+    <summary>Can I draw a whole flow, with photos and buttons, like on a whiteboard?</summary>
+    <p>Yes. In <strong>Automation → Canvas</strong> start blank or from a template. Drag from the left a <em>Message</em> (text, photo or file and up to 3 buttons), a <em>Wait</em> and actions like <em>Tag</em> or <em>Person</em>, and connect them by dragging the dot at the bottom of each card (or of each button) to what comes next; if you drop it on an empty spot, you choose what to create there. Notes, titles and reference photos are for planning and are not sent. With <kbd>Preview</kbd> you go through the flow tapping the buttons like your customer, and with <kbd>Publish</kbd> it turns on its own into the rule and flows that make it work. If something is missing, <kbd>To fix</kbd> takes you to the card. From the same canvas, <kbd>Agent instructions</kbd> lets you change, remove or add paragraphs about how your agent serves customers without going into its whole setup (it's saved in its version history). On a phone the flow shows as a list and each card is edited from the bottom.</p>
+  </details>
+
+  <details>
+    <summary>Can I create the flow just by writing the idea or with a photo?</summary>
+    <p>Yes. In <strong>Automation → Canvas</strong> write your idea as you'd tell someone on your team (for example: "when they write PROMO, send the promotion with two buttons, Reserve and See prices, and if they don't answer, remind them the next day") or upload a photo of your drawing, your whiteboard or a screenshot; you can also paste it with <kbd>Ctrl+V</kbd>. Tap <kbd>Create flow</kbd> and it's built on the canvas, with its messages, buttons and waits, using your agent's information. Review it and publish it. If a detail is missing, it stays in brackets, like [price], and it isn't published until you fill it in. Inside the canvas, <kbd>Change with AI</kbd> (on a phone, <kbd>With AI</kbd>) makes the changes you ask for in words, and <kbd>Undo the change</kbd> puts it back as it was.</p>
+  </details>
+
+  <details>
+    <summary>How do I change what my agent says without rewriting everything?</summary>
+    <p>In <strong>Agents → your agent → Instructions</strong> (or in <kbd>Agent instructions</kbd>, inside the canvas) write what you want to change: "remove the free shipping part", "add that we're closed on Sundays" or "be more formal". Tap <kbd>Prepare the change</kbd> and you'll see in red what's removed and in green what's added; the rest stays the same. With <kbd>Apply to agent</kbd> it starts answering that way on all its connections, it's saved in its version history and you can undo it.</p>
+  </details>
+
+  <details>
+    <summary>What happens if the assistant doesn't know something?</summary>
+    <p>It says so naturally ("I'll check with the team") and can let you know. It never makes up a price, a phone number or a service. Add the detail in <strong>Agents → your agent → Knowledge</strong> and from then on it will know it.</p>
+  </details>
+  <details>
+    <summary>Can I see what customers are asking and fix it?</summary>
+    <p>Yes. All conversations are in the dashboard. If you didn't like an answer, fix the information or the instructions in <strong>Agents → your agent</strong> and check it in <strong>Test</strong>.</p>
+  </details>
+  <details>
+    <summary>How do I answer myself instead of the assistant?</summary>
+    <p>Two ways: from the dashboard (<kbd>Take conversation</kbd>) or straight from WhatsApp on your phone: when you write, the assistant pauses in that conversation.</p>
+  </details>
+  <details>
+    <summary>What do I do if my WhatsApp disconnects?</summary>
+    <p>You get a notice by email and in the dashboard. Open the link in the notice (or the <kbd>Reconnect it</kbd> button at the top of the dashboard). If it was a temporary drop (for example, the phone or the server without internet for a while), it says <em>"Your WhatsApp is reconnecting on its own."</em>: you don't have to scan anything. If you logged out on the phone or removed the linked device, the QR code shows up (on a phone, <kbd>With my number</kbd>) to link it again. You don't lose conversations or settings.</p>
+  </details>
+  <details>
+    <summary>Who can see my conversations?</summary>
+    <p>Only the people on your team that you add in <strong>Settings → My team</strong>. Agents can handle conversations but can't change the setup. Nobody from another company sees your data.</p>
+  </details>
+  <details>
+    <summary>Can I book appointments automatically?</summary>
+    <p>Yes. In <strong>Calendar → Services</strong> you add your services and their length; the assistant only offers free times from your calendar and confirms the appointment.</p>
+  </details>
+  <details>
+    <summary>How do I connect my CRM, my store or Zapier?</summary>
+    <p>In <strong>Settings → Integrations → Connect your system</strong>: you create a key, copy the address and test the connection. Right there you'll find ready-to-copy examples (add a customer, send a message, record a payment) and the <a href="/api/v1/docs">full API documentation</a>.</p>
+    <p>For us to let you know when something happens (a new customer, an appointment, a payment), create a <strong>webhook</strong> with your system's or Zapier's address and press <strong>Send test</strong>: an example with your real data arrives so you can map the fields.</p>
+  </details>
+
+</main>
+<footer>
+    <p id="soporte">Need help? <a href="/contacto">Contact us</a> and we'll help you.</p>
+    <p><a href="/">Back to the dashboard</a> · <a href="/estado">Service status</a> · <a href="/privacy">Privacy Policy</a> · <a href="/data-protection">Data protection</a></p>
+</footer>
+<script>
+  document.getElementById('imprimir').addEventListener('click', function () { window.print(); });
+  // If the operator set a support contact, it's shown.
+  fetch('/api/signup/info').then((r) => r.json()).then((d) => {
+    if (d.support_contact) document.getElementById('soporte').textContent = 'Need help? Write to us at ' + d.support_contact + " and we'll help you.";
+  }).catch(function () {});
+</script>
+</body>
+</html>

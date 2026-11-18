@@ -90,8 +90,22 @@ Las pruebas están en `test/pricing.test.ts`.
 
 Las pruebas están en `test/channels.test.ts`, `test/booking-page.test.ts`, `test/owner-self-service.test.ts` y en `npm run test:public:ux` (el chat web en inglés en un navegador real).
 
+## La guía de ayuda
+
+La ayuda tiene dos páginas con las mismas secciones y anclas (`#whatsapp`, `#pagos`, `#facturas`, `#cuenta`, `#preguntas`): `ayuda.html` en español y `help.html` en inglés, con un enlace arriba para cambiar de una a otra. El panel (menú y pantallas de entrar y registrarse) abre la del idioma de la persona, y el pie de `/precios`, `/estado`, `/contacto` y `/borrar-cuenta` lleva a la del idioma de la página. En inglés, la sección de facturas solo explica dónde ver los pagos, porque las facturas CFDI son solo para México. Las capturas de pantalla son las mismas en los dos idiomas.
+
+Si cambias `ayuda.html`, cambia también `help.html`: `test/owner-self-service.test.ts` revisa que las dos tengan las mismas anclas y que los botones se llamen como en el panel en inglés.
+
+## Avisos legales en inglés
+
+`/privacy` (Privacy Policy) y `/data-protection` son la versión en inglés de `/privacidad` y `/proteccion-de-datos`, escritas para Estados Unidos: dicen qué datos se guardan y para qué, que no se venden ni se usan para publicidad, los derechos que dan las leyes de privacidad de cada estado (conocer, corregir, borrar, oponerse, apelar, por un agente autorizado), cookies, conservación, menores de 13 años y en qué países se procesan los datos. Usan los mismos `PRIVACY_COMPANY`, `PRIVACY_ADDRESS` y `PRIVACY_CONTACT`, y con `PRIVACY_URL` también `/privacy` lleva a tu aviso.
+
+Quien usa el panel o las páginas públicas en inglés ve los enlaces a estas páginas, el registro en inglés las enlaza y la constancia de aceptación guarda `/privacy?version=…`. El código está en `src/routes/legal-pages-en.ts`; si cambias un aviso en español, cambia también el de inglés (la lista de proveedores se revisa en `test/privacy-notices.test.ts`).
+
+**Antes de vender en Estados Unidos, que un abogado de allá revise estos textos**, en especial los plazos para responder (45 días, y 60 para una apelación), la parte de menores y la de transferencias entre países.
+
 ## Lo que todavía está solo en español
 
 - El PDF de la cotización, el correo a la persona que atiende una cita, el reporte de conversación por correo, las facturas (CFDI, solo México) y lo que ve el superadministrador.
 - Las plantillas por giro de un asistente nuevo (saludo, preguntas, mensajes guardados): en inglés solo cambia lo de fábrica general.
-- La ayuda (`ayuda.html`) y los avisos legales (siguiente fase, con Privacy Policy y Terms para Estados Unidos). Los enlaces del pie de las páginas públicas ya están en inglés, pero llevan a esas páginas en español.
+- Los términos del servicio: la plataforma no trae unos propios en ningún idioma; se enlazan con `TERMS_URL`. Para Estados Unidos hacen falta unos en inglés, hechos con un abogado.

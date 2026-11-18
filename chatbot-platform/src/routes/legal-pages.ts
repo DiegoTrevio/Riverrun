@@ -5,6 +5,7 @@
  * - /privacidad/simplificado: aviso simplificado (art. 16), el que se da al registrarse en línea;
  * - /proteccion-de-datos: cómo tratamos los datos de los clientes de cada negocio (somos su encargado), con qué
  *   proveedores, qué medidas de seguridad hay y un texto de aviso que el negocio puede usar con sus clientes.
+ * En inglés, /privacy y /data-protection (legal-pages-en.ts) dicen lo mismo para Estados Unidos.
  * Los datos que solo el operador puede dar (razón social, domicilio, correo) salen de PRIVACY_COMPANY, PRIVACY_ADDRESS
  * y PRIVACY_CONTACT; mientras falten se ven entre corchetes y `npm run config:check` lo avisa.
  */
@@ -12,9 +13,10 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { config } from '../config.js';
 import { PRIVACY_NOTICE_VERSION } from '../signup-guard.js';
 import { esc } from './util.js';
+import { dataProtectionEn, privacyPolicy, responsibleEn, type ResponsibleEn } from './legal-pages-en.js';
 
 interface LegalDeps {
-  page: (o: { title: string; brand: any; body: string }) => string;
+  page: (o: { title: string; brand: any; body: string; lang?: 'es' | 'en' }) => string;
   brandFor: (req: FastifyRequest) => Promise<{ brand: unknown }>;
   privacyContact: () => string;
 }
@@ -184,10 +186,14 @@ function dataProtection(r: Responsible) {
 
 /** Registra las tres páginas en el ámbito de las páginas públicas (con su marca y su pie). */
 export function registerLegalPages(app: FastifyInstance, deps: LegalDeps): void {
+  const reply200 = (reply: FastifyReply, html: string) => reply.code(200).type('text/html; charset=utf-8').header('cache-control', 'public, max-age=300').header('vary', 'Host').send(html);
   const send = async (req: FastifyRequest, reply: FastifyReply, title: string, body: (r: Responsible) => string) => {
     const { brand } = await deps.brandFor(req);
-    const html = deps.page({ title, brand, body: LEGAL_CSS + body(responsible(deps.privacyContact())) });
-    return reply.code(200).type('text/html; charset=utf-8').header('cache-control', 'public, max-age=300').header('vary', 'Host').send(html);
+    return reply200(reply, deps.page({ title, brand, body: LEGAL_CSS + body(responsible(deps.privacyContact())) }));
+  };
+  const sendEn = async (req: FastifyRequest, reply: FastifyReply, title: string, body: (r: ResponsibleEn) => string) => {
+    const { brand } = await deps.brandFor(req);
+    return reply200(reply, deps.page({ title, brand, lang: 'en', body: LEGAL_CSS + body(responsibleEn(deps.privacyContact())) }));
   };
   // Si el operador publica su propio aviso (PRIVACY_URL), /privacidad lleva a ese: así todo enlace a /privacidad sirve.
   // Si por error apunta a esta misma página, se sirve la incluida (sin repetir la redirección sin fin).
@@ -198,11 +204,13 @@ export function registerLegalPages(app: FastifyInstance, deps: LegalDeps): void 
     try {
       const here = new URL(`http://${req.headers.host ?? 'x.invalid'}`);
       const u = new URL(to, here);
-      self = u.hostname === here.hostname && /^\/privacidad(\/|$)/.test(u.pathname);
+      self = u.hostname === here.hostname && /^\/(privacidad|privacy)(\/|$)/.test(u.pathname);
     } catch { /* una dirección ilegible no es esta página */ }
     return self ? null : reply.header('cache-control', 'public, max-age=300').header('vary', 'Host').redirect(to, 302);
   };
   app.get('/privacidad', (req, reply) => own(req, reply) ?? send(req, reply, 'Aviso de privacidad', integral));
   app.get('/privacidad/simplificado', (req, reply) => own(req, reply) ?? send(req, reply, 'Aviso de privacidad simplificado', simplified));
   app.get('/proteccion-de-datos', (req, reply) => send(req, reply, 'Protección de datos', dataProtection));
+  app.get('/privacy', (req, reply) => own(req, reply) ?? sendEn(req, reply, 'Privacy Policy', privacyPolicy));
+  app.get('/data-protection', (req, reply) => sendEn(req, reply, 'Data protection', dataProtectionEn));
 }

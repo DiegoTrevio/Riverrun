@@ -8,6 +8,7 @@ import { config } from '../config.js';
 import { offeredPlans } from './billing.js';
 import { cardRequired } from '../billing/card-check.js';
 import { privacyUrl } from './self-service.js';
+import { dataProtectionUrl, helpUrl } from '../signup-guard.js';
 import { publicPalette } from '../public-colors.js';
 import { visitorLang, type Lang } from '../locale.js';
 import { toEnglish } from '../mail-language.js';
@@ -90,7 +91,7 @@ const COPY = {
     closed: 'Sign-ups are closed for now.',
     soon: "We'll publish our plans soon.",
     faq: 'Frequently asked questions',
-    login: 'I have an account', terms: 'Terms', privacy: 'Privacy notice', dataProtection: 'Data protection',
+    login: 'I have an account', terms: 'Terms', privacy: 'Privacy Policy', dataProtection: 'Data protection',
     help: 'Help', status: 'Service status', write: 'Contact us', contactLabel: 'Contact',
   },
 } as const;
@@ -202,8 +203,8 @@ export function pricingPage(o: { brand: ReturnType<typeof publicBrand>; plans: O
     <a href="/#/login">${t.login}</a>
     ${o.terms ? `<a href="${esc(o.terms)}">${t.terms}</a>` : ''}
     ${o.privacy ? `<a href="${esc(o.privacy)}">${t.privacy}</a>` : ''}
-    <a href="/proteccion-de-datos">${t.dataProtection}</a>
-    <a href="/ayuda.html">${t.help}</a>
+    <a href="${dataProtectionUrl(lang)}">${t.dataProtection}</a>
+    <a href="${helpUrl(lang)}">${t.help}</a>
     <a href="/estado">${t.status}</a>
     <a href="/contacto">${t.write}</a>
     ${o.support ? `<span>${t.contactLabel}: ${esc(o.support)}</span>` : ''}
@@ -227,7 +228,7 @@ export async function pricingRoutes(app: FastifyInstance) {
       signup: config.signup.enabled,
       support: own?.support_email || config.signup.supportContact,
       terms: config.signup.termsUrl,
-      privacy: privacyUrl(),
+      privacy: privacyUrl(lang),
       // Con cobro en línea, la prueba empieza al agregar la tarjeta (etapa 3a): la página no debe decir «sin tarjeta».
       cardRequired: await cardRequired(),
       lang,

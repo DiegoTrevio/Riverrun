@@ -24,6 +24,8 @@ function readSaved() {
 
 let lang = 'es';
 export const currentLang = () => lang;
+/** La guía de ayuda en el idioma de la persona. */
+export const helpUrl = () => (lang === 'en' ? '/help.html' : '/ayuda.html');
 
 /** Guarda el idioma (también en una cookie, para que el servidor lo sepa) y recarga para dibujar todo en ese idioma. */
 export function setLang(next) {
