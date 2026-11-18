@@ -47,7 +47,7 @@ try {
     ['privacidad-simplificado', '/privacidad/simplificado'], ['proteccion-de-datos', '/proteccion-de-datos'],
     ['borrar-cuenta', `/borrar-cuenta?t=${encodeURIComponent(deletionToken(h.accountId, 'ux'))}`],
     ['baja-recordatorios', `/baja-recordatorios?c=${h.accountId}&s=${unsubscribeSig(h.accountId)}`],
-    ['ayuda', '/ayuda.html'], ['login', '/#/login'], ['registro', '/#/registro'],
+    ['ayuda', '/ayuda.html'], ['help', '/help.html'], ['login', '/#/login'], ['registro', '/#/registro'],
   ];
   for (const width of [320, 390, 1440]) for (const theme of ['light', 'dark'] as const) {
     const ctx = await browser.newContext({ viewport: { width, height: 900 }, colorScheme: theme }); const page = await ctx.newPage();

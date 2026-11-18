@@ -1,7 +1,7 @@
 import { brand, brandMark, productMark, resetBrand } from './brand.js';
 import { api, h, inBackground, invalidateReads, run, state, LOCALE } from './core.js';
 import { icon } from './icons.js';
-import { LANGS, currentLang, setLang } from './i18n.js';
+import { LANGS, currentLang, helpUrl, setLang } from './i18n.js';
 import { render } from './main.js';
 import { accountPicker, masterBanner } from './account-switch.js';
 import { ROLE_LABEL, copilotAvailable, isAdmin, isSuper, isOwner } from './session.js';
@@ -182,7 +182,7 @@ export function shell(active, content) {
       isAdmin() ? item('#/ajustes', 'settings', 'Ajustes', 'ajustes') : item('#/password', 'user', 'Mi perfil', 'ajustes'),
       h('a', { href: '#/notifications', class: `nav-item${active === 'notifications' ? ' active' : ''}`, 'aria-current': active === 'notifications' ? 'page' : null, onclick: closeNav },
         icon('bell'), h('span', {}, 'Notificaciones'), bells[0]),
-      h('a', { href: '/ayuda.html', class: 'nav-item', target: '_blank', rel: 'noopener' }, icon('help'), h('span', {}, 'Ayuda')),
+      h('a', { href: helpUrl(), class: 'nav-item', target: '_blank', rel: 'noopener' }, icon('help'), h('span', {}, 'Ayuda')),
       h('div', { class: 'user-menu-wrap' }, avatar, menu)),
   );
 

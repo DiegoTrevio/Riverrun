@@ -1,6 +1,7 @@
 /** El dueño se atiende solo: descargar todos sus datos, borrar su cuenta (con confirmación y plazo), contacto, estado y privacidad. */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import PizZip from 'pizzip';
 import { createHarness, dbAvailable, pool } from './harness.js';
 
@@ -308,6 +309,7 @@ t('estado, contacto y borrar la cuenta salen en inglés para quien usa Riverrun 
   assert.match(status.body, /<h1>Service status<\/h1>/);
   assert.match(status.body, /Database<\/span><span class="state-/);
   assert.match(status.body, /Log in to my dashboard/);
+  assert.match(status.body, /<a href="\/help\.html">Help<\/a>/, 'la ayuda en inglés');
   assert.equal(status.headers['vary'], 'Host, Cookie, Accept-Language');
   assert.doesNotMatch(status.body.replace(/<style>[\s\S]*?<\/style>/, ''), /Estado|Base de datos|Actualizado|Operativo/);
 
@@ -322,5 +324,25 @@ t('estado, contacto y borrar la cuenta salen en inglés para quien usa Riverrun 
   assert.equal(forged.statusCode, 400);
   assert.match(forged.body, /Invalid or expired link/);
   // En español, como siempre.
-  assert.match((await h.app.inject({ method: 'GET', url: '/estado' })).body, /<html lang="es">[\s\S]*<h1>Estado del servicio<\/h1>/);
+  assert.match((await h.app.inject({ method: 'GET', url: '/estado' })).body, /<html lang="es">[\s\S]*<h1>Estado del servicio<\/h1>[\s\S]*<a href="\/ayuda\.html">Ayuda<\/a>/);
+  assert.match((await h.app.inject({ method: 'GET', url: '/precios', headers: en })).body, /<a href="\/help\.html">Help<\/a>/);
+});
+
+t('la guía de ayuda existe en inglés, con las mismas secciones que en español y un enlace entre las dos', async () => {
+  const es = (await h.app.inject({ method: 'GET', url: '/ayuda.html' })).body;
+  const help = await h.app.inject({ method: 'GET', url: '/help.html' });
+  assert.equal(help.statusCode, 200);
+  assert.match(help.body, /<html lang="en">/);
+  assert.match(help.body, /<h1>Your WhatsApp assistant, in 15 minutes<\/h1>/);
+  const ids = (html: string) => [...html.matchAll(/ id="([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(ids(help.body), ids(es), 'los enlaces a una sección (#pagos, #whatsapp…) funcionan en los dos idiomas');
+  assert.match(help.body, /href="\/ayuda\.html" hreflang="es"/);
+  assert.match(es, /href="\/help\.html" hreflang="en"/);
+  // Los nombres de los botones son los del panel en inglés.
+  const en = JSON.parse(readFileSync(new URL('../public/i18n/en.json', import.meta.url), 'utf8')) as Record<string, string>;
+  for (const es of ['Tomar conversación', 'Devolver al bot', 'Conectar mi WhatsApp', 'Descargar todos mis datos (ZIP)', 'Cancelar el borrado']) {
+    assert.ok(help.body.includes(en[es]), `"${en[es]}" (${es}) aparece en la guía`);
+  }
+  const body = help.body.replace(/<style>[\s\S]*?<\/style>/, '').replace(/<a [^>]*lang="es"[^>]*>[^<]*<\/a>/, '').replace(/<[^>]+>/g, ' ');
+  assert.doesNotMatch(body, /Ajustes|Conversaciones|Agenda →|ayúda|escríbenos/i, 'sin textos en español');
 });

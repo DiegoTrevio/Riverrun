@@ -1,7 +1,7 @@
 import { brand, brandMark, productMark } from './brand.js';
 import { limitsText, per, planPrice, totalText } from './billing.js';
 import { $app, api, field, fill, h, run, select, state, text, toast } from './core.js';
-import { LANGS, currentLang, setLang } from './i18n.js';
+import { LANGS, currentLang, helpUrl, setLang } from './i18n.js';
 
 const GOOGLE_MSG = {
   cancelado: 'Cancelaste el acceso con Google.',
@@ -110,7 +110,7 @@ function publicPage(card) {
 /** Enlaces a los avisos debajo de cada pantalla pública (entrar, registro, recuperar contraseña). */
 function legalLinks() {
   return h('nav', { class: 'auth-legal', 'aria-label': 'Avisos y ayuda' },
-    h('a', { href: '/privacidad' }, 'Aviso de privacidad'), h('a', { href: '/proteccion-de-datos' }, 'Protección de datos'), h('a', { href: '/ayuda.html' }, 'Ayuda'),
+    h('a', { href: '/privacidad' }, 'Aviso de privacidad'), h('a', { href: '/proteccion-de-datos' }, 'Protección de datos'), h('a', { href: helpUrl() }, 'Ayuda'),
     langLinks());
 }
 

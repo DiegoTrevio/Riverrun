@@ -103,7 +103,7 @@ ${o.head ?? ''}
   ${o.body}
 </main>
 <footer>
-  <a href="/ayuda.html">${tx(lang, 'Ayuda', 'Help')}</a>
+  <a href="${tx(lang, '/ayuda.html', '/help.html')}">${tx(lang, 'Ayuda', 'Help')}</a>
   <a href="/estado">${tx(lang, 'Estado del servicio', 'Service status')}</a>
   <a href="/contacto">${tx(lang, 'Contacto', 'Contact')}</a>
   <a href="${esc(privacyUrl())}">${tx(lang, 'Aviso de privacidad', 'Privacy notice')}</a>
@@ -167,7 +167,7 @@ export async function selfServicePages(root: FastifyInstance) {
         head: siteKey ? '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' : '',
         body: `<h1>${tx(lang, 'Contacto', 'Contact')}</h1>
   <p class="muted">${tx(lang, '¿Tienes una duda, un problema o una sugerencia? Escríbenos y te respondemos por correo. También revisa la <a href="/ayuda.html">ayuda</a> y el <a href="/estado">estado del servicio</a>.',
-    'Have a question, a problem or a suggestion? Write to us and we\'ll reply by email. You can also check the <a href="/ayuda.html">help</a> and the <a href="/estado">service status</a>.')}</p>
+    'Have a question, a problem or a suggestion? Write to us and we\'ll reply by email. You can also check the <a href="/help.html">help</a> and the <a href="/estado">service status</a>.')}</p>
   ${o.error ? `<p class="error" role="alert">${esc(o.error)}</p>` : ''}
   <form class="card" method="post" action="/contacto">
     <label for="c-name">${tx(lang, 'Tu nombre', 'Your name')}</label><input id="c-name" name="name" maxlength="120" required value="${esc(v.name)}" autocomplete="name"${attrs('name')} />${note('name')}

@@ -90,8 +90,14 @@ Las pruebas están en `test/pricing.test.ts`.
 
 Las pruebas están en `test/channels.test.ts`, `test/booking-page.test.ts`, `test/owner-self-service.test.ts` y en `npm run test:public:ux` (el chat web en inglés en un navegador real).
 
+## La guía de ayuda
+
+La ayuda tiene dos páginas con las mismas secciones y anclas (`#whatsapp`, `#pagos`, `#facturas`, `#cuenta`, `#preguntas`): `ayuda.html` en español y `help.html` en inglés, con un enlace arriba para cambiar de una a otra. El panel (menú y pantallas de entrar y registrarse) abre la del idioma de la persona, y el pie de `/precios`, `/estado`, `/contacto` y `/borrar-cuenta` lleva a la del idioma de la página. En inglés, la sección de facturas solo explica dónde ver los pagos, porque las facturas CFDI son solo para México. Las capturas de pantalla son las mismas en los dos idiomas.
+
+Si cambias `ayuda.html`, cambia también `help.html`: `test/owner-self-service.test.ts` revisa que las dos tengan las mismas anclas y que los botones se llamen como en el panel en inglés.
+
 ## Lo que todavía está solo en español
 
 - El PDF de la cotización, el correo a la persona que atiende una cita, el reporte de conversación por correo, las facturas (CFDI, solo México) y lo que ve el superadministrador.
 - Las plantillas por giro de un asistente nuevo (saludo, preguntas, mensajes guardados): en inglés solo cambia lo de fábrica general.
-- La ayuda (`ayuda.html`) y los avisos legales (siguiente fase, con Privacy Policy y Terms para Estados Unidos). Los enlaces del pie de las páginas públicas ya están en inglés, pero llevan a esas páginas en español.
+- Los avisos legales (siguiente fase, con Privacy Policy y Terms para Estados Unidos). Los enlaces del pie de las páginas públicas ya están en inglés, pero llevan a esos avisos en español.

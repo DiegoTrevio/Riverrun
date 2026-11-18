@@ -203,7 +203,7 @@ export function pricingPage(o: { brand: ReturnType<typeof publicBrand>; plans: O
     ${o.terms ? `<a href="${esc(o.terms)}">${t.terms}</a>` : ''}
     ${o.privacy ? `<a href="${esc(o.privacy)}">${t.privacy}</a>` : ''}
     <a href="/proteccion-de-datos">${t.dataProtection}</a>
-    <a href="/ayuda.html">${t.help}</a>
+    <a href="${lang === 'en' ? '/help.html' : '/ayuda.html'}">${t.help}</a>
     <a href="/estado">${t.status}</a>
     <a href="/contacto">${t.write}</a>
     ${o.support ? `<span>${t.contactLabel}: ${esc(o.support)}</span>` : ''}

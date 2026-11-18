@@ -602,7 +602,7 @@ equipo lo marca como pagado.
   - **`/proteccion-de-datos`**: los datos de los clientes de cada negocio (el negocio es responsable y la plataforma su encargado), la lista de proveedores que tratan datos (`PROCESSORS` en `src/routes/legal-pages.ts`), medidas de seguridad, aviso de vulneraciones y un texto de aviso que el negocio puede usar con sus clientes.
   - Los datos del responsable salen de `PRIVACY_COMPANY`, `PRIVACY_ADDRESS` y `PRIVACY_CONTACT` (o, para el correo, `SUPPORT_CONTACT`/`SUPERADMIN_EMAIL`). Mientras falten, la página los muestra como `[marcador]` y `npm run config:check` lo avisa en producción. Si defines `PRIVACY_URL`, `/privacidad` y el simplificado llevan a tu aviso.
   - El registro (normal, con Google y por invitación) siempre enlaza el aviso, y cada constancia de aceptación guarda la dirección con su versión (`PRIVACY_NOTICE_VERSION` en `src/signup-guard.ts`: cámbiala cuando cambie el texto). La pantalla de entrar y las demás públicas llevan enlaces a los avisos al pie.
-- **Ayuda** (`/ayuda.html`): secciones con anclas para WhatsApp (`#whatsapp`), pagos (`#pagos`), facturas (`#facturas`), cuenta y privacidad (`#cuenta`) y preguntas frecuentes (`#preguntas`).
+- **Ayuda** (`/ayuda.html`, y en inglés `/help.html`; ver [idiomas](docs/idiomas.md#la-guía-de-ayuda)): secciones con anclas para WhatsApp (`#whatsapp`), pagos (`#pagos`), facturas (`#facturas`), cuenta y privacidad (`#cuenta`) y preguntas frecuentes (`#preguntas`).
 
 ## Alta sin ayuda: «Para empezar» y correos de seguimiento
 
