@@ -11,6 +11,7 @@ import { logEvent } from '../logs.js';
 import { deliverMail } from '../mailer.js';
 import { OutboundBlockedError } from '../outbound-guard.js';
 import { IMPORTANT_KINDS } from './alert-groups.js';
+import { recipientLang, toEnglish } from '../mail-language.js';
 import { claimAlertDeliveries, notifyUsers, teamMembers } from './store.js';
 
 /** Los importantes llevan respaldo entre canales (ver IMPORTANT_KINDS). */
@@ -72,7 +73,11 @@ export async function attemptDelivery(r: Receipt): Promise<Receipt['status']> {
     if (r.channel === 'whatsapp') {
       await sendWhatsapp(r.account_id, r.destination, whatsappText(r.payload), r.payload.excludeChannelId);
     } else {
-      const res = await deliverMail({ to: r.destination, subject: emailSubject(r.payload), text: `${r.payload.body}${r.payload.url ? `\n${r.payload.url}` : ''}` });
+      // El aviso se guardó en español (como lo ve el panel): a quien usa el panel en inglés le llega traducido, con el
+      // título completo (con su ícono, como está en el diccionario) antes de quitarle el ícono para el asunto.
+      const en = (await recipientLang(r.destination)) === 'en';
+      const payload = en ? { ...r.payload, title: await toEnglish(r.payload.title), body: await toEnglish(r.payload.body) } : r.payload;
+      const res = await deliverMail({ to: r.destination, subject: emailSubject(payload), text: `${payload.body}${payload.url ? `\n${payload.url}` : ''}`, lang: 'as-is' });
       if (res === 'skipped') throw new SkipDelivery('no hay servidor de correo configurado (o el destino no está permitido)');
       if (res === 'failed') throw new Error('el servidor de correo no lo aceptó');
     }

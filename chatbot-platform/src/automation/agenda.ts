@@ -387,7 +387,8 @@ export class Agenda {
     }
     const hello = en ? (first ? `Hi ${first},` : 'Hi,') : (first ? `Hola ${first},` : 'Hola,');
     const text = [hello, '', ...main, '', `— ${business}`].join('\n');
-    return sendMail({ fromName: mb.fromName, to: a.customer_email, subject, text });
+    // Ya va en el idioma del negocio con sus clientes: no se traduce según quien lo recibe.
+    return sendMail({ fromName: mb.fromName, to: a.customer_email, subject, text, lang: 'as-is' });
   }
 
   /** Correo a la persona que atiende la cita o llamada (agendada o cancelada), con lo que necesita para atenderla. */

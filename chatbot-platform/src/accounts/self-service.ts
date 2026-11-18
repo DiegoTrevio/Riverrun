@@ -16,6 +16,7 @@ import { sendMail } from '../mailer.js';
 import { hmac, safeEqual } from '../secret.js';
 import * as store from '../store/index.js';
 import type { Account, User } from '../types.js';
+import { recipientLang } from '../mail-language.js';
 import { deleteAccountFully } from './delete.js';
 
 const DAY = 86400_000;
@@ -23,7 +24,7 @@ const DAY = 86400_000;
 export const DELETION_GRACE_DAYS = 7;
 /** Vigencia del enlace de confirmación que llega por correo. */
 const LINK_MS = DAY;
-const fmt = (d: Date) => d.toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'America/Mexico_City' });
+const fmt = (d: Date, en = false) => d.toLocaleDateString(en ? 'en-US' : 'es-MX', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'America/Mexico_City' });
 
 /* ------------------------------ Borrar la cuenta ------------------------------ */
 
@@ -65,11 +66,15 @@ export async function requestDeletion(acc: Account, owner: { email: string; name
   const nonce = crypto.randomBytes(16).toString('base64url');
   await query(`UPDATE accounts SET deletion_nonce = $2 WHERE id = $1`, [acc.id, nonce]);
   const link = `${linkBase()}/borrar-cuenta?t=${encodeURIComponent(deletionToken(acc.id, nonce))}`;
+  const en = (await recipientLang(owner.email)) === 'en';
   await sendMail({
     fromName: mb.fromName,
     to: owner.email,
-    subject: `Confirma que quieres borrar "${acc.name}"`,
-    text: `Hola ${owner.name || ''},\n\nPediste borrar tu cuenta "${acc.name}". Para confirmarlo abre este enlace (vence en 24 horas):\n${link}\n\nAl confirmar, tu plan deja de renovarse y la cuenta se borra ${DELETION_GRACE_DAYS} días después: tu agente, sus conexiones, tus contactos y tus conversaciones. Hasta entonces puedes cancelarlo desde tu panel. Si no fuiste tú, ignora este correo: no se borrará nada.\n\nAntes de borrarla puedes descargar todos tus datos en Mi plan y pagos → Tus datos.`,
+    lang: 'as-is',
+    subject: en ? `Confirm that you want to delete "${acc.name}"` : `Confirma que quieres borrar "${acc.name}"`,
+    text: en
+      ? `Hi ${owner.name || ''},\n\nYou asked to delete your account "${acc.name}". To confirm, open this link (it expires in 24 hours):\n${link}\n\nWhen you confirm, your plan stops renewing and the account is deleted ${DELETION_GRACE_DAYS} days later: your agent, its connections, your contacts and your conversations. Until then you can cancel it from your dashboard. If it wasn't you, ignore this email: nothing will be deleted.\n\nBefore deleting it you can download all your data in My plan and payments → Your data.`
+      : `Hola ${owner.name || ''},\n\nPediste borrar tu cuenta "${acc.name}". Para confirmarlo abre este enlace (vence en 24 horas):\n${link}\n\nAl confirmar, tu plan deja de renovarse y la cuenta se borra ${DELETION_GRACE_DAYS} días después: tu agente, sus conexiones, tus contactos y tus conversaciones. Hasta entonces puedes cancelarlo desde tu panel. Si no fuiste tú, ignora este correo: no se borrará nada.\n\nAntes de borrarla puedes descargar todos tus datos en Mi plan y pagos → Tus datos.`,
   });
   await logEvent({ level: 'warn', source: 'admin', message: `Se pidió borrar la cuenta (confirmación enviada a ${owner.email})`, accountId: acc.id });
 }
@@ -101,9 +106,13 @@ export async function scheduleDeletion(accountId: string, now = new Date()): Pro
   const owner = acc ? await accountOwner(acc.id) : null;
   if (owner) {
     const mb = await mailBrand(accountId);
+    const en = (await recipientLang(owner.email)) === 'en';
     await sendMail({
-      fromName: mb.fromName, to: owner.email, subject: `"${row.name}" se borrará el ${fmt(row.deletion_scheduled_for)}`,
-      text: `Confirmaste borrar tu cuenta "${row.name}". Se borrará el ${fmt(row.deletion_scheduled_for)} y tu plan ya no se renovará.\n\nSi cambias de opinión, entra a tu panel antes de esa fecha y pulsa «Cancelar el borrado»:\n${mb.base}/#/plan`,
+      fromName: mb.fromName, to: owner.email, lang: 'as-is',
+      subject: en ? `"${row.name}" will be deleted on ${fmt(row.deletion_scheduled_for, true)}` : `"${row.name}" se borrará el ${fmt(row.deletion_scheduled_for)}`,
+      text: en
+        ? `You confirmed deleting your account "${row.name}". It will be deleted on ${fmt(row.deletion_scheduled_for, true)} and your plan won't renew.\n\nIf you change your mind, go to your dashboard before that date and press "Cancel deletion":\n${mb.base}/#/plan`
+        : `Confirmaste borrar tu cuenta "${row.name}". Se borrará el ${fmt(row.deletion_scheduled_for)} y tu plan ya no se renovará.\n\nSi cambias de opinión, entra a tu panel antes de esa fecha y pulsa «Cancelar el borrado»:\n${mb.base}/#/plan`,
     });
   }
   await logEvent({ level: 'warn', source: 'admin', message: `Borrado de la cuenta confirmado: se borra el ${fmt(row.deletion_scheduled_for)}`, accountId });
@@ -141,10 +150,13 @@ export async function checkScheduledDeletions(now = new Date()): Promise<number>
     try {
       const owner = await accountOwner(acc.id);
       const mb = await mailBrand(acc.id);
+      // El idioma se lee antes de borrar: después ya no existe la persona.
+      const en = !!owner && (await recipientLang(owner.email)) === 'en';
       await deleteAccountFully(acc);
       deleted++;
       await logEvent({ level: 'warn', source: 'admin', message: `Cuenta borrada a petición de su dueño: ${acc.name}` });
-      if (owner) await sendMail({ fromName: mb.fromName, to: owner.email, subject: `Borramos tu cuenta "${acc.name}"`, text: `Como lo pediste, borramos tu cuenta "${acc.name}" con su agente, contactos y conversaciones. Tus pagos y facturas se conservan por obligación fiscal.\n\nGracias por usar el servicio. Si algún día quieres volver, puedes crear una cuenta nueva.` });
+      if (owner && en) await sendMail({ fromName: mb.fromName, to: owner.email, lang: 'as-is', subject: `We deleted your account "${acc.name}"`, text: `As you asked, we deleted your account "${acc.name}" with its agent, contacts and conversations. Your payments and invoices are kept as required by tax law.\n\nThanks for using the service. If you ever want to come back, you can create a new account.` });
+      else if (owner) await sendMail({ fromName: mb.fromName, to: owner.email, lang: 'es', subject: `Borramos tu cuenta "${acc.name}"`, text: `Como lo pediste, borramos tu cuenta "${acc.name}" con su agente, contactos y conversaciones. Tus pagos y facturas se conservan por obligación fiscal.\n\nGracias por usar el servicio. Si algún día quieres volver, puedes crear una cuenta nueva.` });
       await alertSuperadmins(null, `Cuenta borrada por su dueño: ${acc.name}`, `"${acc.name}" pidió borrar su cuenta el ${fmt(new Date(acc.deletion_requested_at!))} y se borró hoy, terminado el plazo de ${DELETION_GRACE_DAYS} días.`);
     } catch (e: any) {
       await logEvent({ level: 'error', source: 'admin', message: `No se pudo borrar la cuenta ${acc.name} pedida por su dueño: ${e?.message ?? e}`, accountId: acc.id });

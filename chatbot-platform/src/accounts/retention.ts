@@ -12,17 +12,20 @@ import { logEvent } from '../logs.js';
 import { sendMail } from '../mailer.js';
 import type { Account } from '../types.js';
 import { deleteAccountFully } from './delete.js';
+import { recipientLang } from '../mail-language.js';
 import { emailSuperadmin } from '../platform/digest.js';
 
 /** Días de aviso antes del borrado. */
 export const WARN_DAYS = 7;
 const DAY = 86400_000;
-const fmt = (d: Date) => d.toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'America/Mexico_City' });
+const fmt = (d: Date, en = false) => d.toLocaleDateString(en ? 'en-US' : 'es-MX', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'America/Mexico_City' });
 
 /** Lo que se dice al pausar: cuánto tiempo se conservan los datos. */
-export const keptNote = () => config.billing.retentionDays > 0
-  ? `Tu configuración y tus conversaciones se conservan ${config.billing.retentionDays} días.`
-  : 'Tu configuración y tus conversaciones se conservan.';
+export const keptNote = (en = false) => en
+  ? (config.billing.retentionDays > 0 ? `Your setup and conversations are kept for ${config.billing.retentionDays} days.` : 'Your setup and conversations are kept.')
+  : config.billing.retentionDays > 0
+    ? `Tu configuración y tus conversaciones se conservan ${config.billing.retentionDays} días.`
+    : 'Tu configuración y tus conversaciones se conservan.';
 
 /** Fecha en que se borraría una cuenta pausada sola (null si no se borra). */
 export function deletionDate(acc: Pick<Account, 'paused_at' | 'deletion_warned_at' | 'keep_data' | 'signup_source'>): Date | null {
@@ -59,8 +62,15 @@ export async function checkAccountRetention(now = new Date()): Promise<{ warned:
     await logEvent({ level: 'warn', source: 'admin', message: `Aviso de borrado: la cuenta se borra el ${fmt(when)} si no se reactiva`, accountId: acc.id });
     if (!owner) continue;
     const mb = await mailBrand(acc.id);
+    if ((await recipientLang(owner.email)) === 'en') {
+      await sendMail({
+        fromName: mb.fromName, to: owner.email, lang: 'as-is', subject: `Your account "${acc.name}" will be deleted on ${fmt(when, true)}`,
+        text: `Hi ${owner.name || ''},\n\nYour account "${acc.name}" has been paused since ${fmt(new Date(acc.paused_at!), true)}. If it isn't reactivated, on ${fmt(when, true)} we'll delete your agent, its setup, your contacts and your conversations. This can't be undone.\n\n${acc.pause_reason === 'card' ? 'To keep it, add your card in My plan' : 'To keep it, reactivate your plan'}:\n${mb.base}/#/plan`,
+      });
+      continue;
+    }
     await sendMail({
-      fromName: mb.fromName, to: owner.email, subject: `Tu cuenta "${acc.name}" se borrará el ${fmt(when)}`,
+      fromName: mb.fromName, to: owner.email, lang: 'es', subject: `Tu cuenta "${acc.name}" se borrará el ${fmt(when)}`,
       text: `Hola ${owner.name || ''},\n\nTu cuenta "${acc.name}" lleva en pausa desde el ${fmt(new Date(acc.paused_at!))}. Si no se reactiva, el ${fmt(when)} borraremos tu agente, su configuración, tus contactos y tus conversaciones. No se puede deshacer.\n\n${acc.pause_reason === 'card' ? 'Para conservarla, agrega tu tarjeta en Mi plan' : 'Para conservarla, reactiva tu plan'}:\n${mb.base}/#/plan`,
     });
   }

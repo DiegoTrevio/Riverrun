@@ -19,10 +19,23 @@ export function cleanInviteName(raw: string): string {
     .trim();
 }
 
-export function inviteMail(o: { inviter: string; invitee: string; account: string; role: string; link: string; google: boolean }): { subject: string; text: string } {
+export function inviteMail(o: { inviter: string; invitee: string; account: string; role: string; link: string; google: boolean; lang?: 'es' | 'en' }): { subject: string; text: string } {
   const inviter = cleanInviteName(o.inviter);
   const invitee = cleanInviteName(o.invitee);
   const account = cleanInviteName(o.account);
+  if (o.lang === 'en') {
+    const who = inviter ? `“${inviter}”` : 'Your team';
+    const role = o.role === 'administrador' ? 'an admin' : o.role === 'agente' ? 'an agent' : o.role;
+    return {
+      subject: account ? `${who} invited you to “${account}”` : `${who} invited you to their team`,
+      text:
+        `Hi${invitee ? ` “${invitee}”` : ''},\n\n` +
+        `${who} invited you to join${account ? ` “${account}”` : ''} as ${role}. To accept, open this link and choose your password:\n\n` +
+        `${o.link}\n\n` +
+        `The link expires in 7 days.${o.google ? ' If your email is a Google account, you can also sign in with Google.' : ''}\n\n` +
+        "If you weren't expecting this invitation, ignore this message.",
+    };
+  }
   const who = inviter ? `«${inviter}»` : 'Tu equipo';
   return {
     subject: account ? `${who} te invitó a «${account}»` : `${who} te invitó a su equipo`,

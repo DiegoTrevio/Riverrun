@@ -29,8 +29,12 @@ export const currentLang = () => lang;
 export function setLang(next) {
   if (!SUPPORTED.has(next)) return;
   try { localStorage.setItem(STORAGE_KEY, next); } catch { /* sin storage: queda la cookie */ }
-  document.cookie = `lang=${next}; path=/; max-age=31536000; samesite=lax${location.protocol === 'https:' ? '; secure' : ''}`;
+  rememberLang(next);
   location.reload();
+}
+
+function rememberLang(value) {
+  document.cookie = `lang=${value}; path=/; max-age=31536000; samesite=lax${location.protocol === 'https:' ? '; secure' : ''}`;
 }
 
 /* ------------------------------ Diccionario ------------------------------ */
@@ -252,6 +256,8 @@ function wrapDialogs() {
 export async function initI18n({ url = '/i18n/en.json' } = {}) {
   lang = pickLang(readSaved(), navigator.languages?.length ? navigator.languages : [navigator.language]);
   document.documentElement.lang = lang;
+  // El servidor manda los correos de cada persona en este idioma (cookie «lang»): también cuando lo eligió el navegador.
+  if (!/(?:^|;\s*)lang=/.test(document.cookie)) rememberLang(lang);
   if (lang === 'es') return lang;
   try {
     const response = await fetch(url, { credentials: 'same-origin' });

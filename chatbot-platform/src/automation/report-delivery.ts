@@ -71,7 +71,8 @@ export async function deliverReport(chat: ChatService, conversationId: string, o
   const emails = [...new Set([...o.users.map((u) => u.email), ...o.emails])];
   for (const to of emails) {
     if (!mailEnabled()) { deliveries.push({ via: 'correo', to, ok: false, detail: 'El servidor no tiene correo configurado (SMTP_URL)' }); continue; }
-    const sent = await sendMail({ to, subject: `Reporte de conversación: ${report.customer.name}`, text, fromName: mb.fromName });
+    // Lleva lo que escribieron el cliente y el asistente: sale tal cual, sin pasar por el diccionario.
+    const sent = await sendMail({ to, subject: `Reporte de conversación: ${report.customer.name}`, text, fromName: mb.fromName, lang: 'as-is' });
     deliveries.push({ via: 'correo', to, ok: sent, detail: sent ? undefined : 'No se pudo enviar (ver Registros)' });
   }
   // 3) WhatsApp: quien lo tiene activado en su perfil y los números externos.

@@ -26,6 +26,9 @@ import { parse } from './util.js';
 import { offeredPlans } from './billing.js';
 import { DISPOSABLE_MESSAGE, assertCaptcha, captchaEnabled, isDisposableEmail, privacyUrl, recordTermsAcceptance, signupAvailable, termsVersion } from '../signup-guard.js';
 import { recordSecurity } from '../security-log.js';
+import { AccountSettingsSchema } from '../automation/types.js';
+import { langFrom, settingsForLanguage, type Lang } from '../locale.js';
+import { recipientLang } from '../mail-language.js';
 
 const Password = NewPassword;
 const Email = z.string().trim().toLowerCase().email('correo inválido').max(200);
@@ -84,23 +87,40 @@ async function sendResetLink(email: string, from: { ip: string; userAgent: strin
   await recordSecurity({ kind: 'password_reset.requested', accountId: u.account_id, userId: u.id, email: u.email, ...from });
   const token = await store.createAuthToken(u.id, 'reset_password', 60);
   const mb = await mailBrand(u.account_id);
+  const url = link(linkBase(), 'restablecer', token);
+  const en = (await recipientLang(u.email)) === 'en';
   await sendMail({
     fromName: mb.fromName,
     to: u.email,
-    subject: 'Restablece tu contraseña',
-    text: `Hola ${u.name || ''},\n\nPara elegir una contraseña nueva abre este enlace (vence en 1 hora):\n\n${link(linkBase(), 'restablecer', token)}\n\nSi no lo pediste, ignora este mensaje: tu contraseña no cambia.`,
+    lang: 'as-is',
+    subject: en ? 'Reset your password' : 'Restablece tu contraseña',
+    text: en
+      ? `Hi ${u.name || ''},\n\nTo choose a new password, open this link (it expires in 1 hour):\n\n${url}\n\nIf you didn't request it, ignore this message: your password won't change.`
+      : `Hola ${u.name || ''},\n\nPara elegir una contraseña nueva abre este enlace (vence en 1 hora):\n\n${url}\n\nSi no lo pediste, ignora este mensaje: tu contraseña no cambia.`,
   });
 }
 
 export async function sendVerification(user: Pick<User, 'id' | 'name' | 'email'>) {
   const token = await store.createAuthToken(user.id, 'verify_email', 48 * 60);
   const mb = await mailBrand((user as { account_id?: string | null }).account_id);
+  const url = link(linkBase(), 'verificar', token);
+  const en = (await recipientLang(user.email)) === 'en';
   await sendMail({
     fromName: mb.fromName,
     to: user.email,
-    subject: 'Confirma tu correo',
-    text: `Hola ${user.name || ''},\n\nConfirma tu correo para poder conectar tu WhatsApp y tus demás canales:\n\n${link(linkBase(), 'verificar', token)}\n\nEl enlace vence en 48 horas. Si no creaste esta cuenta, ignora este mensaje.`,
+    lang: 'as-is',
+    subject: en ? 'Confirm your email' : 'Confirma tu correo',
+    text: en
+      ? `Hi ${user.name || ''},\n\nConfirm your email so you can connect WhatsApp and your other channels:\n\n${url}\n\nThe link expires in 48 hours. If you didn't create this account, ignore this message.`
+      : `Hola ${user.name || ''},\n\nConfirma tu correo para poder conectar tu WhatsApp y tus demás canales:\n\n${url}\n\nEl enlace vence en 48 horas. Si no creaste esta cuenta, ignora este mensaje.`,
   });
+}
+
+/** El idioma de quien se registra: el que eligió en el panel (cookie «lang») o, si no, el de su navegador. */
+export function signupLang(req: { cookies?: Record<string, string | undefined>; headers: Record<string, unknown> }): Lang {
+  const chosen = req.cookies?.lang;
+  if (chosen === 'es' || chosen === 'en') return chosen;
+  return langFrom(req.headers['accept-language']);
 }
 
 /** Rutas públicas: registro de empresas, verificación de correo y recuperación de contraseña. */
@@ -153,8 +173,12 @@ export async function signupRoutes(app: FastifyInstance) {
       // Al titular le llega el aviso (una vez por hora): si no fue él, alguien prueba su correo.
       if ((await countHit(`signup-taken:${b.email.toLowerCase()}`, HOUR)) === 1) {
         const { fromName } = await mailBrand(taken.account_id);
-        await sendMail({ fromName, to: taken.email, subject: 'Alguien intentó registrarse con tu correo',
-          text: `Hola ${taken.name || ''},\n\nAlguien intentó crear una cuenta nueva con tu correo. Ya tienes una, así que no se creó nada. Si fuiste tú, entra con tu contraseña (o recupérala). Si no, no tienes que hacer nada.` }).catch(() => undefined);
+        const en = (await recipientLang(taken.email)) === 'en';
+        await sendMail({ fromName, to: taken.email, lang: 'as-is',
+          subject: en ? 'Someone tried to sign up with your email' : 'Alguien intentó registrarse con tu correo',
+          text: en
+            ? `Hi ${taken.name || ''},\n\nSomeone tried to create a new account with your email. You already have one, so nothing was created. If it was you, sign in with your password (or reset it). If not, you don't need to do anything.`
+            : `Hola ${taken.name || ''},\n\nAlguien intentó crear una cuenta nueva con tu correo. Ya tienes una, así que no se creó nada. Si fuiste tú, entra con tu contraseña (o recupérala). Si no, no tienes que hacer nada.` }).catch(() => undefined);
       }
       throw new HttpError(409, 'Ya existe una cuenta con ese correo. Inicia sesión o recupera tu contraseña.');
     }
@@ -167,6 +191,7 @@ export async function signupRoutes(app: FastifyInstance) {
     const state = await newAccountState();
     const { trialEndsAt } = state;
 
+    const lang = signupLang(req);
     const brand = await brandByDomain(hostOf(req)); // quien se registra desde el dominio de una marca queda con esa marca
     const release = await reserveSignup(req.ip);
     const { account, user } = await withTransaction(async (client) => {
@@ -175,6 +200,12 @@ export async function signupRoutes(app: FastifyInstance) {
       await client.query(`UPDATE accounts SET owner_user_id = $2, brand_id = $3 WHERE id = $1`, [account.id, user.id, brand?.id ?? null]);
       // Su WhatsApp recibe los avisos de "un cliente quiere hablar con una persona".
       if (b.phone) await client.query(`UPDATE users SET phone = $2, notify_whatsapp = true WHERE id = $1`, [user.id, b.phone.replace(/\D/g, '')]);
+      // Quien se registra con el panel en inglés recibe sus correos en inglés y su negocio atiende en inglés (se cambia en
+      // Ajustes → Idioma con tus clientes).
+      if (lang === 'en') {
+        await client.query(`UPDATE users SET lang = 'en' WHERE id = $1`, [user.id]);
+        await client.query(`UPDATE accounts SET settings = $2 WHERE id = $1`, [account.id, JSON.stringify(settingsForLanguage(AccountSettingsSchema.parse({}), 'en'))]);
+      }
       await recordTermsAcceptance(client, { userId: user.id, accountId: account.id, email: user.email, ip: req.ip, userAgent: String(req.headers['user-agent'] ?? ''), source: 'signup' });
       return { account, user };
     }).catch(async (e) => {

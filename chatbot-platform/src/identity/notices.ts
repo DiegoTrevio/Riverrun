@@ -7,6 +7,8 @@ import { recordSecurity } from '../security-log.js';
 import { mailBrand } from '../brands.js';
 import { logEvent } from '../logs.js';
 import { deliverMail } from '../mailer.js';
+import { recipientLang } from '../mail-language.js';
+import { queryOne } from '../db.js';
 
 export type NoticeKind =
   | 'password_changed'
@@ -52,6 +54,53 @@ const SUBJECT: Record<NoticeKind, string> = {
   retention_scheduled: 'Se programó el borrado automático de datos',
 };
 
+const FOOTER_EN = "If it wasn't you: change your password and sign out of all sessions from My profile.";
+
+const SUBJECT_EN: Record<NoticeKind, string> = {
+  password_changed: 'Your password changed',
+  password_reset: 'You reset your password',
+  mfa_enabled: 'You turned on two-step verification',
+  mfa_changed: 'You changed your authenticator app',
+  mfa_reset: 'Your two-step verification was reset',
+  recovery_used: 'You used a recovery code',
+  recovery_regenerated: 'You generated new recovery codes',
+  mfa_locked: 'We locked your verification after failed attempts',
+  new_device: 'New sign-in to your account',
+  ownership_transferred: 'You transferred your account',
+  ownership_received: 'You are now the account owner',
+  email_changed: 'You changed your email',
+  role_changed: 'Your role changed',
+  retention_scheduled: 'Automatic data deletion was scheduled',
+};
+
+const ROLE_EN: Record<string, string> = { administrador: 'admin', agente: 'agent' };
+
+function bodyEn(kind: NoticeKind, when: string, d: NoticeDetails): string {
+  switch (kind) {
+    case 'password_changed': return `The password of your account changed on ${when}. Your other sessions were signed out.`;
+    case 'password_reset': return `You reset the password of your account on ${when} with the link we emailed you. All your sessions were signed out.`;
+    case 'mfa_enabled': return `You turned on two-step verification on ${when}. From now on, signing in asks for the code from your app.`;
+    case 'mfa_changed': return `You changed the authenticator app of your account on ${when}. The previous app no longer works for signing in.`;
+    case 'mfa_reset': return `${d.by ? `${d.by} reset` : 'Someone reset'} the two-step verification of your account on ${when}. Your sessions were signed out; you'll set it up again the next time you sign in.`;
+    case 'recovery_used': return `You signed in with a recovery code on ${when}. You have ${d.remaining ?? 0} codes left. If you lost your phone, set up your app again from My profile.`;
+    case 'recovery_regenerated': return `You generated new recovery codes on ${when}. The previous ones no longer work.`;
+    case 'mfa_locked': return `Someone typed your password correctly but got the code wrong many times (${when}). We locked verification for one hour. Change your password: someone knows it.`;
+    case 'new_device': return `Someone signed in to your account on ${when} from a new device: ${d.device || 'a browser'}${d.ip ? ` (IP ${partialIp(d.ip)})` : ''}.`;
+    case 'ownership_transferred': return `${d.by ? `${d.by} transferred` : 'You transferred'} the account “${d.account}” to ${d.to} on ${when}. You remain an admin.`;
+    case 'ownership_received': return `${d.from} transferred the account “${d.account}” to you on ${when}. Check the billing details in My plan.`;
+    case 'email_changed': return `The email of your account changed to ${d.to} on ${when} (requested with your password). From now on you sign in with that email; if it wasn't you, sign in with it and put yours back from My profile.`;
+    case 'retention_scheduled': return `${d.by ? `${d.by} scheduled` : 'Someone scheduled'} automatic deletion of ${d.detail} from your account, starting ${d.on}. Deleted data can't be recovered. If it wasn't your decision, change it in Settings → Privacy before that date.`;
+    case 'role_changed': return `${d.by ? `${d.by} changed` : 'Someone changed'} your role to ${ROLE_EN[d.role ?? ''] ?? d.role} on ${when}. You'll have the new permissions the next time you sign in.`;
+  }
+}
+
+/** La zona horaria del negocio (para la hora del aviso en inglés); sin cuenta, la de México. */
+async function zoneOf(accountId: string | null) {
+  if (!accountId) return 'America/Mexico_City';
+  const row = await queryOne<{ tz: string | null }>(`SELECT settings->>'timezone' AS tz FROM accounts WHERE id = $1`, [accountId]).catch(() => null);
+  return row?.tz || 'America/Mexico_City';
+}
+
 function body(kind: NoticeKind, when: string, d: NoticeDetails): string {
   switch (kind) {
     case 'password_changed': return `La contraseña de tu cuenta cambió el ${when}. Se cerraron tus otras sesiones.`;
@@ -78,13 +127,17 @@ export async function notifyUser(user: NoticeUser, kind: NoticeKind, details: No
   const { device, ip, ...rest } = details;
   await recordSecurity({ kind: `notice.${kind}`, accountId: user.account_id, userId: user.id, email: user.email, ip, userAgent: device, details: rest });
   try {
-    const when = new Intl.DateTimeFormat('es-MX', { dateStyle: 'long', timeStyle: 'short', timeZone: 'America/Mexico_City' }).format(new Date());
+    const en = (await recipientLang(user.email)) === 'en';
+    const when = en
+      ? new Intl.DateTimeFormat('en-US', { dateStyle: 'long', timeStyle: 'short', timeZone: await zoneOf(user.account_id) }).format(new Date())
+      : new Intl.DateTimeFormat('es-MX', { dateStyle: 'long', timeStyle: 'short', timeZone: 'America/Mexico_City' }).format(new Date());
     const { fromName } = await mailBrand(user.account_id);
     const result = await deliverMail({
       to: user.email,
       fromName,
-      subject: SUBJECT[kind],
-      text: `Hola ${user.name || ''},\n\n${body(kind, when, details)}\n\n${FOOTER}\n`,
+      lang: 'as-is',
+      subject: en ? SUBJECT_EN[kind] : SUBJECT[kind],
+      text: en ? `Hi ${user.name || ''},\n\n${bodyEn(kind, when, details)}\n\n${FOOTER_EN}\n` : `Hola ${user.name || ''},\n\n${body(kind, when, details)}\n\n${FOOTER}\n`,
     });
     if (result === 'failed') await logEvent({ level: 'warn', source: 'system', message: `No se pudo mandar el aviso de seguridad «${SUBJECT[kind]}»`, accountId: user.account_id ?? undefined });
   } catch (e: any) {

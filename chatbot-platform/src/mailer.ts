@@ -2,6 +2,8 @@ import nodemailer, { type Transporter } from 'nodemailer';
 import { config } from './config.js';
 import { logEvent } from './logs.js';
 import { outboundAllowed } from './outbound-guard.js';
+import { recipientLang, toEnglish } from './mail-language.js';
+import type { Lang } from './locale.js';
 
 export interface Mail {
   to: string;
@@ -13,6 +15,11 @@ export interface Mail {
   attachments?: { filename: string; content: Buffer; contentType: string }[];
   /** A quién se responde (p. ej. quien escribió en el formulario de contacto). */
   replyTo?: string;
+  /**
+   * Idioma del correo. Sin él, el de la persona del equipo que lo recibe (users.lang): en inglés se traduce con el
+   * diccionario del panel. 'as-is' sale tal cual (los correos a clientes ya se escriben en el idioma del negocio).
+   */
+  lang?: Lang | 'as-is';
 }
 
 /** Correos enviados en memoria (solo sin SMTP: desarrollo y pruebas). */
@@ -59,8 +66,17 @@ export function redactTokens(text: string): string {
 /** Un asunto es una línea: sin saltos ni caracteres de control, espacios juntos y con largo razonable. */
 export const cleanSubject = (s: string) => s.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 150);
 
+/** El correo en el idioma de quien lo recibe (ver `Mail.lang`). */
+async function localized(input: Mail): Promise<Mail> {
+  const lang = input.lang ?? (await recipientLang(input.to));
+  if (lang !== 'en') return input;
+  const [subject, text] = await Promise.all([toEnglish(input.subject), toEnglish(input.text)]);
+  return { ...input, subject, text };
+}
+
 export async function deliverMail(input: Mail): Promise<MailResult> {
-  const mail = { ...input, subject: cleanSubject(input.subject) };
+  const ready = await localized(input);
+  const mail = { ...ready, subject: cleanSubject(ready.subject) };
   // Sandbox: solo a destinos de prueba. El registro no incluye el destinatario ni el asunto (pueden llevar datos de clientes).
   if (!outboundAllowed(mail.to)) {
     await logEvent({ level: 'warn', source: 'system', message: 'Correo bloqueado (OUTBOUND_MODE=sandbox): el destino no está permitido' });

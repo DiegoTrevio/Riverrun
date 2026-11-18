@@ -24,6 +24,8 @@ import { DISPOSABLE_MESSAGE, GOOGLE_PASS_COOKIE, googlePassCookie, isDisposableE
 import * as store from '../store/index.js';
 import type { User } from '../types.js';
 import { parse } from './util.js';
+import type { Lang } from '../locale.js';
+import { recipientLang } from '../mail-language.js';
 import { actor, recordSecurity } from '../security-log.js';
 
 const HOUR = 3600_000;
@@ -79,21 +81,25 @@ async function assertRoomForInvite(accountId: string) {
 }
 
 /** Manda la invitación (texto fijo; el enlace va al dominio principal, con el token en la ruta). Dice si salió. */
-async function sendInvite(inv: Invitation, token: string, inviterName: string): Promise<boolean> {
+async function sendInvite(inv: Invitation, token: string, inviterName: string, lang: Lang = 'es'): Promise<boolean> {
   const acc = await store.getAccount(inv.account_id);
   const { fromName } = await mailBrand(inv.account_id);
   // Un correo que ya tiene cuenta: la respuesta al que invita es la misma (no revela quién está registrado, bajos de la
   // 2c); a esa persona le llega el aviso en lugar del enlace, y la invitación no se puede aceptar.
   if (await store.getUserForLogin(inv.email)) {
+    const en = (await recipientLang(inv.email)) === 'en';
     return (await deliverMail({
-      fromName, to: inv.email,
-      subject: `Te invitaron a ${acc?.name ?? 'un equipo'}`,
-      text: `Hola,\n\n${inviterName || 'Alguien'} te invitó a unirte a "${acc?.name ?? ''}", pero tu correo ya tiene una cuenta y cada correo entra a una sola. Si quieres unirte, pide que inviten otro correo tuyo. Si no conoces esta invitación, ignora este mensaje.`,
+      fromName, to: inv.email, lang: 'as-is',
+      subject: en ? `You were invited to ${acc?.name ?? 'a team'}` : `Te invitaron a ${acc?.name ?? 'un equipo'}`,
+      text: en
+        ? `Hi,\n\n${inviterName || 'Someone'} invited you to join "${acc?.name ?? ''}", but your email already has an account and each email can only belong to one. If you want to join, ask them to invite another email of yours. If you don't recognize this invitation, ignore this message.`
+        : `Hola,\n\n${inviterName || 'Alguien'} te invitó a unirte a "${acc?.name ?? ''}", pero tu correo ya tiene una cuenta y cada correo entra a una sola. Si quieres unirte, pide que inviten otro correo tuyo. Si no conoces esta invitación, ignora este mensaje.`,
     })) === 'sent';
   }
   const link = `${linkBase()}/#/invitacion/${encodeURIComponent(token)}`;
-  const mail = inviteMail({ inviter: inviterName, invitee: inv.name, account: acc?.name ?? '', role: ROLE_LABEL[inv.role], link, google: googleConfigured() });
-  return (await deliverMail({ fromName, to: inv.email, ...mail })) === 'sent';
+  const mail = inviteMail({ inviter: inviterName, invitee: inv.name, account: acc?.name ?? '', role: ROLE_LABEL[inv.role], link, google: googleConfigured(), lang });
+  // Quien recibe la invitación todavía no tiene cuenta: va en el idioma de quien invita.
+  return (await deliverMail({ fromName, to: inv.email, ...mail, lang: 'as-is' })) === 'sent';
 }
 
 /** Quien invita tiene su correo verificado, y el dueño de la cuenta también (el superadministrador queda exento). */
@@ -134,7 +140,7 @@ export async function assertInvitable(email: string, o: { taken?: boolean } = { 
 
 /** Crea la invitación (reemplaza la pendiente al mismo correo, vencida o no), la manda y la deja en la bitácora. */
 export async function createInvitation(
-  actor: Pick<User, 'id' | 'role' | 'name' | 'email_verified_at' | 'account_id'>,
+  actor: Pick<User, 'id' | 'role' | 'name' | 'email_verified_at' | 'account_id' | 'lang'>,
   accountId: string,
   b: { email: string; name: string; role: 'admin' | 'agent' },
 ): Promise<{ inv: Invitation; mail_sent: boolean }> {
@@ -155,7 +161,7 @@ export async function createInvitation(
     `INSERT INTO account_invitations (account_id, email, name, role, token_hash, invited_by, expires_at) VALUES ($1,$2,$3,$4,$5,$6, now() + make_interval(days => $7)) RETURNING ${COLS}`,
     [accountId, b.email, b.name, b.role, tokenHash(token), actor.role === 'superadmin' ? null : actor.id, DAYS_VALID],
   ))!;
-  const mail_sent = await sendInvite(inv, token, inviterName(actor));
+  const mail_sent = await sendInvite(inv, token, inviterName(actor), actor.lang);
   await logEvent({ level: 'info', source: 'admin', message: `Invitación ${mail_sent ? 'enviada' : 'guardada (el correo no salió)'} a ${b.email} (${ROLE_LABEL[b.role]})`, accountId });
   return { inv, mail_sent };
 }
@@ -214,7 +220,7 @@ export async function invitationRoutes(api: FastifyInstance) {
       `UPDATE account_invitations SET token_hash = $2, expires_at = now() + make_interval(days => $3) WHERE id = $1 RETURNING ${COLS}`,
       [inv.id, tokenHash(token), DAYS_VALID],
     ))!;
-    const mail_sent = await sendInvite(upd, token, inviterName(req.user));
+    const mail_sent = await sendInvite(upd, token, inviterName(req.user), req.user.lang);
     await recordSecurity({ kind: 'invite.resent', accountId: inv.account_id, ...actor(req), target: inv.email, details: { role: inv.role } });
     return { ...out(upd), mail_sent };
   });

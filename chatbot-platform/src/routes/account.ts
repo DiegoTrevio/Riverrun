@@ -19,6 +19,7 @@ import { logEvent } from '../logs.js';
 import { sendMail } from '../mailer.js';
 import { DISPOSABLE_MESSAGE, isDisposableEmail } from '../signup-guard.js';
 import * as store from '../store/index.js';
+import { recipientLang } from '../mail-language.js';
 import { parse } from './util.js';
 
 const NOT_ELIGIBLE = config.mfa.required
@@ -43,9 +44,13 @@ export async function accountRoutes(api: FastifyInstance) {
     const { fromName } = await mailBrand(req.user.account_id);
     // Ocupado: la respuesta es la misma (no revela quién está registrado, bajos de la 2c); al titular le llega el aviso.
     if (await store.getUserForLogin(email)) {
+      const en = (await recipientLang(email)) === 'en';
       await sendMail({
-        fromName, to: email, subject: 'Alguien intentó usar tu correo',
-        text: `Hola,\n\nAlguien pidió que ${email} sea el correo de otra cuenta. Como ya es el de tu cuenta, no cambió nada. Si no sabes de qué se trata, ignora este mensaje.`,
+        fromName, to: email, lang: 'as-is',
+        subject: en ? 'Someone tried to use your email' : 'Alguien intentó usar tu correo',
+        text: en
+          ? `Hi,\n\nSomeone asked for ${email} to be the email of another account. Since it's already the email of your account, nothing changed. If you don't know what this is about, ignore this message.`
+          : `Hola,\n\nAlguien pidió que ${email} sea el correo de otra cuenta. Como ya es el de tu cuenta, no cambió nada. Si no sabes de qué se trata, ignora este mensaje.`,
       });
       await logEvent({ level: 'info', source: 'admin', message: `${req.user.email} pidió cambiar su correo a uno que ya tiene cuenta`, accountId: req.user.account_id ?? undefined });
       return { ok: true, pending: email };
@@ -54,8 +59,12 @@ export async function accountRoutes(api: FastifyInstance) {
     await sendMail({
       fromName,
       to: email,
-      subject: 'Confirma tu correo nuevo',
-      text: `Hola ${req.user.name || ''},\n\nPediste que el correo de tu cuenta sea ${email}. Para confirmarlo, abre este enlace:\n\n${linkBase()}/#/cambiar-correo/${token}\n\nEl enlace vence en ${EMAIL_CHANGE_HOURS} horas. Si no lo pediste, ignora este mensaje: tu correo no cambia.`,
+      // El correo nuevo todavía no es de nadie: va en el idioma de quien lo pidió.
+      lang: 'as-is',
+      subject: req.user.lang === 'en' ? 'Confirm your new email' : 'Confirma tu correo nuevo',
+      text: req.user.lang === 'en'
+        ? `Hi ${req.user.name || ''},\n\nYou asked for ${email} to be the email of your account. To confirm it, open this link:\n\n${linkBase()}/#/cambiar-correo/${token}\n\nThe link expires in ${EMAIL_CHANGE_HOURS} hours. If you didn't request it, ignore this message: your email won't change.`
+        : `Hola ${req.user.name || ''},\n\nPediste que el correo de tu cuenta sea ${email}. Para confirmarlo, abre este enlace:\n\n${linkBase()}/#/cambiar-correo/${token}\n\nEl enlace vence en ${EMAIL_CHANGE_HOURS} horas. Si no lo pediste, ignora este mensaje: tu correo no cambia.`,
     });
     await logEvent({ level: 'info', source: 'admin', message: `${req.user.email} pidió cambiar su correo a ${email}`, accountId: req.user.account_id ?? undefined });
     return { ok: true, pending: email };

@@ -494,6 +494,8 @@ export interface User {
   email_verified_at: Date | null;
   last_login_at: Date | null;
   created_at: Date;
+  /** Idioma que eligió para el panel: sus correos y avisos salen en él. */
+  lang?: 'es' | 'en';
 }
 
 /* ---------------------------------- Canales ---------------------------------- */

@@ -304,6 +304,8 @@ async function deliver(row: Cfdi) {
     await sendMail({
       fromName: mb.fromName,
       to: row.receiver.email,
+      // Factura de México (CFDI): siempre en español, como el documento.
+      lang: 'as-is',
       subject: credit ? 'Tu nota de crédito' : 'Tu factura',
       text: `Hola,\n\nTe enviamos ${credit ? 'la nota de crédito de tu reembolso' : 'la factura de tu pago'} (folio fiscal ${row.sat_uuid}) a nombre de ${row.receiver.legal_name}, RFC ${row.receiver.rfc}. Van adjuntos el PDF y el XML.\n\nTambién la puedes descargar en Mi plan:\n${mb.base}/#/plan`,
       attachments: [

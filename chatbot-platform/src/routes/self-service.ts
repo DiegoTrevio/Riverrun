@@ -187,7 +187,7 @@ export async function selfServicePages(root: FastifyInstance) {
         // que pasó el captcha: si no, un robot agotaba el tope y cerraba el formulario a los clientes reales.
         if (await limited('contact:global', CONTACT_MAX_PER_DAY, 86400_000)) return html(reply, 429, contactForm({ brand, values, error: 'Hoy recibimos muchos mensajes. Intenta mañana.' }));
         const to = supportInbox();
-        if (to) await sendMail({ to, replyTo: b.data.email, subject: `Mensaje desde /contacto de ${brand.name}`, text: `${b.data.name} <${b.data.email}> escribió desde ${brand.name} (/contacto):\n\n${b.data.message}` });
+        if (to) await sendMail({ to, replyTo: b.data.email, subject: `Mensaje desde /contacto de ${brand.name}`, text: `${b.data.name} <${b.data.email}> escribió desde ${brand.name} (/contacto):\n\n${b.data.message}`, lang: 'as-is' });
         await logEvent({ level: to ? 'info' : 'warn', source: 'system', message: to ? `Mensaje de contacto de ${b.data.email}` : `Mensaje de contacto de ${b.data.email} sin buzón de soporte (define SUPERADMIN_EMAIL)`, details: to ? undefined : { message: b.data.message.slice(0, 2000) } });
       }
       return html(reply, 200, page({ title: 'Mensaje enviado', brand, body: '<h1>¡Gracias!</h1><p>Recibimos tu mensaje y te responderemos a tu correo lo antes posible.</p>' }));
