@@ -62,8 +62,18 @@ Cada negocio elige en **Ajustes → Idioma con tus clientes** si atiende en espa
 
 Las pruebas están en `test/business-language.test.ts`.
 
+## Correos al equipo
+
+Cada persona recibe sus correos en el idioma en que ve el panel (el que eligió o, si no eligió, el de su navegador): el panel lo guarda en la cookie `lang` y el servidor lo copia a la persona (`users.lang`) cuando abre el panel. Si dos personas comparten un navegador, gana el idioma de ese navegador. Quien se registra con el panel (o el navegador) en inglés queda en inglés desde el primer correo, y su negocio atiende en inglés.
+
+- **Escritos en los dos idiomas:** confirmar el correo, restablecer la contraseña, cambio de correo, invitaciones (en el idioma de quien invita, porque quien recibe todavía no tiene cuenta), avisos de seguridad (con la hora del negocio), fin de la prueba, recordatorios para empezar y borrado de la cuenta.
+- **Traducidos con el diccionario del panel** (`src/mail-language.ts`): los avisos que también salen en el panel (cobros, límites del plan, canales desconectados, integraciones, alertas de conversaciones). Se traducen renglón por renglón con `public/i18n/en.json` y las fechas pasan a «November 30, 2026». Un renglón que no está en el diccionario sale en español, así que todo aviso nuevo lleva su traducción (`node scripts/i18n-strings.mjs` también revisa los títulos y textos que se pasan a `tell(…)`).
+- Los correos a clientes (citas, reservas) no se traducen así: ya salen en el idioma del negocio con sus clientes.
+
+Las pruebas están en `test/mail-language.test.ts`.
+
 ## Lo que todavía está solo en español
 
-- Los avisos y correos al equipo del negocio (alertas, resúmenes) y el PDF de la cotización.
+- El PDF de la cotización, el correo a la persona que atiende una cita, el reporte de conversación por correo, las facturas (CFDI, solo México) y lo que ve el superadministrador.
 - Las plantillas por giro de un asistente nuevo (saludo, preguntas, mensajes guardados): en inglés solo cambia lo de fábrica general.
 - La ayuda (`ayuda.html`), la página para reservar, el chat web y los avisos legales (fase de páginas públicas, con Privacy Policy y Terms para Estados Unidos).

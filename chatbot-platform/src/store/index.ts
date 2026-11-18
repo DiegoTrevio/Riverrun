@@ -115,7 +115,7 @@ export async function deleteAccount(id: string) {
 
 /* ------------------------------ Usuarios ------------------------------ */
 
-const USER_COLS = 'id, account_id, role, name, email, phone, notify_whatsapp, alert_prefs, available, active, email_verified_at, last_login_at, created_at';
+const USER_COLS = 'id, account_id, role, name, email, phone, notify_whatsapp, alert_prefs, available, active, email_verified_at, last_login_at, created_at, lang';
 
 /** El equipo, con si ya configuró la verificación en dos pasos (nunca el secreto). */
 export async function listUsers(accountId: string | null): Promise<(User & { mfa_enabled: boolean; is_owner: boolean })[]> {

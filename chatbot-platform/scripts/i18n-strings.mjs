@@ -113,6 +113,9 @@ export function serverStrings(srcDir = path.resolve(here, '..', 'src')) {
       // Textos que el servidor arma para mostrarse en el panel (títulos de avisos, nombres y explicaciones de eventos,
       // revisiones del sistema): por el nombre de la propiedad, o todo el texto de los archivos que solo hacen eso.
       if (!forModel && ts.isPropertyAssignment(n) && PANEL_PROPS.has(n.name.getText(sf))) found.push(n.initializer);
+      // Avisos a los administradores (panel y correo): tell(cuenta, título, texto) y las variables title/body que se les pasan.
+      if (!forModel && ts.isCallExpression(n) && n.expression.getText(sf) === 'tell') found.push(...n.arguments.slice(1));
+      if (!forModel && ts.isVariableDeclaration(n) && n.initializer && ['title', 'body'].includes(n.name.getText(sf))) found.push(n.initializer);
       if (panelFile && (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n) || ts.isTemplateExpression(n)) && !ts.isImportDeclaration(n.parent) && !ts.isTemplateSpan(n.parent)) found.push(n);
       for (const c of found) {
         for (const x of ts.isConditionalExpression(c) ? [c.whenTrue, c.whenFalse] : [c]) {

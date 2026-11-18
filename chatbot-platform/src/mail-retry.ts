@@ -7,7 +7,7 @@ import { scheduleJob } from './automation/store.js';
 import { logEvent } from './logs.js';
 import { deliverMail, type Mail, type MailResult } from './mailer.js';
 
-type RetryMail = Pick<Mail, 'to' | 'subject' | 'text' | 'fromName' | 'replyTo'>;
+type RetryMail = Pick<Mail, 'to' | 'subject' | 'text' | 'fromName' | 'replyTo' | 'lang'>;
 
 /** Manda el correo y, si el servidor de correo falla, lo deja para reintentarlo. Sin SMTP o en sandbox, no se reintenta. */
 export async function sendMailDurable(mail: RetryMail, accountId: string | null): Promise<MailResult> {

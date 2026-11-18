@@ -279,6 +279,7 @@ export async function bookingPublicRoutes(app: FastifyInstance, service: ChatSer
       text: en
         ? `Hi,\n\nTo confirm your booking for ${svc.name}${when ? ` on ${when}` : ''} with ${business}, open this link (it expires in one hour):\n\n${confirmUrl}\n\nIf you didn't request it, ignore this email: nothing will be booked.`
         : `Hola,\n\nPara confirmar tu reserva de ${svc.name}${when ? ` el ${when}` : ''} con ${business}, abre este enlace (vence en una hora):\n\n${confirmUrl}\n\nSi no la pediste, ignora este correo: no se agenda nada.`,
+      lang: 'as-is',
     }).catch(() => false);
     return { ok: true, pending: true, email: b.email, email_sent: emailSent };
   });

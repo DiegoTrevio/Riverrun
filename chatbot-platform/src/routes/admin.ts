@@ -142,6 +142,12 @@ const OWN_ONLY = 'Cada persona cambia su contraseña y su correo en Mi perfil';
 export async function adminRoutes(api: FastifyInstance, service: ChatService) {
   await aiBudgetRoutes(api);
   api.get('/api/me', async (req) => {
+    // El panel guarda el idioma elegido en la cookie «lang»: se copia a la persona para que sus correos salgan en él.
+    const lang = (req.cookies as Record<string, string | undefined> | undefined)?.lang;
+    if ((lang === 'es' || lang === 'en') && lang !== req.user.lang) {
+      await query(`UPDATE users SET lang = $2 WHERE id = $1`, [req.user.id, lang]);
+      req.user = { ...req.user, lang };
+    }
     const account = req.user.account_id ? await store.getAccount(req.user.account_id) : null;
     // Pago pendiente: los administradores ven la franja «Actualiza tu pago» en todo el panel.
     const due = account && req.user.role !== 'agent' ? await paymentDue(account.id) : null;

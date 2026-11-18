@@ -22,6 +22,7 @@ const one = async <T extends Record<string, any>>(q: Q | undefined, sql: string,
 const many = async <T extends Record<string, any>>(q: Q | undefined, sql: string, args: unknown[] = []): Promise<T[]> => (q ? ((await q.query(sql, args)).rows as T[]) : query<T>(sql, args));
 import { sendMail } from '../mailer.js';
 import { logEvent } from '../logs.js';
+import { recipientLang, toEnglish } from '../mail-language.js';
 import { chargeCents } from './tax.js';
 
 const MB = 1024 * 1024;
@@ -240,14 +241,28 @@ async function notifyLimit(accountId: string, notice: 'messages_80' | 'messages_
   const title = full ? 'Llegaste al límite de mensajes de tu plan' : 'Estás por llegar al límite de mensajes de tu plan';
   // El plan sugerido va en el texto y el enlace lo deja elegido en Mi plan (un clic para subir).
   const next = await nextPlanFor(accountId, 'messages_per_month', max + 1);
-  const suggest = next ? ` ${offerText(next, 'messages_per_month')}` : ` ${widenText()}`;
+  // Cada frase por separado (con un espacio entre ellas) para que el panel y el correo en inglés las traduzcan.
+  const suggest = next ? offerText(next, 'messages_per_month') : widenText();
   const body = full
-    ? `Tu asistente ya envió los ${max.toLocaleString('es-MX')} mensajes que incluye tu plan este mes, así que dejó de responder solo. ${next ? 'Sube de plan para que siga atendiendo; el' : 'El'} contador se reinicia el día 1.${suggest}`
-    : `Tu asistente lleva ${used.toLocaleString('es-MX')} de ${max.toLocaleString('es-MX')} mensajes de tu plan este mes (80 %). Cuando llegue al 100 % dejará de responder solo.${suggest}`;
+    ? `Tu asistente ya envió los ${max.toLocaleString('es-MX')} mensajes que incluye tu plan este mes, así que dejó de responder solo. ${next ? 'Sube de plan para que siga atendiendo; el contador se reinicia el día 1.' : 'El contador se reinicia el día 1.'} ${suggest}`
+    : `Tu asistente lleva ${used.toLocaleString('es-MX')} de ${max.toLocaleString('es-MX')} mensajes de tu plan este mes (80 %). Cuando llegue al 100 % dejará de responder solo. ${suggest}`;
   const link = next ? `#/plan?subir=${encodeURIComponent(next.key)}` : '#/plan';
   await notifyUsers(accountId, admins.map((a) => a.id), { title, body, link, kind: 'billing' });
   const mb = await mailBrand(accountId);
-  for (const a of admins) await sendMail({ fromName: mb.fromName, to: a.email, subject: title, text: `${body}\n\n${next ? `Subir al plan ${next.name}: ` : ''}${mb.base}/${link}` });
+  const url = `${mb.base}/${link}`;
+  // En inglés se escribe completo: el texto lleva frases opcionales (el plan sugerido) que el diccionario no puede armar.
+  const nf = (n: number) => n.toLocaleString('en-US');
+  const offerEn = next ? ` The ${next.name} plan includes ${next.allows ? `up to ${nf(next.allows)} assistant messages per month` : 'unlimited assistant messages'}.` : ` ${await toEnglish(widenText())}`;
+  const en = {
+    subject: full ? "You reached your plan's message limit" : "You're about to reach your plan's message limit",
+    text: `${full
+      ? `Your assistant already sent the ${nf(max)} messages your plan includes this month, so it stopped replying on its own. ${next ? 'Upgrade your plan so it keeps helping customers; the' : 'The'} counter resets on the 1st.${offerEn}`
+      : `Your assistant has used ${nf(used)} of your plan's ${nf(max)} messages this month (80%). When it reaches 100% it will stop replying on its own.${offerEn}`}\n\n${next ? `Upgrade to the ${next.name} plan: ${url}` : url}`,
+  };
+  for (const a of admins) {
+    if ((await recipientLang(a.email)) === 'en') await sendMail({ fromName: mb.fromName, to: a.email, lang: 'as-is', ...en });
+    else await sendMail({ fromName: mb.fromName, to: a.email, lang: 'es', subject: title, text: `${body}\n\n${next ? `Subir al plan ${next.name}: ${url}` : url}` });
+  }
 }
 
 /** Resumen para el panel: límite, uso y porcentaje de cada recurso. */

@@ -18,6 +18,7 @@ import { checkStuckEvents, checkWebhookSilence, processBillingActions, reconcile
 import { checkGlobalInvoice, processCfdi } from './billing/cfdi.js';
 import { logEvent } from './logs.js';
 import { sendMailDurable } from './mail-retry.js';
+import { recipientLang } from './mail-language.js';
 import { checkOnboardingNudges } from './onboarding-checklist.js';
 import { emailSuperadmin, sendSuperadminDigest } from './platform/digest.js';
 import * as store from './store/index.js';
@@ -25,7 +26,7 @@ import type { Account, Channel } from './types.js';
 import { attemptDelivery, newAlertKey, queueDelivery } from './automation/alert-delivery.js';
 
 const WARN_DAYS = 3;
-const fmt = (d: Date) => new Date(d).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'America/Mexico_City' });
+const fmt = (d: Date, en = false) => new Date(d).toLocaleDateString(en ? 'en-US' : 'es-MX', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'America/Mexico_City' });
 
 /** Avisa al superadmin: notificación en el panel y, si hay SUPERADMIN_EMAIL, correo. */
 /** Aviso al superadmin: en el panel al momento; por correo al momento si es urgente, si no en el resumen del día. */
@@ -36,10 +37,11 @@ export async function notifySuperadmins(accountId: string, title: string, body: 
 }
 
 /** Qué hacer para seguir: pagar en línea (si hay cobro automático) o escribir al contacto de soporte. */
-async function howToContinue(accountId: string) {
+async function howToContinue(accountId: string, en = false) {
   const mb = await mailBrand(accountId);
-  if (await billingEnabled()) return { mb, text: `Elige tu plan y paga en línea aquí:\n${mb.base}/#/plan\n\n` };
-  return { mb, text: `${config.signup.supportContact ? `Para continuar, escríbenos: ${config.signup.supportContact}\n\n` : ''}${mb.base}` };
+  if (await billingEnabled()) return { mb, text: en ? `Choose your plan and pay online here:\n${mb.base}/#/plan\n\n` : `Elige tu plan y paga en línea aquí:\n${mb.base}/#/plan\n\n` };
+  const contact = config.signup.supportContact ? (en ? `To continue, write to us: ${config.signup.supportContact}\n\n` : `Para continuar, escríbenos: ${config.signup.supportContact}\n\n`) : '';
+  return { mb, text: `${contact}${mb.base}` };
 }
 
 export async function checkTrials(now = new Date()) {
@@ -52,14 +54,21 @@ export async function checkTrials(now = new Date()) {
   for (const acc of warn) {
     const o = await accountOwner(acc.id);
     if (o) {
-      const next = await howToContinue(acc.id);
+      const en = (await recipientLang(o.email)) === 'en';
+      const next = await howToContinue(acc.id, en);
       // Con tarjeta (suscripción viva), la prueba no se pausa: ese día se hace el primer cobro (salvo que ya la cancelara).
       const paying = await queryOne<{ cancel_at_period_end: boolean }>(`SELECT cancel_at_period_end FROM subscriptions WHERE account_id = $1 AND status IN ('active', 'past_due')`, [acc.id]);
       await sendMailDurable({
         fromName: next.mb.fromName,
         to: o.email,
-        subject: 'Tu periodo de prueba está por terminar',
-        text: paying?.cancel_at_period_end
+        lang: 'as-is',
+        subject: en ? 'Your trial is about to end' : 'Tu periodo de prueba está por terminar',
+        text: en ? (paying?.cancel_at_period_end
+          ? `Hi ${o.name || ''},\n\nYour trial of "${acc.name}" ends on ${fmt(acc.trial_ends_at!, true)}. Since you canceled your plan, you won't be charged and that day your assistant will stop replying. If you want to continue, keep your plan from My plan:\n${next.mb.base}/#/plan`
+          : paying
+          ? `Hi ${o.name || ''},\n\nYour trial of "${acc.name}" ends on ${fmt(acc.trial_ends_at!, true)} and that day the first charge of your plan is made to the card you registered. If you don't want to continue, cancel before then from My plan:\n${next.mb.base}/#/plan`
+          : `Hi ${o.name || ''},\n\nYour trial of "${acc.name}" ends on ${fmt(acc.trial_ends_at!, true)}. After that date your assistant will stop replying until your plan is active.\n\n${next.text}`)
+        : paying?.cancel_at_period_end
           ? `Hola ${o.name || ''},\n\nTu prueba de "${acc.name}" termina el ${fmt(acc.trial_ends_at!)}. Como cancelaste tu plan, no se hará ningún cobro y ese día tu asistente dejará de responder. Si quieres seguir, mantén tu plan desde Mi plan:\n${next.mb.base}/#/plan`
           : paying
           ? `Hola ${o.name || ''},\n\nTu prueba de "${acc.name}" termina el ${fmt(acc.trial_ends_at!)} y ese día se hace el primer cobro de tu plan con la tarjeta que registraste. Si no quieres continuar, cancela antes desde Mi plan:\n${next.mb.base}/#/plan`
@@ -79,13 +88,15 @@ export async function checkTrials(now = new Date()) {
   for (const acc of expired) {
     await logEvent({ level: 'warn', source: 'admin', message: `Prueba terminada: la cuenta "${acc.name}" quedó en pausa`, accountId: acc.id });
     const o = await accountOwner(acc.id);
-    const next = await howToContinue(acc.id);
+    const en = !!o && (await recipientLang(o.email)) === 'en';
+    const next = await howToContinue(acc.id, en);
     if (o) {
       await sendMailDurable({
         fromName: next.mb.fromName,
         to: o.email,
-        subject: 'Tu periodo de prueba terminó',
-        text: `Hola ${o.name || ''},\n\nLa prueba de "${acc.name}" terminó y tu asistente está en pausa. ${keptNote()} Se reactiva en cuanto se active tu plan.\n\n${next.text}`,
+        lang: 'as-is',
+        subject: en ? 'Your trial ended' : 'Tu periodo de prueba terminó',
+        text: en ? `Hi ${o.name || ''},\n\nThe trial of "${acc.name}" ended and your assistant is paused. ${keptNote(true)} It turns back on as soon as your plan is active.\n\n${next.text}` : `Hola ${o.name || ''},\n\nLa prueba de "${acc.name}" terminó y tu asistente está en pausa. ${keptNote()} Se reactiva en cuanto se active tu plan.\n\n${next.text}`,
       }, acc.id);
     }
     const paysOnline = await billingEnabled();

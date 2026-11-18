@@ -12,6 +12,7 @@ import { NEEDS_RELINK, reasonText } from './lifecycle.js';
 import { logEvent } from './logs.js';
 import { sendMail } from './mailer.js';
 import { hmac, safeEqual } from './secret.js';
+import { recipientLang } from './mail-language.js';
 import * as store from './store/index.js';
 
 /** Señales de la cuenta con las que se decide qué falta (todas existen ya en la base). */
@@ -167,6 +168,21 @@ const MAILS: Record<Kind, { subject: string; body: (name: string, base: string) 
   },
 };
 
+const MAILS_EN: Record<Kind, { subject: string; body: (name: string, base: string) => string }> = {
+  connect: {
+    subject: 'Connect your WhatsApp and your agent starts helping customers',
+    body: (n, base) => `Your agent for "${n}" is ready, but it isn't connected to your WhatsApp yet.\n\nConnect it in a minute by scanning the QR code:\n${base}/#/empezar\n\nAs soon as it's connected, it starts replying to your customers.`,
+  },
+  test: {
+    subject: 'Try your agent before it talks to your customers',
+    body: (n, base) => `Message your agent for "${n}" as if you were a customer and check that it answers well. If you don't like something, you can adjust it right away.\n\nOpen the simulator:\n${base}/#/probar`,
+  },
+  reactivate: {
+    subject: 'Your agent is paused: turn it back on whenever you want',
+    body: (n, base) => `Your trial of "${n}" ended and your agent stopped replying. Your setup and conversations are still saved: choose your plan and get back to helping your customers in minutes.\n\n${base}/#/plan`,
+  },
+};
+
 /**
  * Cuentas del registro a las que toca escribir, por tipo de correo:
  * - connect: más de 1 día desde el registro y sin ningún canal conectado.
@@ -201,7 +217,10 @@ export async function checkOnboardingNudges(now = new Date()): Promise<number> {
       if (!acc || !to) continue;
       const mb = await mailBrand(acc.id);
       const off = `${mb.base}/baja-recordatorios?c=${acc.id}&s=${unsubscribeSig(acc.id)}`;
-      await sendMail({ fromName: mb.fromName, to: to.email, subject: MAILS[kind].subject, text: `Hola ${to.name || ''},\n\n${MAILS[kind].body(acc.name, mb.base)}\n\n—\nNo quiero recibir estos recordatorios: ${off}` });
+      const en = (await recipientLang(to.email)) === 'en';
+      const m = (en ? MAILS_EN : MAILS)[kind];
+      await sendMail({ fromName: mb.fromName, to: to.email, lang: 'as-is', subject: m.subject,
+        text: en ? `Hi ${to.name || ''},\n\n${m.body(acc.name, mb.base)}\n\n—\nI don't want these reminders: ${off}` : `Hola ${to.name || ''},\n\n${m.body(acc.name, mb.base)}\n\n—\nNo quiero recibir estos recordatorios: ${off}` });
       await logEvent({ level: 'info', source: 'system', message: `Correo de seguimiento (${kind}) a ${to.email}`, accountId: acc.id });
       sent++;
     }
