@@ -19,6 +19,34 @@
   var timer = null;
   var sending = false;
 
+  // Textos del widget en el idioma con el que el negocio atiende a sus clientes (lo manda /config como «lang»).
+  var TEXT = {
+    es: {
+      close: 'Cerrar chat', log: 'Conversación', region: 'Chat con el negocio', placeholder: 'Escribe tu mensaje…',
+      message: 'Mensaje', send: 'Enviar', launcher: 'Chatea con nosotros', you: 'Tú: ', business: 'Negocio',
+      theBusiness: 'el negocio', TheBusiness: 'El negocio', image: 'Imagen', file: 'Archivo', options: 'Opciones',
+      newOne: ' mensaje nuevo)', newMany: ' mensajes nuevos)', newFrom: 'Mensaje nuevo de ', typing: ' está escribiendo…',
+      failed: 'No se pudo enviar',
+    },
+    en: {
+      close: 'Close chat', log: 'Conversation', region: 'Chat with the business', placeholder: 'Type your message…',
+      message: 'Message', send: 'Send', launcher: 'Chat with us', you: 'You: ', business: 'Business',
+      theBusiness: 'the business', TheBusiness: 'The business', image: 'Image', file: 'File', options: 'Options',
+      newOne: ' new message)', newMany: ' new messages)', newFrom: 'New message from ', typing: ' is typing…',
+      failed: "Couldn't send your message",
+    },
+  };
+  // Los avisos del servidor vienen en español; en inglés se cambian por estos.
+  var ERRORS_EN = {
+    'Mensaje vacío': 'Write a message first',
+    'Demasiados mensajes, espera un momento': 'Too many messages, please wait a moment',
+    'Demasiadas consultas, espera un momento': 'Too many requests, please wait a moment',
+    'Demasiadas solicitudes, espera un momento': 'Too many requests, please wait a moment',
+    'Demasiadas conversaciones nuevas desde tu red: intenta en un rato': 'Too many new chats from your network: please try again later',
+    'El chat está recibiendo demasiadas conversaciones nuevas: intenta en unos minutos': 'The chat is getting too many new conversations: please try again in a few minutes',
+    'Chat no disponible': 'Chat unavailable',
+  };
+
   function storage(get, value) {
     try {
       if (get) return localStorage.getItem(storeKey);
@@ -85,7 +113,7 @@
     }
     // Bordes (foco del campo y botones de opciones) sobre blanco: el color de marca si da 3:1; si no, más oscuro.
     var line = color;
-    for (var t = 0; t <= 1 && (1.05 / (lum(line) + .05)) < 3; t += .1) line = mixBlack(color, t);
+    for (var step = 0; step <= 1 && (1.05 / (lum(line) + .05)) < 3; step += .1) line = mixBlack(color, step);
     function lum(hex) { var c = [1, 3, 5].map(function (i) { var v = parseInt(hex.slice(i, i + 2), 16) / 255; return v <= .04045 ? v / 12.92 : Math.pow((v + .055) / 1.055, 2.4); }); return c[0] * .2126 + c[1] * .7152 + c[2] * .0722; }
     // En oscuro, el mismo borde de marca se aclara hasta 3:1 contra el panel oscuro.
     var lineDark = color;
@@ -127,9 +155,11 @@
     root.appendChild(style);
 
     var wrap = el('div', 'w ' + (cfg.theme === 'dark' || cfg.theme === 'light' ? cfg.theme : 'auto'));
-    // El widget está en español aunque la página del cliente diga otro idioma.
-    host.setAttribute('lang', 'es');
-    wrap.setAttribute('lang', 'es');
+    // El widget va en el idioma del negocio aunque la página del cliente diga otro.
+    var lang = cfg.lang === 'en' ? 'en' : 'es';
+    var t = TEXT[lang];
+    host.setAttribute('lang', lang);
+    wrap.setAttribute('lang', lang);
     var panel = el('div', 'panel');
     panel.style.display = 'none';
     var head = el('div', 'head');
@@ -137,13 +167,13 @@
     ht.appendChild(el('div', 'title', cfg.title));
     if (cfg.subtitle) ht.appendChild(el('div', 'sub', cfg.subtitle));
     var closeBtn = el('button', 'close', '×');
-    closeBtn.setAttribute('aria-label', 'Cerrar chat');
+    closeBtn.setAttribute('aria-label', t.close);
     head.appendChild(ht);
     head.appendChild(closeBtn);
     // Registro de la conversación: lo que llega se anuncia solo.
     var list = el('div', 'list');
     list.setAttribute('role', 'log');
-    list.setAttribute('aria-label', 'Conversación');
+    list.setAttribute('aria-label', t.log);
     var typing = el('div', 'typing');
     typing.setAttribute('aria-hidden', 'true');
     typing.innerHTML = '<span></span><span></span><span></span>';
@@ -153,16 +183,16 @@
     var notice = el('div', 'sr');
     notice.setAttribute('role', 'status');
     panel.setAttribute('role', 'region');
-    panel.setAttribute('aria-label', cfg.title || 'Chat con el negocio');
+    panel.setAttribute('aria-label', cfg.title || t.region);
     panel.id = 'customer-chat';
     var err = el('div', 'err');
     err.setAttribute('role', 'alert');
     err.style.display = 'none';
     var form = el('form', 'form');
     var input = el('textarea');
-    input.placeholder = 'Escribe tu mensaje…';
-    input.setAttribute('aria-label', 'Mensaje');
-    var send = el('button', null, 'Enviar');
+    input.placeholder = t.placeholder;
+    input.setAttribute('aria-label', t.message);
+    var send = el('button', null, t.send);
     send.type = 'submit';
     form.appendChild(input);
     form.appendChild(send);
@@ -171,9 +201,9 @@
     panel.appendChild(typingStatus);
     panel.appendChild(err);
     panel.appendChild(form);
-    var launcher = el('button', 'launcher', cfg.launcher_text || 'Chatea con nosotros');
+    var launcher = el('button', 'launcher', cfg.launcher_text || t.launcher);
     launcher.insertAdjacentHTML('afterbegin', '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 0 1-11.6 7.1L4 20l1-4.4A8 8 0 1 1 20 12z"/></svg>');
-    var launcherText = cfg.launcher_text || 'Chatea con nosotros';
+    var launcherText = cfg.launcher_text || t.launcher;
     var badge = el('span', 'badge');
     badge.setAttribute('aria-hidden', 'true');
     badge.style.display = 'none';
@@ -197,12 +227,12 @@
       }
       var b = el('div', 'msg ' + (m.from === 'customer' ? 'me' : 'bot'));
       // Quién habla, para el lector (a la vista lo dicen el lado y el color).
-      b.appendChild(el('span', 'sr', m.from === 'customer' ? 'Tú: ' : (cfg.title || 'Negocio') + ': '));
+      b.appendChild(el('span', 'sr', m.from === 'customer' ? t.you : (cfg.title || t.business) + ': '));
       if (m.from === 'customer') b.setAttribute('aria-live', 'off'); // lo que uno mismo escribió no se vuelve a leer
       if (m.image_url) {
         var img = el('img');
         img.src = m.image_url;
-        img.alt = m.text ? '' : 'Imagen';
+        img.alt = m.text ? '' : t.image;
         img.loading = 'lazy';
         img.onload = scroll;
         b.appendChild(img);
@@ -216,7 +246,7 @@
           media.style.maxWidth = '100%';
           b.appendChild(media);
         } else {
-          var link = el('a', 'file', m.file.name || 'Archivo');
+          var link = el('a', 'file', m.file.name || t.file);
           link.insertAdjacentHTML('afterbegin', '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;margin-right:4px"><path d="m20 11.5-8.3 8.3a5 5 0 0 1-7-7L13 4.5a3.4 3.4 0 0 1 4.8 4.8L9.6 17.5a1.8 1.8 0 0 1-2.6-2.6l7.6-7.6"/></svg>');
           link.href = m.file.url;
           link.target = '_blank';
@@ -230,7 +260,7 @@
       if (m.buttons && m.buttons.length) {
         var row = el('div', 'chips');
         row.setAttribute('role', 'group');
-        row.setAttribute('aria-label', 'Opciones');
+        row.setAttribute('aria-label', t.options);
         m.buttons.forEach(function (x) {
           if (x.kind === 'url') {
             if (!/^https:\/\//.test(x.url || '')) return;
@@ -254,8 +284,8 @@
         unread++;
         badge.textContent = unread;
         badge.style.display = 'flex';
-        launcher.setAttribute('aria-label', launcherText + ' (' + unread + (unread === 1 ? ' mensaje nuevo)' : ' mensajes nuevos)'));
-        notice.textContent = 'Mensaje nuevo de ' + (cfg.title || 'el negocio');
+        launcher.setAttribute('aria-label', launcherText + ' (' + unread + (unread === 1 ? t.newOne : t.newMany));
+        notice.textContent = t.newFrom + (cfg.title || t.theBusiness);
       }
     }
     function scroll() {
@@ -297,7 +327,7 @@
             if (m.id > lastId) lastId = m.id;
           });
           typing.style.display = d.typing ? 'block' : 'none';
-          typingStatus.textContent = d.typing ? (cfg.title || 'El negocio') + ' está escribiendo…' : '';
+          typingStatus.textContent = d.typing ? (cfg.title || t.TheBusiness) + t.typing : '';
           if (open) scroll();
         })
         .catch(function (e) { forgetSession(e); /* reintento en el siguiente ciclo */ }).finally(function () { polling = null; });
@@ -360,12 +390,12 @@
             if (d.id > lastId) lastId = d.id;
           }
           typing.style.display = 'block';
-          typingStatus.textContent = (cfg.title || 'El negocio') + ' está escribiendo…';
+          typingStatus.textContent = (cfg.title || t.TheBusiness) + t.typing;
           scroll();
           return poll();
         })
         .catch(function (e2) {
-          err.textContent = e2.message || 'No se pudo enviar';
+          err.textContent = (lang === 'en' ? ERRORS_EN[e2.message] || (e2.message ? t.failed : '') : e2.message) || t.failed;
           err.style.display = 'block';
         })
         .then(function () {

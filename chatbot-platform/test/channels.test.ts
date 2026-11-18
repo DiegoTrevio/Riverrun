@@ -354,6 +354,19 @@ t('Chat web: el modo de color es automático por defecto y se puede fijar en cla
   assert.equal((await config()).theme, 'dark', 'un valor inválido no cambia nada');
 });
 
+t('Chat web: el widget habla el idioma con el que el negocio atiende a sus clientes', async () => {
+  const web = await createChannel('webchat', { title: 'Hotel Palmas' });
+  const config = async () => (await h.app.inject({ method: 'GET', url: `/webchat/${web.webhook_token}/config` })).json();
+  assert.equal((await config()).lang, 'es');
+  await pool.query(`UPDATE accounts SET settings = jsonb_set(settings, '{language}', '"en"') WHERE id = $1`, [h.accountId]);
+  const en = await config();
+  assert.equal(en.lang, 'en');
+  assert.equal(en.title, 'Hotel Palmas', 'lo que escribió el negocio no se toca');
+  assert.equal(en.launcher_text, 'Chat with us', 'los textos de fábrica salen en inglés');
+  assert.equal(en.welcome_message, 'Hi! 👋 How can I help you?');
+  await pool.query(`UPDATE accounts SET settings = settings - 'language' WHERE id = $1`, [h.accountId]);
+});
+
 t('Chat web: un documento de la biblioteca llega al widget como archivo para descargar', async () => {
   const web = await createChannel('webchat', { title: 'Hotel Palmas' });
   const base = `/webchat/${web.webhook_token}`;

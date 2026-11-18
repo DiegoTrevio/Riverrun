@@ -25,9 +25,18 @@ import { registerLegalPages } from './legal-pages.js';
 import * as store from '../store/index.js';
 import { publicPalette } from '../public-colors.js';
 import { esc, parse } from './util.js';
+import { visitorLang, type Lang } from '../locale.js';
 
 const HEX = /^#[0-9a-f]{3,8}$/i;
-const fmt = (d: Date) => d.toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'America/Mexico_City' });
+const fmt = (d: Date, lang: Lang = 'es') => d.toLocaleDateString(lang === 'en' ? 'en-US' : 'es-MX', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'America/Mexico_City' });
+/** El texto en el idioma de quien visita (estas páginas las ve el negocio: su panel o su navegador). */
+const tx = (lang: Lang, es: string, en: string) => (lang === 'en' ? en : es);
+/** Nombres en inglés de lo que se revisa en el estado del servicio (los de español están en observability). */
+const COMPONENT_EN: Record<string, string> = {
+  database: 'Database', whatsapp: 'WhatsApp service (Evolution)', whatsapp_sessions: 'WhatsApp: sessions and delivery', scheduler: 'Scheduled tasks',
+  ai: 'AI (OpenRouter)', models: 'AI models', backup: 'Backups', disk: 'Disk space', queue: 'Message and job queue', resources: 'Process resources',
+};
+const STATE_EN: Record<string, string> = { operativo: 'Operational', degradado: 'Degraded', no_disponible: 'Unavailable', no_configurado: 'Not set up', no_verificado: 'Not checked' };
 
 /** Correo al que llegan los mensajes de contacto y las solicitudes ARCO. */
 const supportInbox = () => config.signup.superadminEmail || (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(config.signup.supportContact) ? config.signup.supportContact : '');
@@ -42,11 +51,12 @@ async function brandFor(req: any) {
   return { brand: publicBrand(own), support: own?.support_email || config.signup.supportContact };
 }
 
-function page(o: { title: string; brand: ReturnType<typeof publicBrand>; body: string; head?: string; noindex?: boolean }) {
+function page(o: { title: string; brand: ReturnType<typeof publicBrand>; body: string; head?: string; noindex?: boolean; lang?: Lang }) {
+  const lang: Lang = o.lang ?? 'es';
   // Colores con contraste AA en los dos temas, también con el color de una marca blanca.
   const palette = publicPalette(HEX.test(o.brand.color) ? o.brand.color : '');
   return `<!doctype html>
-<html lang="es">
+<html lang="${lang}">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -93,12 +103,12 @@ ${o.head ?? ''}
   ${o.body}
 </main>
 <footer>
-  <a href="/ayuda.html">Ayuda</a>
-  <a href="/estado">Estado del servicio</a>
-  <a href="/contacto">Contacto</a>
-  <a href="${esc(privacyUrl())}">Aviso de privacidad</a>
-  <a href="/proteccion-de-datos">Protección de datos</a>
-  <a href="/#/login">Entrar a mi panel</a>
+  <a href="/ayuda.html">${tx(lang, 'Ayuda', 'Help')}</a>
+  <a href="/estado">${tx(lang, 'Estado del servicio', 'Service status')}</a>
+  <a href="/contacto">${tx(lang, 'Contacto', 'Contact')}</a>
+  <a href="${esc(privacyUrl())}">${tx(lang, 'Aviso de privacidad', 'Privacy notice')}</a>
+  <a href="/proteccion-de-datos">${tx(lang, 'Protección de datos', 'Data protection')}</a>
+  <a href="/#/login">${tx(lang, 'Entrar a mi panel', 'Log in to my dashboard')}</a>
 </footer>
 </body>
 </html>`;
@@ -118,43 +128,58 @@ export async function selfServicePages(root: FastifyInstance) {
     /* Estado del servicio: lo que ve el cliente, sin detalles internos (ni mensajes de error, ni direcciones). */
     app.get('/estado', async (req, reply) => {
       const { brand } = await brandFor(req);
+      const lang = visitorLang(req);
+      const en = lang === 'en';
       const components = toComponents(await cachedChecks(60_000)).filter((c) => c.state !== 'no_configurado');
       const overall = overallState(components);
-      const headline = overall === 'operativo' ? 'Todo funciona con normalidad' : overall === 'degradado' ? 'Algunas funciones van lentas o con fallas' : 'Hay un problema y ya lo estamos atendiendo';
-      const body = `<h1>Estado del servicio</h1>
+      const headline = overall === 'operativo' ? tx(lang, 'Todo funciona con normalidad', 'Everything is working normally')
+        : overall === 'degradado' ? tx(lang, 'Algunas funciones van lentas o con fallas', 'Some features are slow or failing')
+          : tx(lang, 'Hay un problema y ya lo estamos atendiendo', "There's a problem and we're already working on it");
+      const now = esc(new Date().toLocaleString(en ? 'en-US' : 'es-MX', { dateStyle: 'long', timeStyle: 'short', timeZone: 'America/Mexico_City' }));
+      const body = `<h1>${tx(lang, 'Estado del servicio', 'Service status')}</h1>
   <p class="state-${overall}" role="status">${esc(headline)}</p>
-  <div class="card"><ul class="status">${components.map((c) => `<li><span>${esc(c.label)}</span><span class="state-${c.state}">${esc(STATE_LABEL[c.state])}</span></li>`).join('')}</ul></div>
-  <p class="muted">Actualizado el ${esc(new Date().toLocaleString('es-MX', { dateStyle: 'long', timeStyle: 'short', timeZone: 'America/Mexico_City' }))} (hora del centro de México). Si algo no te funciona y aquí todo aparece bien, <a href="/contacto">escríbenos</a>.</p>`;
-      return reply.code(200).type('text/html; charset=utf-8').header('cache-control', 'public, max-age=60').header('vary', 'Host').send(page({ title: 'Estado del servicio', brand, body }));
+  <div class="card"><ul class="status">${components.map((c) => `<li><span>${esc(en ? COMPONENT_EN[c.id] ?? c.label : c.label)}</span><span class="state-${c.state}">${esc(en ? STATE_EN[c.state] : STATE_LABEL[c.state])}</span></li>`).join('')}</ul></div>
+  <p class="muted">${en
+    ? `Updated ${now} (Mexico City time). If something isn't working for you and everything looks fine here, <a href="/contacto">contact us</a>.`
+    : `Actualizado el ${now} (hora del centro de México). Si algo no te funciona y aquí todo aparece bien, <a href="/contacto">escríbenos</a>.`}</p>`;
+      return reply.code(200).type('text/html; charset=utf-8').header('cache-control', 'public, max-age=60').header('vary', 'Host, Cookie, Accept-Language')
+        .send(page({ title: tx(lang, 'Estado del servicio', 'Service status'), brand, body, lang }));
     });
 
     /* Contacto: el mensaje llega al correo de soporte con "responder a" la persona. */
     // Cada campo que falla lleva aria-invalid y su mensaje en aria-describedby; arriba queda el resumen.
-    const FIELD_ERROR: Record<string, string> = { name: 'Escribe tu nombre.', email: 'Escribe un correo válido, por ejemplo tu@correo.com.', message: 'El mensaje debe tener al menos 10 caracteres.' };
-    const contactForm = (o: { brand: any; error?: string; values?: Record<string, string>; fields?: string[] }) => {
+    const FIELD_ERRORS: Record<Lang, Record<string, string>> = {
+      es: { name: 'Escribe tu nombre.', email: 'Escribe un correo válido, por ejemplo tu@correo.com.', message: 'El mensaje debe tener al menos 10 caracteres.' },
+      en: { name: 'Enter your name.', email: 'Enter a valid email, for example you@email.com.', message: 'The message must be at least 10 characters long.' },
+    };
+    const FIELD_ERROR = FIELD_ERRORS.es;
+    const contactForm = (o: { brand: any; error?: string; values?: Record<string, string>; fields?: string[]; lang?: Lang }) => {
+      const lang: Lang = o.lang ?? 'es';
       const v = o.values ?? {};
       const bad = new Set(o.fields ?? []);
       const attrs = (k: string) => (bad.has(k) ? ` aria-invalid="true" aria-describedby="c-${k}-error"` : '');
-      const note = (k: string) => (bad.has(k) ? `<small class="field-error" id="c-${k}-error">${esc(FIELD_ERROR[k])}</small>` : '');
+      const note = (k: string) => (bad.has(k) ? `<small class="field-error" id="c-${k}-error">${esc(FIELD_ERRORS[lang][k])}</small>` : '');
       const siteKey = captchaEnabled() ? config.signup.turnstile.siteKey : '';
       return page({
-        title: 'Contacto',
+        title: tx(lang, 'Contacto', 'Contact'),
         brand: o.brand,
+        lang,
         head: siteKey ? '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' : '',
-        body: `<h1>Contacto</h1>
-  <p class="muted">¿Tienes una duda, un problema o una sugerencia? Escríbenos y te respondemos por correo. También revisa la <a href="/ayuda.html">ayuda</a> y el <a href="/estado">estado del servicio</a>.</p>
+        body: `<h1>${tx(lang, 'Contacto', 'Contact')}</h1>
+  <p class="muted">${tx(lang, '¿Tienes una duda, un problema o una sugerencia? Escríbenos y te respondemos por correo. También revisa la <a href="/ayuda.html">ayuda</a> y el <a href="/estado">estado del servicio</a>.',
+    'Have a question, a problem or a suggestion? Write to us and we\'ll reply by email. You can also check the <a href="/ayuda.html">help</a> and the <a href="/estado">service status</a>.')}</p>
   ${o.error ? `<p class="error" role="alert">${esc(o.error)}</p>` : ''}
   <form class="card" method="post" action="/contacto">
-    <label for="c-name">Tu nombre</label><input id="c-name" name="name" maxlength="120" required value="${esc(v.name)}" autocomplete="name"${attrs('name')} />${note('name')}
-    <label for="c-email">Tu correo</label><input id="c-email" name="email" type="email" maxlength="200" required value="${esc(v.email)}" autocomplete="email"${attrs('email')} />${note('email')}
-    <label for="c-message">Mensaje</label><textarea id="c-message" name="message" minlength="10" maxlength="5000" required${attrs('message')}>${esc(v.message)}</textarea>${note('message')}
-    <div class="hp" aria-hidden="true"><label for="c-web">No llenes este campo</label><input id="c-web" name="web" tabindex="-1" autocomplete="off" /></div>
+    <label for="c-name">${tx(lang, 'Tu nombre', 'Your name')}</label><input id="c-name" name="name" maxlength="120" required value="${esc(v.name)}" autocomplete="name"${attrs('name')} />${note('name')}
+    <label for="c-email">${tx(lang, 'Tu correo', 'Your email')}</label><input id="c-email" name="email" type="email" maxlength="200" required value="${esc(v.email)}" autocomplete="email"${attrs('email')} />${note('email')}
+    <label for="c-message">${tx(lang, 'Mensaje', 'Message')}</label><textarea id="c-message" name="message" minlength="10" maxlength="5000" required${attrs('message')}>${esc(v.message)}</textarea>${note('message')}
+    <div class="hp" aria-hidden="true"><label for="c-web">${tx(lang, 'No llenes este campo', 'Leave this field empty')}</label><input id="c-web" name="web" tabindex="-1" autocomplete="off" /></div>
     ${siteKey ? `<div class="cf-turnstile" data-sitekey="${esc(siteKey)}"></div>` : ''}
-    <button type="submit">Enviar mensaje</button>
+    <button type="submit">${tx(lang, 'Enviar mensaje', 'Send message')}</button>
   </form>`,
       });
     };
-    app.get('/contacto', async (req, reply) => html(reply, 200, contactForm({ brand: (await brandFor(req)).brand })));
+    app.get('/contacto', async (req, reply) => html(reply, 200, contactForm({ brand: (await brandFor(req)).brand, lang: visitorLang(req) })));
 
     const ContactBody = z.object({
       name: z.string().trim().min(1).max(120),
@@ -167,66 +192,89 @@ export async function selfServicePages(root: FastifyInstance) {
     const CONTACT_MAX_PER_DAY = 200;
     app.post('/contacto', async (req: any, reply) => {
       const { brand } = await brandFor(req);
+      const lang = visitorLang(req);
       const values = (req.body ?? {}) as Record<string, string>;
-      if (await limited(ipLimitKey('contact', req.ip), 5, 3600_000)) return html(reply, 429, contactForm({ brand, values, error: 'Ya recibimos varios mensajes desde tu conexión. Intenta más tarde.' }));
+      const again = (code: number, error: string, fields?: string[]) => html(reply, code, contactForm({ brand, values, error, fields, lang }));
+      if (await limited(ipLimitKey('contact', req.ip), 5, 3600_000)) return again(429, tx(lang, 'Ya recibimos varios mensajes desde tu conexión. Intenta más tarde.', 'We already got several messages from your connection. Please try again later.'));
       const b = ContactBody.safeParse(values);
       if (!b.success) {
         const fields = [...new Set(b.error.issues.map((i) => String(i.path[0])).filter((k) => k in FIELD_ERROR))];
-        return html(reply, 400, contactForm({ brand, values, fields, error: fields.length === 1 ? FIELD_ERROR[fields[0]] : 'Revisa los campos marcados.' }));
+        return again(400, fields.length === 1 ? FIELD_ERRORS[lang][fields[0]] : tx(lang, 'Revisa los campos marcados.', 'Please check the highlighted fields.'), fields);
       }
       // Campo trampa: solo un robot lo llena. Se le contesta igual para no darle pistas.
       if (!b.data.web) {
         // En producción sin las claves del captcha el formulario queda cerrado, como el registro y las reservas: sin
         // captcha, cualquiera puede llenar el buzón de soporte desde muchas conexiones.
-        if (!captchaEnabled() && captchaRequired()) return html(reply, 503, contactForm({ brand, values, error: 'El formulario no está disponible por ahora. Intenta más tarde.' }));
+        if (!captchaEnabled() && captchaRequired()) return again(503, tx(lang, 'El formulario no está disponible por ahora. Intenta más tarde.', 'The form is not available right now. Please try again later.'));
         // Cerrado ante fallas: si Cloudflare no responde, el mensaje espera (no sale sin comprobar).
         const captcha = await verifyCaptcha(b.data['cf-turnstile-response'], req.ip);
-        if (captcha === 'invalid') return html(reply, 400, contactForm({ brand, values, error: CAPTCHA_MESSAGE }));
-        if (captcha === 'unavailable') return html(reply, 503, contactForm({ brand, values, error: 'No pudimos comprobar el captcha: intenta en un momento.' }));
+        if (captcha === 'invalid') return again(400, tx(lang, CAPTCHA_MESSAGE, "Confirm you're not a robot and try again."));
+        if (captcha === 'unavailable') return again(503, tx(lang, 'No pudimos comprobar el captcha: intenta en un momento.', "We couldn't check the captcha: please try again in a moment."));
         // Tope del día para toda la plataforma (muchas conexiones distintas no inundan el buzón de soporte). Cuenta solo lo
         // que pasó el captcha: si no, un robot agotaba el tope y cerraba el formulario a los clientes reales.
-        if (await limited('contact:global', CONTACT_MAX_PER_DAY, 86400_000)) return html(reply, 429, contactForm({ brand, values, error: 'Hoy recibimos muchos mensajes. Intenta mañana.' }));
+        if (await limited('contact:global', CONTACT_MAX_PER_DAY, 86400_000)) return again(429, tx(lang, 'Hoy recibimos muchos mensajes. Intenta mañana.', 'We got a lot of messages today. Please try again tomorrow.'));
         const to = supportInbox();
         if (to) await sendMail({ to, replyTo: b.data.email, subject: `Mensaje desde /contacto de ${brand.name}`, text: `${b.data.name} <${b.data.email}> escribió desde ${brand.name} (/contacto):\n\n${b.data.message}`, lang: 'as-is' });
         await logEvent({ level: to ? 'info' : 'warn', source: 'system', message: to ? `Mensaje de contacto de ${b.data.email}` : `Mensaje de contacto de ${b.data.email} sin buzón de soporte (define SUPERADMIN_EMAIL)`, details: to ? undefined : { message: b.data.message.slice(0, 2000) } });
       }
-      return html(reply, 200, page({ title: 'Mensaje enviado', brand, body: '<h1>¡Gracias!</h1><p>Recibimos tu mensaje y te responderemos a tu correo lo antes posible.</p>' }));
+      return html(reply, 200, page({ title: tx(lang, 'Mensaje enviado', 'Message sent'), brand, lang,
+        body: tx(lang, '<h1>¡Gracias!</h1><p>Recibimos tu mensaje y te responderemos a tu correo lo antes posible.</p>', "<h1>Thank you!</h1><p>We got your message and we'll reply to your email as soon as we can.</p>") }));
     });
 
     /* Avisos de privacidad (integral y simplificado) y protección de datos, con el procedimiento para los derechos ARCO. */
     registerLegalPages(app, { page, brandFor, privacyContact });
 
     /* Confirmación del borrado desde el correo. El GET solo pregunta: los antivirus de correo abren los enlaces. */
-    const invalid = (reply: any, brand: any) => html(reply, 400, page({ title: 'Enlace no válido', brand, noindex: true, body: '<h1>Enlace no válido o vencido</h1><p>Vuelve a pedir el borrado desde tu panel (Mi plan y pagos → Tus datos): el enlace dura 24 horas.</p>' }));
+    const invalid = (reply: any, brand: any, lang: Lang) => html(reply, 400, page({ title: tx(lang, 'Enlace no válido', 'Invalid link'), brand, noindex: true, lang,
+      body: tx(lang, '<h1>Enlace no válido o vencido</h1><p>Vuelve a pedir el borrado desde tu panel (Mi plan y pagos → Tus datos): el enlace dura 24 horas.</p>',
+        '<h1>Invalid or expired link</h1><p>Request the deletion again from your dashboard (My plan and payments → Your details): the link lasts 24 hours.</p>') }));
     // Un enlace que ya se usó (o que reemplazó otro, o que se invalidó al cancelar o transferir): 410.
-    const used = (reply: any, brand: any) => html(reply, 410, page({ title: 'Enlace ya usado', brand, noindex: true, body: '<h1>Este enlace ya no sirve</h1><p>Ya se usó, o pediste otro después. Si quieres borrar tu cuenta, vuelve a pedirlo desde tu panel (Mi plan y pagos → Tus datos).</p>' }));
+    const used = (reply: any, brand: any, lang: Lang) => html(reply, 410, page({ title: tx(lang, 'Enlace ya usado', 'Link already used'), brand, noindex: true, lang,
+      body: tx(lang, '<h1>Este enlace ya no sirve</h1><p>Ya se usó, o pediste otro después. Si quieres borrar tu cuenta, vuelve a pedirlo desde tu panel (Mi plan y pagos → Tus datos).</p>',
+        '<h1>This link no longer works</h1><p>It was already used, or you requested another one later. If you want to delete your account, request it again from your dashboard (My plan and payments → Your details).</p>') }));
     app.get('/borrar-cuenta', async (req: any, reply) => {
       const { brand } = await brandFor(req);
+      const lang = visitorLang(req);
       const t = readDeletionToken(req.query?.t);
       const acc = t ? await store.getAccount(t.accountId) : null;
-      if (!t || !acc) return invalid(reply, brand);
-      if (!(await deletionLinkOpen(t))) return used(reply, brand);
-      if (acc.deletion_scheduled_for) return html(reply, 200, page({ title: 'Borrado programado', brand, noindex: true, body: `<h1>Tu cuenta ya se va a borrar</h1><p>"${esc(acc.name)}" se borrará el ${esc(fmt(new Date(acc.deletion_scheduled_for)))}. Para cancelarlo entra a tu panel.</p><a class="btn" href="/#/plan">Ir a mi panel</a>` }));
+      if (!t || !acc) return invalid(reply, brand, lang);
+      if (!(await deletionLinkOpen(t))) return used(reply, brand, lang);
+      const name = esc(acc.name);
+      if (acc.deletion_scheduled_for) {
+        const when = esc(fmt(new Date(acc.deletion_scheduled_for), lang));
+        return html(reply, 200, page({ title: tx(lang, 'Borrado programado', 'Deletion scheduled'), brand, noindex: true, lang,
+          body: tx(lang, `<h1>Tu cuenta ya se va a borrar</h1><p>"${name}" se borrará el ${when}. Para cancelarlo entra a tu panel.</p><a class="btn" href="/#/plan">Ir a mi panel</a>`,
+            `<h1>Your account is already set to be deleted</h1><p>"${name}" will be deleted on ${when}. To cancel, log in to your dashboard.</p><a class="btn" href="/#/plan">Go to my dashboard</a>`) }));
+      }
+      const action = `/borrar-cuenta?t=${encodeURIComponent(String(req.query.t))}`;
       return html(reply, 200, page({
-        title: 'Borrar mi cuenta', brand, noindex: true,
-        body: `<h1>¿Borrar "${esc(acc.name)}"?</h1>
+        title: tx(lang, 'Borrar mi cuenta', 'Delete my account'), brand, noindex: true, lang,
+        body: tx(lang, `<h1>¿Borrar "${name}"?</h1>
   <p>Tu plan dejará de renovarse y en 7 días se borrarán tu agente, sus conexiones, tus contactos y tus conversaciones. Hasta entonces puedes cancelarlo desde tu panel.</p>
   <p class="muted">Si todavía no los descargas, guarda antes tus datos en Mi plan y pagos → Tus datos.</p>
-  <form method="post" action="/borrar-cuenta?t=${encodeURIComponent(String(req.query.t))}"><button class="danger" type="submit">Sí, borrar mi cuenta en 7 días</button></form>`,
+  <form method="post" action="${action}"><button class="danger" type="submit">Sí, borrar mi cuenta en 7 días</button></form>`,
+          `<h1>Delete "${name}"?</h1>
+  <p>Your plan will stop renewing, and in 7 days your assistant, its connections, your contacts and your conversations will be deleted. Until then you can cancel from your dashboard.</p>
+  <p class="muted">If you haven't downloaded it yet, save your data first in My plan and payments → Your details.</p>
+  <form method="post" action="${action}"><button class="danger" type="submit">Yes, delete my account in 7 days</button></form>`),
       }));
     });
     app.post('/borrar-cuenta', async (req: any, reply) => {
       const { brand } = await brandFor(req);
+      const lang = visitorLang(req);
       const t = readDeletionToken(req.query?.t);
-      if (!t) return invalid(reply, brand);
-      if (!(await consumeDeletionLink(t))) return used(reply, brand);
+      if (!t) return invalid(reply, brand, lang);
+      if (!(await consumeDeletionLink(t))) return used(reply, brand, lang);
       // Si programar falla, el enlace vuelve a servir (se consumió antes para que dos clics no lo usen dos veces).
       const when = await scheduleDeletion(t.accountId).catch(async (e) => {
         await query(`UPDATE accounts SET deletion_nonce = $2 WHERE id = $1 AND deletion_nonce IS NULL`, [t.accountId, t.nonce]);
         throw e;
       });
-      if (!when) return invalid(reply, brand);
-      return html(reply, 200, page({ title: 'Borrado programado', brand, noindex: true, body: `<h1>Listo</h1><p>Tu cuenta se borrará el ${esc(fmt(when))}. Te lo confirmamos por correo. Si cambias de opinión, entra a tu panel y pulsa «Cancelar el borrado».</p><a class="btn" href="/#/plan">Ir a mi panel</a>` }));
+      if (!when) return invalid(reply, brand, lang);
+      const date = esc(fmt(when, lang));
+      return html(reply, 200, page({ title: tx(lang, 'Borrado programado', 'Deletion scheduled'), brand, noindex: true, lang,
+        body: tx(lang, `<h1>Listo</h1><p>Tu cuenta se borrará el ${date}. Te lo confirmamos por correo. Si cambias de opinión, entra a tu panel y pulsa «Cancelar el borrado».</p><a class="btn" href="/#/plan">Ir a mi panel</a>`,
+          `<h1>Done</h1><p>Your account will be deleted on ${date}. We'll confirm it by email. If you change your mind, log in to your dashboard and press "Cancel the deletion".</p><a class="btn" href="/#/plan">Go to my dashboard</a>`) }));
     });
   });
 }

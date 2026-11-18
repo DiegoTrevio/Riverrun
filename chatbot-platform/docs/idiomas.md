@@ -83,8 +83,15 @@ La página de precios (`/precios`), el registro y Mi plan muestran los planes de
 
 Las pruebas están en `test/pricing.test.ts`.
 
+## Chat web, página para reservar y páginas públicas
+
+- **Chat web (`widget.js`) y página para reservar (`/reservar/…`):** las ven los clientes del negocio, así que van en el idioma con el que el negocio atiende a sus clientes (Ajustes → Idioma con tus clientes), no en el de quien visita. El servidor lo manda como `lang` (en `/webchat/:token/config` y en `/api/public/booking/:token`), y los días y horas de la página para reservar salen en ese idioma («Tuesday, November 17», «9:30 AM»). Los avisos del servidor (topes, captcha, enlace vencido) siguen escritos en español y cada página los cambia por su traducción: `ERRORS_EN` en `widget.js` y en `reservar.js`. Si agregas un aviso en `src/routes/booking.ts`, agrega también su traducción (`test/booking-page.test.ts` revisa que estén todos).
+- **Estado del servicio (`/estado`), contacto (`/contacto`) y la confirmación para borrar la cuenta (`/borrar-cuenta`):** las ve el negocio, así que siguen el idioma de quien visita (el que eligió en el panel o el de su navegador), igual que `/precios`.
+
+Las pruebas están en `test/channels.test.ts`, `test/booking-page.test.ts`, `test/owner-self-service.test.ts` y en `npm run test:public:ux` (el chat web en inglés en un navegador real).
+
 ## Lo que todavía está solo en español
 
 - El PDF de la cotización, el correo a la persona que atiende una cita, el reporte de conversación por correo, las facturas (CFDI, solo México) y lo que ve el superadministrador.
 - Las plantillas por giro de un asistente nuevo (saludo, preguntas, mensajes guardados): en inglés solo cambia lo de fábrica general.
-- La ayuda (`ayuda.html`), la página para reservar, el chat web, las páginas de estado y contacto y los avisos legales (siguiente fase, con Privacy Policy y Terms para Estados Unidos). Los enlaces del pie de `/precios` ya están en inglés, pero llevan a esas páginas en español.
+- La ayuda (`ayuda.html`) y los avisos legales (siguiente fase, con Privacy Policy y Terms para Estados Unidos). Los enlaces del pie de las páginas públicas ya están en inglés, pero llevan a esas páginas en español.

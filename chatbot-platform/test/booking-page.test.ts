@@ -252,3 +252,42 @@ t('si el horario ya se ocupó al confirmar, el enlace no se gasta (revisión de 
   assert.equal((await pub('POST', `/api/public/booking/${token}/confirm`, { code })).statusCode, 409, 'el enlace sigue sirviendo (no 410)');
 });
 
+
+t('la página va en el idioma con el que el negocio atiende a sus clientes', async () => {
+  const token = tokenOf(link.url);
+  assert.equal((await pub('GET', `/api/public/booking/${token}`)).json().lang, 'es');
+  assert.match((await pub('GET', `/reservar/${token}`)).body, /<html lang="es">[\s\S]*>Cargando…</);
+  const es = (await pub('GET', `/api/public/booking/${token}/slots?service_id=${call.id}`)).json()[0];
+  assert.match(es.day, /^(lunes|martes|miércoles|jueves|viernes|sábado|domingo) \d{1,2} de [a-z]+$/);
+  assert.match(es.label, /^\d{2}:\d{2}$/);
+  await pool.query(`UPDATE accounts SET settings = jsonb_set(settings, '{language}', '"en"') WHERE id = $1`, [h.accountId]);
+  try {
+    assert.equal((await pub('GET', `/api/public/booking/${token}`)).json().lang, 'en');
+    const html = (await pub('GET', `/reservar/${token}`)).body;
+    assert.match(html, /<html lang="en">/, 'la página ya llega en inglés (sin español mientras carga)');
+    assert.match(html, /<title>Book<\/title>[\s\S]*>Loading…</);
+    const en = (await pub('GET', `/api/public/booking/${token}/slots?service_id=${call.id}`)).json()[0];
+    assert.equal(en.key, es.key);
+    assert.match(en.day, /^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), [A-Z][a-z]+ \d{1,2}$/);
+    assert.match(en.label, /^\d{1,2}:\d{2} (AM|PM)$/);
+  } finally {
+    await pool.query(`UPDATE accounts SET settings = settings - 'language' WHERE id = $1`, [h.accountId]);
+  }
+});
+
+test('la página para reservar tiene en inglés cada aviso que puede mandar el servidor', async () => {
+  const fs = await import('node:fs');
+  const route = fs.readFileSync(new URL('../src/routes/booking.ts', import.meta.url), 'utf8');
+  const publicPart = route.slice(route.indexOf('export async function bookingPublicRoutes'));
+  const guard = fs.readFileSync(new URL('../src/signup-guard.ts', import.meta.url), 'utf8');
+  const page = fs.readFileSync(new URL('../public/reservar.js', import.meta.url), 'utf8');
+  const messages = new Set([
+    ...[...publicPart.matchAll(/(?:error: |HttpError\(\d+, )'([^']+)'/g)].map((m) => m[1]),
+    ...[...route.matchAll(/assertBookingCaptcha[\s\S]*?HttpError\(503, '([^']+)'/g)].map((m) => m[1]),
+    ...['CAPTCHA_MESSAGE', 'CAPTCHA_UNAVAILABLE'].map((k) => new RegExp(`${k} = '([^']+)'`).exec(guard)![1]),
+    'Datos inválidos',
+  ]);
+  assert.ok(messages.size >= 15, `encontró ${messages.size} avisos`);
+  const missing = [...messages].filter((m) => !page.includes(`'${m}': `) && !m.startsWith('Ese horario ya se ocupó. Elige otro: '));
+  assert.deepEqual(missing, [], 'faltan en ERRORS_EN de public/reservar.js');
+});
