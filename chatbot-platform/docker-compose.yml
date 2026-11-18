@@ -51,7 +51,7 @@ services:
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
     read_only: true
     tmpfs: [/tmp]
-    image: redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
+    image: redis:8-alpine@sha256:7958cfbb9d152f87dadfbc89f1b0b15938f0b81ff8982feb327476f4911935c3
     restart: unless-stopped
     # Con contraseña (REDIS_PASSWORD, la genera ./riverrun): guarda las claves de las sesiones de WhatsApp.
     command: ["sh", "-c", "exec redis-server --appendonly yes $${REDIS_PASSWORD:+--requirepass \"$$REDIS_PASSWORD\"}"]
