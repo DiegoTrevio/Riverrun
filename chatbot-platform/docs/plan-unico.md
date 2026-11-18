@@ -28,6 +28,9 @@ En el servidor:
 ./riverrun plan-unico --usd-publico   # igual, y además publica el precio en dólares
 ```
 
+Con `--usd-publico`, el precio en dólares lo ve quien entra en inglés (precios, registro y Mi plan de un negocio que
+atiende en inglés); en español se sigue viendo el de pesos. Ver [idiomas](idiomas.md#precios-y-planes-en-dólares).
+
 Fuera de Docker: `npm run plans:single`. Se puede correr las veces que se quiera. Los planes que apaga no se borran:
 quien ya pagaba uno lo conserva con sus límites; nadie nuevo lo puede contratar. Los precios y límites viven en
 `src/billing/single-plan.ts`; también se pueden ajustar a mano en **Planes y cobro**, pero volver a correr el comando

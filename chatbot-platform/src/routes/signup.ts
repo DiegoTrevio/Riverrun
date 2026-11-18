@@ -27,7 +27,7 @@ import { offeredPlans } from './billing.js';
 import { DISPOSABLE_MESSAGE, assertCaptcha, captchaEnabled, isDisposableEmail, privacyUrl, recordTermsAcceptance, signupAvailable, termsVersion } from '../signup-guard.js';
 import { recordSecurity } from '../security-log.js';
 import { AccountSettingsSchema } from '../automation/types.js';
-import { langFrom, settingsForLanguage, type Lang } from '../locale.js';
+import { settingsForLanguage, visitorLang } from '../locale.js';
 import { recipientLang } from '../mail-language.js';
 
 const Password = NewPassword;
@@ -116,13 +116,6 @@ export async function sendVerification(user: Pick<User, 'id' | 'name' | 'email'>
   });
 }
 
-/** El idioma de quien se registra: el que eligió en el panel (cookie «lang») o, si no, el de su navegador. */
-export function signupLang(req: { cookies?: Record<string, string | undefined>; headers: Record<string, unknown> }): Lang {
-  const chosen = req.cookies?.lang;
-  if (chosen === 'es' || chosen === 'en') return chosen;
-  return langFrom(req.headers['accept-language']);
-}
-
 /** Rutas públicas: registro de empresas, verificación de correo y recuperación de contraseña. */
 export async function signupRoutes(app: FastifyInstance) {
   app.get('/api/signup/info', async (req) => ({
@@ -142,7 +135,7 @@ export async function signupRoutes(app: FastifyInstance) {
     turnstile_site_key: captchaEnabled() ? config.signup.turnstile.siteKey : '',
     business_types: BUSINESS_TYPES.map(({ key, label }) => ({ key, label })),
     // Planes que se pueden pagar al registrarse (vacío si el cobro en línea no está configurado).
-    plans: config.signup.enabled && (await billingEnabled()) ? (await offeredPlans()).filter((p) => p.providers.length) : [],
+    plans: config.signup.enabled && (await billingEnabled()) ? (await offeredPlans(undefined, visitorLang(req))).filter((p) => p.providers.length) : [],
   }));
 
   app.post('/api/signup', async (req, reply) => {
@@ -191,7 +184,7 @@ export async function signupRoutes(app: FastifyInstance) {
     const state = await newAccountState();
     const { trialEndsAt } = state;
 
-    const lang = signupLang(req);
+    const lang = visitorLang(req);
     const brand = await brandByDomain(hostOf(req)); // quien se registra desde el dominio de una marca queda con esa marca
     const release = await reserveSignup(req.ip);
     const { account, user } = await withTransaction(async (client) => {

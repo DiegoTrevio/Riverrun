@@ -23,6 +23,7 @@ import { savePlatformSecret } from '../platform-secrets.js';
 import { countHit, ipLimitKey, limited, releaseHit } from '../identity/rate-limit.js';
 import { logEvent } from '../logs.js';
 import { parse } from './util.js';
+import { langFrom, plansForLanguage, type Lang } from '../locale.js';
 import { WEBHOOK_BODY_LIMIT } from './public.js';
 
 const PlanBody = z.object({
@@ -81,15 +82,22 @@ const shownPlan = (p: any) => ({
   interval: p.interval, billing_interval: p.billing_interval, limits: withPlanDefaults(p.limits ?? {}), price_cents: p.price_cents,
 });
 
-export async function offeredPlans(accountId?: string) {
+/**
+ * Planes que se pueden contratar. Con `lang` (páginas públicas y registro) o con la cuenta (Mi plan, con el idioma
+ * con el que atiende a sus clientes), cada idioma ve los suyos: en inglés, los de dólares (plansForLanguage).
+ */
+export async function offeredPlans(accountId?: string, lang?: Lang) {
   const on = enabledProviders();
   // Los privados solo para la cuenta que los tiene asignados (en su Mi plan); nunca en precios ni en el registro.
-  const own = accountId ? (await queryOne<{ plan: string }>(`SELECT plan FROM accounts WHERE id = $1`, [accountId]))?.plan ?? '' : '';
+  const acc = accountId ? await queryOne<{ plan: string; language: string | null }>(`SELECT plan, settings->>'language' AS language FROM accounts WHERE id = $1`, [accountId]) : null;
+  const own = acc?.plan ?? '';
+  const language = lang ?? (acc ? langFrom(acc.language) : undefined);
   // El tope interno de IA del plan no se publica (precios, registro, Mi plan): es un dato de la plataforma.
-  return (await listPlans()).filter((p: Plan) => p.public !== false || p.key === own).map((p: Plan) => {
+  const plans = (await listPlans()).filter((p: Plan) => p.public !== false || p.key === own).map((p: Plan) => {
     const out = shownPlan(planOut(p));
     return { ...out, providers: on.filter((x) => x.supportsPlan(p)).map((x) => ({ name: x.name, label: x.label })) };
   });
+  return language ? plansForLanguage(plans, language, own) : plans;
 }
 
 /** Cuánto se espera el cobro de un reembolso que llegó antes (el proveedor reintenta mientras tanto). */

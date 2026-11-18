@@ -76,10 +76,14 @@ t('aplicar el plan único crea los dos precios y apaga los demás planes sin bor
   assert.match(page.body, /<li>Mensajes del asistente sin límite<\/li>/);
   assert.doesNotMatch(page.body, /Básico|USD/);
 
-  // Con usdPublic, el de dólares también se publica, sin IVA.
+  // Con usdPublic, el de dólares se publica, sin IVA, para quien entra en inglés; en español sigue el de pesos.
   await single.applySinglePlan({ usdPublic: true });
-  const page2 = await h.app.inject({ method: 'GET', url: '/precios' });
-  assert.match(page2.body, /\$270<\/strong> <span>USD \/ mes/);
+  const page2 = await h.app.inject({ method: 'GET', url: '/precios', headers: { 'accept-language': 'en-US' } });
+  assert.match(page2.body, /\$270<\/strong> <span>USD \/ month/);
+  assert.doesNotMatch(page2.body, /MXN/);
+  const page3 = await h.app.inject({ method: 'GET', url: '/precios' });
+  assert.match(page3.body, /\$5,000<\/strong> <span>MXN \+ IVA \/ mes/);
+  assert.doesNotMatch(page3.body, /USD/);
 });
 
 t('con el plan único, topar un límite pide escribirnos en lugar de cambiar de plan', async () => {
