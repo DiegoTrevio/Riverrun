@@ -159,6 +159,42 @@ try {
   }
   checked('Widget: en español, la conversación se anuncia con quién habla y el campo muestra su foco');
 
+  // 3b. Un negocio que atiende en inglés: el widget, en inglés (botón, registro, campo, quién habla).
+  await pool.query(`UPDATE accounts SET settings = jsonb_set(settings, '{language}', '"en"') WHERE id = $1`, [h.accountId]);
+  {
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 900 } }); const page = await ctx.newPage();
+    page.on('pageerror', (error) => results.errors.push({ route: 'widget en inglés', message: error.message }));
+    await page.route(`${base}/sitio-del-cliente`, (route) => route.fulfill({ contentType: 'text/html', body: `<!doctype html><html lang="es"><head><title>Hotel Palmas</title></head><body><main><h1>Hotel Palmas</h1></main><script src="/widget.js" data-channel="${web.webhook_token}" async></script></body></html>` }));
+    await page.goto(`${base}/sitio-del-cliente`);
+    await page.getByRole('button', { name: /Chat with us/ }).click();
+    const log = page.getByRole('log', { name: 'Conversation' });
+    await log.waitFor();
+    assert.equal(await log.evaluate((l: any) => l.closest('[lang]')?.getAttribute('lang')), 'en');
+    await page.getByRole('textbox', { name: 'Message' }).fill('I want to book a room');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await log.getByText('I want to book a room').waitFor();
+    assert.match(await log.locator('.msg.me').last().innerText(), /^You:/);
+    await audit(page, 'widget en inglés', { width: 390 });
+    await ctx.close();
+  }
+  {
+    // La página para reservar del mismo negocio, también en inglés (aunque el navegador esté en español).
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 900 }, locale: 'es-MX' }); const page = await ctx.newPage();
+    page.on('pageerror', (error) => results.errors.push({ route: 'reservar en inglés', message: error.message }));
+    await page.goto(link.url.replace('https://bot.test', base));
+    await page.getByRole('heading', { name: 'With whom?' }).waitFor();
+    assert.equal(await page.evaluate(() => document.documentElement.lang), 'en');
+    await page.getByRole('button', { name: 'Whoever is available' }).click();
+    await page.getByText('Choose a day:').waitFor();
+    assert.match(await page.locator('.card .small.muted').first().innerText(), /Phone call · 30 min · times in /);
+    assert.match(await page.locator('.times button').nth(0).innerText(), /^[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}\s*\((Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), [A-Z][a-z]+ \d{1,2}\)$/, 'el día corto y, para el lector, el completo, en inglés');
+    assert.ok(await page.getByRole('button', { name: /^\d{1,2}:\d{2} (AM|PM)$/ }).first().isVisible(), 'la hora en inglés');
+    await audit(page, 'reservar en inglés', { width: 390 });
+    await ctx.close();
+  }
+  await pool.query(`UPDATE accounts SET settings = settings - 'language' WHERE id = $1`, [h.accountId]);
+  checked('Widget y página para reservar: un negocio que atiende en inglés los muestra en inglés');
+
   // 4. Modo de color del widget: automático sigue al dispositivo; claro y oscuro lo fijan. Contraste y foco en cada uno.
   const panelBg = async (theme: string, scheme: 'light' | 'dark') => {
     await h.authed('PUT', `/api/channels/${web.id}`, { config: { title: 'Hotel Palmas', color: '#7dd3fc', welcome_message: 'Hola, ¿en qué te ayudo?', theme } });

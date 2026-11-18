@@ -300,3 +300,27 @@ t('privacidad: aviso con derechos ARCO y el contacto configurado; precios y ayud
   assert.match(ayuda.body, /id="pagos"/);
   assert.match(ayuda.body, /href="\/privacidad"/);
 });
+
+t('estado, contacto y borrar la cuenta salen en inglés para quien usa Riverrun en inglés', async () => {
+  const en = { 'accept-language': 'en-US,en;q=0.9' };
+  const status = await h.app.inject({ method: 'GET', url: '/estado', headers: en });
+  assert.match(status.body, /<html lang="en">/);
+  assert.match(status.body, /<h1>Service status<\/h1>/);
+  assert.match(status.body, /Database<\/span><span class="state-/);
+  assert.match(status.body, /Log in to my dashboard/);
+  assert.equal(status.headers['vary'], 'Host, Cookie, Accept-Language');
+  assert.doesNotMatch(status.body.replace(/<style>[\s\S]*?<\/style>/, ''), /Estado|Base de datos|Actualizado|Operativo/);
+
+  const contact = await h.app.inject({ method: 'GET', url: '/contacto', headers: { cookie: 'lang=en' } });
+  assert.match(contact.body, /<label for="c-name">Your name<\/label>/);
+  assert.match(contact.body, /Send message/);
+  const bad = await h.app.inject({ method: 'POST', url: '/contacto', remoteAddress: '10.40.9.1', headers: { ...en, 'content-type': 'application/x-www-form-urlencoded' }, payload: new URLSearchParams({ name: 'Mia', email: 'nope', message: 'A long enough message' }).toString() });
+  assert.equal(bad.statusCode, 400);
+  assert.match(bad.body, /Enter a valid email, for example you@email\.com\./);
+
+  const forged = await h.app.inject({ method: 'GET', url: '/borrar-cuenta?t=no-sirve', headers: en });
+  assert.equal(forged.statusCode, 400);
+  assert.match(forged.body, /Invalid or expired link/);
+  // En español, como siempre.
+  assert.match((await h.app.inject({ method: 'GET', url: '/estado' })).body, /<html lang="es">[\s\S]*<h1>Estado del servicio<\/h1>/);
+});

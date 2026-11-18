@@ -283,8 +283,9 @@ export class Agenda {
     });
 
     if (!result) {
+      const en = settings.language === 'en';
       const alternatives = spreadSlots(await freeSlots(service, settings, new Date(), { days: 14 }), 3, 4).map(
-        (s) => `${spanishDate(s.start, tz)} a las ${spanishTime(s.start, tz)}`,
+        (s) => (en ? `${localDate(s.start, tz, 'en')} at ${localTime(s.start, tz, 'en')}` : `${spanishDate(s.start, tz)} a las ${spanishTime(s.start, tz)}`),
       );
       return { ok: false, reason: 'El horario ya no está disponible', alternatives };
     }

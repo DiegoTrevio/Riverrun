@@ -10,6 +10,7 @@ import { freeSlots } from '../automation/agenda.js';
 import { activeStaff, staffNames } from '../automation/staff.js';
 import * as astore from '../automation/store.js';
 import { localDate, localTime, spanishDate, spanishTime } from '../automation/time.js';
+import { visitorLang } from '../locale.js';
 import type { Service } from '../automation/types.js';
 import { brandOfAccount, mailBrand, publicBrand } from '../brands.js';
 import { canonicalEmail } from '../billing/trial-claims.js';
@@ -154,6 +155,9 @@ export async function bookingRoutes(api: FastifyInstance) {
 const here = path.dirname(fileURLToPath(import.meta.url));
 let pageHtml: string | null = null;
 const page = () => (pageHtml ??= fs.readFileSync(path.resolve(here, '..', '..', 'public', 'reservar.html'), 'utf8'));
+let englishHtml: string | undefined;
+/** La misma página con el idioma, el título y el «Cargando…» en inglés. */
+const englishPage = () => (englishHtml ??= page().replace('<html lang="es">', '<html lang="en">').replace('<title>Agendar</title>', '<title>Book</title>').replace('>Cargando…<', '>Loading…<'));
 
 /** Enlace activo de un negocio activo, con sus servicios (solo activos; los de la persona, si es su enlace). */
 async function linkFor(token: string) {
@@ -193,7 +197,11 @@ const BookBody = z.object({
 export async function bookingPublicRoutes(app: FastifyInstance, service: ChatService) {
   app.get('/reservar/:token', async (req: any, reply) => {
     reply.header('cache-control', 'no-store').header('referrer-policy', 'no-referrer').type('text/html');
-    return page();
+    // La página va en el idioma con el que el negocio atiende a sus clientes desde el primer momento (sin mostrar
+    // español mientras carga). Un enlace que no existe usa el del navegador.
+    const found = await linkFor(String(req.params.token));
+    const lang = found ? ((await astore.getSettings(found.link.account_id)).language === 'en' ? 'en' : 'es') : visitorLang(req);
+    return lang === 'en' ? englishPage() : page();
   });
 
   /** Lo que muestra la página: el negocio, la persona del enlace (si es suyo) y los servicios. */
@@ -211,6 +219,8 @@ export async function bookingPublicRoutes(app: FastifyInstance, service: ChatSer
       title: link.name,
       person,
       timezone: settings.timezone,
+      // La página va en el idioma con el que el negocio atiende a sus clientes.
+      lang: settings.language === 'en' ? 'en' : 'es',
       services: await Promise.all(services.map(async (s) => ({
         id: s.id, name: s.name, kind: s.kind, call_mode: s.kind === 'call' ? s.call_mode : null, duration: s.duration_minutes,
         description: s.description, location: s.kind === 'appointment' ? s.location : '', people: await choosable(s, link),
@@ -230,8 +240,9 @@ export async function bookingPublicRoutes(app: FastifyInstance, service: ChatSer
     const settings = await astore.getSettings(found.link.account_id);
     const all = await freeSlots(svc, settings, new Date(), { days: Math.min(svc.max_days_ahead, 30) });
     const tz = settings.timezone;
+    const lang = settings.language === 'en' ? 'en' : 'es';
     return all.filter((s) => !person || s.users.includes(person)).slice(0, MAX_SLOTS).map((s) => ({
-      key: s.key, date: s.key.slice(0, 10), time: s.key.slice(11), day: spanishDate(s.start, tz), label: spanishTime(s.start, tz),
+      key: s.key, date: s.key.slice(0, 10), time: s.key.slice(11), day: localDate(s.start, tz, lang), label: localTime(s.start, tz, lang),
     }));
   });
 
@@ -309,9 +320,12 @@ export async function bookingPublicRoutes(app: FastifyInstance, service: ChatSer
     if (!r.ok) return reply.code(409).send({ error: r.alternatives.length ? `Ese horario ya se ocupó. Elige otro: ${r.alternatives.join('; ')}` : 'Ese horario ya se ocupó. Elige otro.' });
     const a = r.appointment;
     const emailSent = await service.agenda.mailCustomer(a, 'booked').catch(() => false);
-    const tz = (await astore.getSettings(a.account_id)).timezone;
+    const st = await astore.getSettings(a.account_id);
+    const tz = st.timezone;
+    const at = new Date(a.starts_at);
     return {
-      ok: true, service: a.service_name, kind: a.kind, when: `${spanishDate(new Date(a.starts_at), tz)} a las ${spanishTime(new Date(a.starts_at), tz)}`,
+      ok: true, service: a.service_name, kind: a.kind,
+      when: st.language === 'en' ? `${localDate(at, tz, 'en')} at ${localTime(at, tz, 'en')}` : `${spanishDate(at, tz)} a las ${spanishTime(at, tz)}`,
       person: a.assigned_user_name ?? null, meeting_url: a.meeting_url || null, email: a.customer_email, email_sent: emailSent,
     };
   });

@@ -18,7 +18,8 @@ import { receiveZernioEvent } from '../channels/zernio-events.js';
 import { saveZernioAccount, ZernioOwnershipError } from '../channels/zernio-connect.js';
 import { HttpError } from '../access.js';
 import { config } from '../config.js';
-import { query } from '../db.js';
+import { query, queryOne } from '../db.js';
+import { langFrom } from '../locale.js';
 import { toPlainText } from '../engine/text.js';
 import { imageAbsolutePath } from '../engine/transport.js';
 import { recordConnectionState } from '../lifecycle.js';
@@ -26,13 +27,22 @@ import { logEvent } from '../logs.js';
 import { safeEqual } from '../secret.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
-import type { Channel } from '../types.js';
+import { ChannelConfigSchemas, type Channel } from '../types.js';
 import { channelsForEntry, finishMetaConnect, META_NONCE_COOKIE, metaVerifyToken, verifyMetaSignature } from '../channels/meta-connect.js';
 import { dispositionHeader, sendRanged } from './util.js';
 
 const HOUR = 3600_000;
 /** Tiempo para volver de Zernio después de pulsar "Conectar cuenta". */
 const ZERNIO_CONNECT_TTL_MS = 30 * 60_000;
+
+/** Textos de fábrica del chat web (src/types.ts) y su versión en inglés, para un negocio que atiende en inglés. */
+const WEBCHAT_DEFAULTS_ES = ChannelConfigSchemas.webchat.parse({});
+const WEBCHAT_DEFAULTS_EN = {
+  title: 'How can we help?',
+  subtitle: 'We usually reply in seconds',
+  welcome_message: 'Hi! 👋 How can I help you?',
+  launcher_text: 'Chat with us',
+} as const;
 
 /** Webhooks de las plataformas, API del chat web e imágenes públicas firmadas. */
 
@@ -276,7 +286,15 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
     const ch = await webchat(req, reply);
     if (!ch) return;
     const { title, subtitle, color, welcome_message, launcher_text, theme } = ch.config;
-    return { title, subtitle, color, welcome_message, launcher_text, theme: theme || 'auto' };
+    // El widget habla el idioma con el que el negocio atiende a sus clientes (Ajustes → Idioma con tus clientes).
+    const acc = await queryOne<{ language: string | null }>(`SELECT settings->>'language' AS language FROM accounts WHERE id = $1`, [ch.account_id]);
+    const lang = langFrom(acc?.language);
+    // Los textos que el negocio no cambió se guardaron con el valor de fábrica en español: en inglés salen en inglés.
+    const own = (key: keyof typeof WEBCHAT_DEFAULTS_EN, value: string) => (lang === 'en' && value === WEBCHAT_DEFAULTS_ES[key] ? WEBCHAT_DEFAULTS_EN[key] : value);
+    return {
+      title: own('title', title), subtitle: own('subtitle', subtitle), color, welcome_message: own('welcome_message', welcome_message),
+      launcher_text: own('launcher_text', launcher_text), theme: theme || 'auto', lang,
+    };
   });
 
   /** Red de una conexión: /24 en IPv4 y /64 en IPv6 (ver `ipKey`). */
