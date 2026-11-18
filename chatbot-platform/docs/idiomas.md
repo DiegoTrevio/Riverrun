@@ -72,8 +72,19 @@ Cada persona recibe sus correos en el idioma en que ve el panel (el que eligió 
 
 Las pruebas están en `test/mail-language.test.ts`.
 
+## Precios y planes en dólares
+
+La página de precios (`/precios`), el registro y Mi plan muestran los planes de cada idioma (`plansForLanguage` en `src/locale.ts`):
+
+- **Quien entra en inglés** (cookie `lang` del panel o, si no eligió, su navegador) ve `/precios` en inglés y solo los planes en dólares, sin IVA y pagados con Stripe. En español ve los demás (en pesos, más IVA).
+- **Mi plan** usa el idioma con el que el negocio atiende a sus clientes: un negocio en inglés ve los planes en dólares. El plan que ya tiene siempre aparece, aunque sea de la otra moneda.
+- Si un idioma no tiene ningún plan de su moneda que se pueda pagar (por ejemplo, solo con Mercado Pago, que cobra en pesos), ve todos. Por eso, mientras el precio en dólares siga privado (`./riverrun plan-unico` sin `--usd-publico`, ver [plan único](plan-unico.md)), quien entra en inglés ve el plan en pesos con sus textos en inglés.
+- La descripción del plan se escribe en español y en inglés sale con el diccionario del panel: si cambias la descripción, agrega su traducción a `public/i18n/en.json`.
+
+Las pruebas están en `test/pricing.test.ts`.
+
 ## Lo que todavía está solo en español
 
 - El PDF de la cotización, el correo a la persona que atiende una cita, el reporte de conversación por correo, las facturas (CFDI, solo México) y lo que ve el superadministrador.
 - Las plantillas por giro de un asistente nuevo (saludo, preguntas, mensajes guardados): en inglés solo cambia lo de fábrica general.
-- La ayuda (`ayuda.html`), la página para reservar, el chat web y los avisos legales (fase de páginas públicas, con Privacy Policy y Terms para Estados Unidos).
+- La ayuda (`ayuda.html`), la página para reservar, el chat web, las páginas de estado y contacto y los avisos legales (siguiente fase, con Privacy Policy y Terms para Estados Unidos). Los enlaces del pie de `/precios` ya están en inglés, pero llevan a esas páginas en español.

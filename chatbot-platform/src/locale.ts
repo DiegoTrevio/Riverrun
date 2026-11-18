@@ -20,6 +20,27 @@ export function langFrom(value: unknown): Lang {
   return typeof value === 'string' && /^en\b/i.test(value.trim()) ? 'en' : 'es';
 }
 
+/**
+ * El idioma de quien visita una página pública o se registra: el que eligió en el panel (cookie «lang») o, si no,
+ * el de su navegador.
+ */
+export function visitorLang(req: { cookies?: Record<string, string | undefined>; headers: Record<string, unknown> }): Lang {
+  const chosen = req.cookies?.lang;
+  if (chosen === 'es' || chosen === 'en') return chosen;
+  return langFrom(req.headers['accept-language']);
+}
+
+/**
+ * Los planes que ve cada idioma: en inglés, los que se cobran en dólares; en español, los demás. Solo cuenta un plan
+ * que se puede pagar (con algún proveedor de cobro, si alguno lo tiene): si un idioma no tiene ninguno así, ve todos,
+ * para no quedarse sin nada que contratar. El plan que la cuenta ya tiene siempre se queda en la lista.
+ */
+export function plansForLanguage<T extends { key: string; currency: string; providers?: readonly unknown[] }>(plans: T[], lang: Lang, keep = ''): T[] {
+  const payable = plans.some((p) => p.providers?.length) ? (p: T) => !!p.providers?.length : () => true;
+  const fits = (p: T) => payable(p) && (lang === 'en') === (p.currency.toUpperCase() === 'USD');
+  return plans.some(fits) ? plans.filter((p) => fits(p) || p.key === keep) : plans;
+}
+
 /* ------------------------------ Agente nuevo ------------------------------ */
 
 const ES_PERSONALITY = PersonalitySchema.parse({});

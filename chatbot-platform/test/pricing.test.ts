@@ -47,7 +47,7 @@ t('muestra los planes activos con precio + IVA, total, límites y el botón al r
   assert.doesNotMatch(r.body, /Plan viejo/, 'los planes desactivados no se publican');
   assert.ok(r.body.indexOf('<h2>Pro</h2>') < r.body.indexOf('<h2>Pro anual</h2>'), 'en el orden de los planes');
   assert.match(r.body, /¿Necesito tarjeta para probar\?/);
-  assert.equal(r.headers['vary'], 'Host');
+  assert.equal(r.headers['vary'], 'Host, Cookie, Accept-Language');
 });
 
 test('sin pago en línea, cada plan ofrece la prueba gratis; con el registro cerrado no hay botones', () => {
@@ -85,4 +85,35 @@ t('en el dominio de una marca se ve su nombre, su color y su contacto', async ()
   assert.match(r.body, /Contacto: ventas@miagencia\.com/);
   const main = await page();
   assert.doesNotMatch(main.body, /Mi Agencia/, 'el dominio principal no ve la marca');
+});
+
+t('quien entra en inglés ve la página en inglés con el precio en dólares; en español, el de pesos', async () => {
+  assert.equal((await h.authed('POST', '/api/plans', { key: 'pro-usd', name: 'Pro', description: 'Todo Riverrun para tu negocio: asistente en WhatsApp y redes sociales, cotizaciones, agenda y cobros.', price: 270, currency: 'USD', sort_order: 4, limits: { messages_per_month: 1000, channels: 1 } })).statusCode, 200);
+  const en = await h.app.inject({ method: 'GET', url: '/precios', headers: { 'accept-language': 'en-US,en;q=0.9' } });
+  assert.equal(en.statusCode, 200);
+  assert.match(en.body, /<html lang="en">/);
+  assert.match(en.body, /<title>Pricing — /);
+  assert.match(en.body, /\$270<\/strong> <span>USD \/ month/, 'en dólares y sin IVA');
+  assert.match(en.body, /1,000 assistant messages per month/);
+  assert.match(en.body, /All of Riverrun for your business/, 'la descripción se traduce con el diccionario');
+  assert.match(en.body, /href="\/#\/registro\?plan=pro-usd">Get started<span class="sr"> with the Pro plan/);
+  assert.match(en.body, /Frequently asked questions/);
+  assert.doesNotMatch(en.body, /MXN|IVA|Mercado Pago|Precios|mensajes/, 'nada en pesos ni en español');
+  // La cookie del panel gana sobre el navegador.
+  const es = await h.app.inject({ method: 'GET', url: '/precios', headers: { 'accept-language': 'en-US', cookie: 'lang=es' } });
+  assert.match(es.body, /<html lang="es">/);
+  assert.match(es.body, /MXN \+ IVA/);
+  assert.doesNotMatch(es.body, /USD/, 'en español no se ve el precio en dólares');
+});
+
+t('el registro y Mi plan ofrecen los planes del idioma: en inglés, los de dólares', async () => {
+  const info = async (headers: Record<string, string>) => (await h.app.inject({ method: 'GET', url: '/api/signup/info', headers })).json().plans.map((p: any) => p.currency);
+  assert.deepEqual([...new Set(await info({ cookie: 'lang=en' }))], ['USD']);
+  assert.ok(!(await info({ 'accept-language': 'es-MX' })).includes('USD'));
+  const acc = await h.addAccount({ name: 'Sunny Nails', admin: { name: 'Mia', email: 'mia@sunny-pricing.test', password: 'Zq-417-Wx-418-Lm' } });
+  const mia = await h.loginAs('mia@sunny-pricing.test', 'Zq-417-Wx-418-Lm');
+  const currencies = async () => ((await mia('GET', '/api/billing')).json().plans as any[]).map((p) => p.currency);
+  assert.ok(!(await currencies()).includes('USD'), 'un negocio que atiende en español ve pesos');
+  await pool.query(`UPDATE accounts SET settings = jsonb_set(settings, '{language}', '"en"') WHERE id = $1`, [acc.id]);
+  assert.deepEqual([...new Set(await currencies())], ['USD'], 'uno que atiende en inglés ve dólares');
 });

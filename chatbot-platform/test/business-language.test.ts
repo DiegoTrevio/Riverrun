@@ -215,3 +215,16 @@ t('un idioma que no existe no se acepta', async () => {
   const r = await api('PUT', '/api/settings', { language: 'fr' });
   assert.equal(r.statusCode, 400, r.body);
 });
+
+test('cada idioma ve sus planes; si no hay de su moneda, ve todos y nunca pierde el plan que ya tiene', async () => {
+  const { plansForLanguage } = await import('../src/locale.js');
+  const plans = [{ key: 'mx', currency: 'MXN' }, { key: 'us', currency: 'usd' }];
+  assert.deepEqual(plansForLanguage(plans, 'en').map((p) => p.key), ['us']);
+  assert.deepEqual(plansForLanguage(plans, 'es').map((p) => p.key), ['mx']);
+  assert.deepEqual(plansForLanguage(plans, 'en', 'mx').map((p) => p.key), ['mx', 'us'], 'conserva el plan actual');
+  assert.deepEqual(plansForLanguage([plans[0]], 'en').map((p) => p.key), ['mx'], 'sin plan en dólares, ve el de pesos');
+  // Solo con Mercado Pago (que cobra en pesos), el plan en dólares no se puede pagar: quien entra en inglés ve todos.
+  const mpOnly = [{ key: 'mx', currency: 'MXN', providers: ['mercadopago'] }, { key: 'us', currency: 'USD', providers: [] }];
+  assert.deepEqual(plansForLanguage(mpOnly, 'en').map((p) => p.key), ['mx', 'us']);
+  assert.deepEqual(plansForLanguage(mpOnly, 'es').map((p) => p.key), ['mx']);
+});
