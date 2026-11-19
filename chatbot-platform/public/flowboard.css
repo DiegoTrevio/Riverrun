@@ -61,7 +61,7 @@
 .fb-tool { height: 36px; min-height: 36px; padding: 0 10px; border: 0; background: transparent; color: var(--text); gap: 6px; }
 .fb-tool .icon { color: var(--muted); }
 .fb-tool:hover { background: var(--raised); }
-.fb-count { min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--negative-solid); color: #fff; font-size: 12px; font-weight: 600; line-height: 20px; text-align: center; font-variant-numeric: tabular-nums; }
+.fb-count { min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--negative-solid); color: var(--color-on-error); font-size: 12px; font-weight: 600; line-height: 20px; text-align: center; font-variant-numeric: tabular-nums; }
 .fb-count:empty { display: none; }
 .fb-publish { height: 36px; margin-left: 6px; }
 .fb-narrow-only { display: none !important; }

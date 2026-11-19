@@ -9,6 +9,8 @@ const luminance = (hex) => {
   const rgb = hex.match(/[0-9a-f]{2}/gi).map((part) => parseInt(part, 16) / 255).map((v) => v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
   return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
 };
+/** Mezcla dos colores #rrggbb como color-mix(in srgb, a p, b). */
+const mixHex = (a, p, b) => '#' + [1, 3, 5].map((i) => Math.round(parseInt(a.slice(i, i + 2), 16) * p + parseInt(b.slice(i, i + 2), 16) * (1 - p)).toString(16).padStart(2, '0')).join('');
 const ratio = (a, b) => (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 dark.addEventListener('change', () => applyBrand(brand));
 
@@ -24,8 +26,10 @@ export function applyBrand(b) {
   const root = document.documentElement.style;
   if (/^#[0-9a-f]{6}$/i.test(brand.color)) {
     const l = luminance(brand.color);
-    const surface = dark.matches ? '#161617' : '#ffffff';
-    const surfaces = dark.matches ? ['#0e0e0f', '#161617'] : ['#f9fafb', '#ffffff'];
+    const surface = dark.matches ? '#262626' : '#ffffff';
+    // La hoja y el fondo de Astryx (tema Neutral, astryx.css) en claro y en oscuro.
+    // También su tinte (--accent-soft): el tono va como texto sobre filas activas e insignias.
+    const surfaces = dark.matches ? ['#1b1b1b', '#262626', mixHex(brand.color, 0.16, '#262626')] : ['#f1f1f1', '#ffffff', mixHex(brand.color, 0.08, '#ffffff')];
     const safe = surfaces.every((color) => ratio(l, luminance(color)) >= 4.8) ? brand.color : dark.matches ? '#5fb8c6' : '#0f6b7a';
     root.setProperty('--accent', safe);
     root.setProperty('--brand-accent', brand.color);
