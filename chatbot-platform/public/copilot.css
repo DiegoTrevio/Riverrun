@@ -10,7 +10,7 @@ body.cp-docked .toast { right: calc(var(--cp-w) + 28px); }
 body.cp-docked .copilot { top: 8px; right: 8px; bottom: 8px; border: 1px solid var(--sheet-edge); border-radius: var(--radius-sheet); overflow: hidden; }
 /* Pantalla mediana: cajón encima de la página. */
 @media (max-width: 1279px) {
-  .copilot { width: min(420px, 92vw); box-shadow: -12px 0 32px rgba(17, 24, 39, .16); } /* taste-skill-ignore: cajón flotante sobre la página */
+  .copilot { width: min(420px, 92vw); box-shadow: var(--shadow-high); } /* taste-skill-ignore: cajón flotante sobre la página */
 }
 /* Teléfono: pantalla completa. */
 @media (max-width: 768px) {

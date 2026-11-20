@@ -11,7 +11,7 @@ Revisión del 2026-11-15 contra una lista común de mejoras de rendimiento. Rive
 | Dividir el JavaScript por página | Ya estaba | Cada pantalla se pide con `import()` al abrirla (`public/js/main.js`). |
 | Virtualizar listas largas | No aplica hoy | Las listas ya paginan (50 por página con «cargar más», tope 500); no se dibuja todo de golpe. |
 | Caché del navegador | Hecho / ya estaba | Fuentes un año (`immutable`) e imágenes una semana (`src/static-cache.ts`). JS y CSS siguen con ETag (304 sin descargar): sus nombres no llevan versión y guardarlos sin preguntar mezclaría dos versiones tras actualizar. |
-| Fuentes locales y pocos grosores | Ya estaba | DM Sans variable en `public/fonts/` (un archivo para todos los grosores), `font-display: swap`. |
+| Fuentes locales y pocos grosores | Ya estaba | Figtree (la letra del tema Neutral de Astryx) en `public/fonts/`, solo los cuatro grosores que usa el panel (400 a 700), `font-display: swap`. |
 | CDN | No aplica hoy | Todo el panel pesa menos de 1 MB comprimido y lo usan negocios en México; Caddy ya lo entrega comprimido y en caché. Cloudflare delante del dominio es el paso natural si hace falta. |
 | Brotli o gzip | Hecho / ya estaba | Caddy comprime con zstd o gzip; ahora además el panel viene comprimido en Brotli y gzip desde la imagen (`scripts/minify-public.mjs`), sin gastar CPU por petición. |
 | Balanceo entre varias instancias | No aplica hoy | Un solo servidor; la cola y los límites ya lo permitirían (ver [produccion-10-puntos.md](produccion-10-puntos.md#9-escalar)). |

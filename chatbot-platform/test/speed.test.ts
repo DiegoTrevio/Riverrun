@@ -18,10 +18,10 @@ import { renderMetrics } from '../src/observability/metrics.js';
 const root = path.resolve(import.meta.dirname, '..');
 
 test('las fuentes se guardan un año; las imágenes una semana; JS, CSS y HTML siempre preguntan', () => {
-  assert.equal(staticCacheControl('fonts/dm-sans-latin-wght-normal.woff2'), 'public, max-age=31536000, immutable');
+  assert.equal(staticCacheControl('fonts/figtree-latin-400-normal.woff2'), 'public, max-age=31536000, immutable');
   assert.equal(staticCacheControl('img/ayuda/01-importar.webp'), 'public, max-age=604800');
   assert.equal(staticCacheControl('img/logo.svg.br'), 'public, max-age=604800', 'la copia comprimida guarda lo mismo que el original');
-  for (const f of ['app.js', 'js/core.js', 'styles.css', 'index.html', 'fonts/DM-Sans-OFL.txt']) assert.equal(staticCacheControl(f), null, f);
+  for (const f of ['app.js', 'js/core.js', 'styles.css', 'index.html', 'fonts/Figtree-OFL.txt']) assert.equal(staticCacheControl(f), null, f);
 });
 
 function tempPublic(files: Record<string, string | Buffer>) {

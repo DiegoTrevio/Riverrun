@@ -1,0 +1,122 @@
+/* Fundaciones de Astryx para el panel de Riverrun.
+   Astryx es el sistema de diseño abierto de Meta (https://github.com/meta/astryx, licencia MIT,
+   Copyright (c) 2026 Meta Platforms, Inc.). Sus componentes son de React; el panel no usa React, así que aquí
+   viven solo sus fundaciones: los nombres y valores de sus tokens (tema Neutral, @astryxdesign/theme-neutral 0.7.16)
+   y las reglas de docs/design (estados, ritmo de controles, forma, movimiento y movimiento reducido) que styles.css aplica.
+   Diferencia elegida: el acento es el azul petróleo de Riverrun (o el color de la marca blanca, que pone brand.js),
+   no el casi negro de Neutral. --color-accent y los suyos apuntan a la escalera --accent de styles.css.
+   Para actualizar: compara con dist/theme.css de @astryxdesign/theme-neutral y con dist/astryx.css de @astryxdesign/core. */
+
+/* Figtree, la letra del tema Neutral (SIL Open Font License, ver /fonts/Figtree-OFL.txt). */
+@font-face { font-family: 'Figtree'; font-style: normal; font-display: swap; font-weight: 400; src: url(/fonts/figtree-latin-400-normal.woff2) format('woff2'); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: 'Figtree'; font-style: normal; font-display: swap; font-weight: 500; src: url(/fonts/figtree-latin-500-normal.woff2) format('woff2'); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: 'Figtree'; font-style: normal; font-display: swap; font-weight: 600; src: url(/fonts/figtree-latin-600-normal.woff2) format('woff2'); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: 'Figtree'; font-style: normal; font-display: swap; font-weight: 700; src: url(/fonts/figtree-latin-700-normal.woff2) format('woff2'); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: 'Figtree'; font-style: normal; font-display: swap; font-weight: 400; src: url(/fonts/figtree-latin-ext-400-normal.woff2) format('woff2'); unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: 'Figtree'; font-style: normal; font-display: swap; font-weight: 500; src: url(/fonts/figtree-latin-ext-500-normal.woff2) format('woff2'); unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: 'Figtree'; font-style: normal; font-display: swap; font-weight: 600; src: url(/fonts/figtree-latin-ext-600-normal.woff2) format('woff2'); unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: 'Figtree'; font-style: normal; font-display: swap; font-weight: 700; src: url(/fonts/figtree-latin-ext-700-normal.woff2) format('woff2'); unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+
+:root {
+  /* Espaciado (múltiplos de 4 px) */
+  --spacing-0: 0rem; --spacing-0-5: 0.125rem; --spacing-1: 0.25rem; --spacing-1-5: 0.375rem; --spacing-2: 0.5rem;
+  --spacing-3: 0.75rem; --spacing-4: 1rem; --spacing-5: 1.25rem; --spacing-6: 1.5rem; --spacing-8: 2rem; --spacing-10: 2.5rem; --spacing-12: 3rem;
+
+  /* Forma: el radio sigue al papel (elemento, contenedor, página); lo anidado se mantiene concéntrico. */
+  --radius-none: 0px; --radius-inner: 0.375rem; --radius-element: 0.625rem; --radius-container: 0.75rem; --radius-page: 1.75rem; --radius-full: 9999px;
+
+  /* Ritmo de controles: alturas de botones y campos */
+  --size-element-sm: 28px; --size-element-md: 32px; --size-element-lg: 36px;
+
+  /* Letra: escala de Neutral (base 14, razón 1.2) */
+  --font-family-body: 'Figtree', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-family-heading: var(--font-family-body);
+  --font-family-code: ui-monospace, 'SF Mono', Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  --font-size-xs: 0.625rem; --font-size-sm: 0.75rem; --font-size-base: 0.875rem; --font-size-lg: 1.0625rem;
+  --font-size-xl: 1.25rem; --font-size-2xl: 1.5rem; --font-size-3xl: 1.8125rem;
+  --font-weight-normal: 400; --font-weight-medium: 500; --font-weight-semibold: 600; --font-weight-bold: 700;
+
+  /* Movimiento: lo pequeño responde rápido; lo que entra y sale de pantalla, a velocidad media. */
+  --duration-fast-min: 95ms; --duration-fast: 125ms; --duration-fast-max: 165ms;
+  --duration-medium-min: 225ms; --duration-medium: 300ms; --duration-medium-max: 400ms;
+  --duration-exit: var(--duration-fast);
+  --ease-standard: cubic-bezier(0.24, 1, 0.4, 1);
+  --ease-entrance: cubic-bezier(0.24, 1, 0.4, 1);
+  --ease-exit: cubic-bezier(0.3, 0, 0.6, 0.6);
+
+  /* Foco: anillo de 2 px en el tono de acento, separado 3 px del control */
+  --focus-outline-width: 2px; --focus-outline-style: solid; --focus-outline-offset: 3px;
+  --focus-outline-color: var(--color-accent);
+
+  /* Elevación: solo lo que flota (menús, avisos, diálogos) lleva sombra; en reposo, nada. */
+  --shadow-low: 0 2px 4px rgb(0 0 0 / 5%), 0 4px 8px rgb(0 0 0 / 10%);
+  --shadow-med: 0 2px 4px rgb(0 0 0 / 5%), 0 4px 12px rgb(0 0 0 / 10%);
+  --shadow-high: 0 4px 6px rgb(0 0 0 / 10%), 0 12px 24px rgb(0 0 0 / 15%);
+
+  /* Color: tema Neutral, modo claro */
+  --color-background-body: #f1f1f1;
+  --color-background-surface: #ffffff;
+  --color-background-card: #ffffff;
+  --color-background-popover: #ffffff;
+  --color-background-muted: #f1f1f1;
+  --color-text-primary: #000000;
+  --color-text-secondary: #474747;
+  --color-text-disabled: #919191;
+  --color-icon-primary: #000000;
+  --color-icon-secondary: #6a6a6a;
+  --color-border: #00000014;
+  --color-border-emphasized: #d4d4d4;
+  --color-overlay: #00000080;
+  --color-overlay-hover: #0000000d;
+  --color-overlay-pressed: #0000001a;
+  --color-neutral: #0000000f;
+  --color-skeleton: #f1f1f1;
+  --color-on-dark: #ffffff;
+  --color-on-light: #111111;
+  --color-success: #198100; --color-on-success: #ffffff; --color-success-muted: #bce0bb; --color-on-success-muted: #00490b; --color-text-success: #2f7d33;
+  --color-error: #c9303a;   --color-on-error: #ffffff;   --color-error-muted: #ffc4be;   --color-on-error-muted: #76000c;   --color-text-error: #c0262c;
+  --color-warning: #ffce2f; --color-on-warning: #111111; --color-warning-muted: #fae19e; --color-on-warning-muted: #4b3900; --color-text-warning: #836700;
+  --color-info: #0074e2;    --color-on-info: #ffffff;    --color-info-muted: #b9d7ff;    --color-on-info-muted: #003978;    --color-text-info: #0067ce;
+
+  /* Acento: el de Riverrun (styles.css arma la escalera y brand.js la cambia con marca blanca) */
+  --color-accent: var(--accent);
+  --color-on-accent: var(--accent-foreground);
+  --color-accent-muted: var(--accent-track);
+  --color-text-accent: var(--accent);
+  --color-icon-accent: var(--accent);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --shadow-low: 0 2px 4px rgb(0 0 0 / 25%), 0 4px 8px rgb(0 0 0 / 40%), inset 0 0 0 1px rgb(255 255 255 / 8%);
+    --shadow-med: 0 2px 4px rgb(0 0 0 / 35%), 0 4px 12px rgb(0 0 0 / 50%), inset 0 0 0 1px rgb(255 255 255 / 12%);
+    --shadow-high: 0 4px 6px rgb(0 0 0 / 50%), 0 12px 24px rgb(0 0 0 / 70%), inset 0 0 0 1px rgb(255 255 255 / 15%);
+
+    --color-background-body: #1b1b1b;
+    --color-background-surface: #262626;
+    --color-background-card: #1b1b1b;
+    --color-background-popover: #1b1b1b;
+    --color-background-muted: #1b1b1b;
+    --color-text-primary: #ffffff;
+    --color-text-secondary: #c6c6c6;
+    --color-text-disabled: #525252;
+    --color-icon-primary: #ffffff;
+    --color-icon-secondary: #9e9e9e;
+    --color-border: #ffffff1a;
+    --color-border-emphasized: #525252;
+    --color-overlay: #000000cc;
+    --color-overlay-hover: #ffffff0d;
+    --color-overlay-pressed: #ffffff1a;
+    --color-neutral: #ffffff1a;
+    --color-skeleton: #525252;
+    --color-success: #64af4c; --color-on-success: #111111; --color-success-muted: #90ca903d; --color-on-success-muted: #90ca90; --color-text-success: #90ca90;
+    --color-error: #ff705d;   --color-on-error: #111111;   --color-error-muted: #ff98903d;   --color-on-error-muted: #ffaea7;   --color-text-error: #ffaea7;
+    --color-warning: #ffce2f; --color-on-warning: #111111; --color-warning-muted: #e2b6233d; --color-on-warning-muted: #eec448; --color-text-warning: #eec448;
+    --color-info: #6d9cfe;    --color-on-info: #111111;    --color-info-muted: #88bcff3d;    --color-on-info-muted: #a1caff;    --color-text-info: #a1caff;
+  }
+}
+
+/* Celular o tableta con el dedo: la letra base sube a 16 px (regla de letra en móvil de Neutral). */
+@media (pointer: coarse) and (max-width: 1024px) {
+  :root { --font-size-sm: 0.875rem; --font-size-base: 1rem; --font-size-lg: 1.1875rem; --font-size-xl: 1.375rem; --font-size-2xl: 1.625rem; --font-size-3xl: 1.875rem; }
+}
