@@ -81,3 +81,21 @@ test('brand.js revisa la marca blanca contra las mismas superficies que astryx.c
     for (const name of ['--color-background-surface', '--color-background-body']) assert.ok(brand.includes(`'${token(a, name)}'`), `${name} = ${token(a, name)}`);
   }
 });
+
+test('componentes del panel con las reglas de Astryx: opción elegida visible, menús concéntricos, velo del diálogo', () => {
+  const styles = read('styles.css');
+  const rule = (selector: string) => {
+    const i = styles.indexOf(`${selector} {`);
+    assert.ok(i >= 0, selector);
+    return styles.slice(i, styles.indexOf('}', i));
+  };
+  // La opción elegida de un control segmentado se levanta de la pista; una línea de 1px casi invisible no basta (WCAG 1.4.11).
+  for (const sel of ['.wa-tab.active', '.sub-tabs a.active, .sub-tabs a[aria-current="page"]']) {
+    assert.match(rule(sel), /box-shadow: var\(--shadow-low\)/, sel);
+    assert.doesNotMatch(rule(sel), /outline: 1px/, sel);
+  }
+  // Las filas de un menú siguen la esquina del menú menos su relleno.
+  assert.match(rule('details.menu .menu-items a'), /border-radius: calc\(var\(--radius-card\) - 4px\)/);
+  assert.match(rule('.user-menu a'), /border-radius: calc\(var\(--radius-card\) - 6px\)/);
+  assert.match(rule('.app-dialog::backdrop'), /var\(--color-overlay\)/);
+});
