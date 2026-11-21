@@ -32,8 +32,17 @@ function until(color: string, toward: string, backgrounds: string[], min: number
 /** Negro o blanco, lo que más contraste con el fondo (texto de un botón). */
 export const inkFor = (bg: string) => (ratio('#ffffff', bg) >= ratio('#101828', bg) ? '#ffffff' : '#101828');
 
-export const LIGHT = { bg: '#f2f4f7', panel: '#ffffff' };
-export const DARK = { bg: '#0c111d', panel: '#161b26' };
+// Fondo y hoja del tema Neutral de Astryx (public/astryx.css), los mismos del panel.
+export const LIGHT = { bg: '#f1f1f1', panel: '#ffffff' };
+export const DARK = { bg: '#1b1b1b', panel: '#262626' };
+
+/**
+ * Lo común de las páginas públicas del servidor: la hoja de Astryx (letra Figtree y tokens) y los colores de texto,
+ * líneas y estados que apuntan a sus tokens (claro y oscuro salen solos de astryx.css).
+ */
+export const PUBLIC_HEAD = '<link rel="stylesheet" href="/astryx.css" />';
+export const PUBLIC_VARS = '--text: var(--color-text-primary); --muted: var(--color-text-secondary); --border: var(--color-border-emphasized); --bg: var(--color-background-body); --panel: var(--color-background-surface); --ok: var(--color-text-success); --warn: var(--color-text-warning); --bad: var(--color-text-error);';
+export const PUBLIC_FONT = 'var(--font-family-body)';
 
 /**
  * Variables CSS para un tema: `--accent` (fondo de botones, el color de marca), `--accent-ink` (su texto), `--link`
@@ -44,11 +53,12 @@ export function publicPalette(brandColor = '') {
   const brand = HEX.test(brandColor) ? brandColor.toLowerCase() : '';
   // Un color de botón donde ni el texto blanco ni el negro llegan a 4.5:1 se oscurece hasta que el blanco llegue.
   const solid = (c: string) => (ratio(inkFor(c), c) >= 4.5 ? c : until(c, '#000000', ['#ffffff'], 4.5));
-  const light = solid(brand || '#155eef');
-  const dark = solid(brand || '#84adff');
+  // Sin marca blanca: el azul petróleo de Riverrun, como en el panel.
+  const light = solid(brand || '#0f6b7a');
+  const dark = solid(brand || '#5fb8c6');
   const vars = (accent: string, link: string, bad: string) => `--accent: ${accent}; --accent-ink: ${inkFor(accent)}; --link: ${link}; --bad-solid: ${bad};`;
   return {
-    light: vars(light, until(light, '#000000', [LIGHT.bg, LIGHT.panel], 4.5), '#b42318'),
-    dark: vars(dark, until(dark, '#ffffff', [DARK.bg, DARK.panel], 4.5), '#d92d20'),
+    light: vars(light, until(light, '#000000', [LIGHT.bg, LIGHT.panel], 4.5), '#c9303a'),
+    dark: vars(dark, until(dark, '#ffffff', [DARK.bg, DARK.panel], 4.5), '#c9303a'),
   };
 }

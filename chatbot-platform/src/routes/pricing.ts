@@ -9,7 +9,7 @@ import { offeredPlans } from './billing.js';
 import { cardRequired } from '../billing/card-check.js';
 import { privacyUrl } from './self-service.js';
 import { dataProtectionUrl, helpUrl } from '../signup-guard.js';
-import { publicPalette } from '../public-colors.js';
+import { PUBLIC_FONT, PUBLIC_HEAD, PUBLIC_VARS, publicPalette } from '../public-colors.js';
 import { visitorLang, type Lang } from '../locale.js';
 import { toEnglish } from '../mail-language.js';
 
@@ -151,24 +151,25 @@ export function pricingPage(o: { brand: ReturnType<typeof publicBrand>; plans: O
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>${t.title} — ${esc(name)}</title>
 <meta name="description" content="${esc(t.description(name))}" />
+${PUBLIC_HEAD}
 <style>
-  :root { ${palette.light} --text: #101828; --muted: #475467; --border: #e4e7ec; --bg: #f2f4f7; --panel: #fff; }
-  @media (prefers-color-scheme: dark) { :root { ${palette.dark} --text: #e4e7ec; --muted: #98a2b3; --border: #252b37; --bg: #0c111d; --panel: #161b26; } }
+  :root { ${palette.light} ${PUBLIC_VARS} }
+  @media (prefers-color-scheme: dark) { :root { ${palette.dark} } }
   * { box-sizing: border-box; }
-  body { margin: 0; font: 16px/1.55 Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--text); background: var(--bg); }
+  body { margin: 0; font: 16px/1.55 ${PUBLIC_FONT}; color: var(--text); background: var(--bg); }
   main { max-width: 1040px; margin: 0 auto; padding: 32px 16px 24px; }
   .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; margin-bottom: 28px; }
   .brand img { height: 36px; width: auto; }
   h1 { font-size: 32px; margin: 0 0 8px; }
   .lead { color: var(--muted); font-size: 18px; margin: 0 0 28px; max-width: 640px; }
   .plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
-  .plan { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 22px; display: flex; flex-direction: column; gap: 6px; }
+  .plan { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-container); padding: 22px; display: flex; flex-direction: column; gap: 6px; }
   .plan h2 { font-size: 20px; margin: 0; }
   .price { margin: 4px 0 0; }
   .price strong { font-size: 32px; }
   .price span { color: var(--muted); }
   .plan ul { padding-left: 20px; margin: 8px 0 16px; flex: 1; }
-  .btn { display: block; text-align: center; background: var(--accent); color: var(--accent-ink); padding: 11px 16px; border-radius: 8px; text-decoration: none; font-weight: 600; }
+  .btn { display: block; text-align: center; background: var(--accent); color: var(--accent-ink); padding: 11px 16px; border-radius: var(--radius-element); text-decoration: none; font-weight: 600; }
   .btn.ghost { background: transparent; color: var(--link); border: 1px solid var(--link); }
   .hero { margin: 0 0 28px; }
   .hero .btn { display: inline-block; padding: 12px 22px; }

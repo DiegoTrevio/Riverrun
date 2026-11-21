@@ -99,3 +99,21 @@ test('componentes del panel con las reglas de Astryx: opción elegida visible, m
   assert.match(rule('.user-menu a'), /border-radius: calc\(var\(--radius-card\) - 6px\)/);
   assert.match(rule('.app-dialog::backdrop'), /var\(--color-overlay\)/);
 });
+
+test('las páginas públicas cargan astryx.css y usan sus fondos y el acento de Riverrun', async () => {
+  for (const f of ['reservar.html', 'help.html', 'ayuda.html', 'api-docs.html']) {
+    const html = read(f);
+    assert.ok(html.includes('<link rel="stylesheet" href="/astryx.css" />'), f);
+    assert.match(html, /--bg: var\(--color-background-body\)/, f);
+    assert.match(html, /--accent: #0f6b7a/, f);
+  }
+  const { LIGHT, DARK, PUBLIC_HEAD, publicPalette } = await import('../src/public-colors.js');
+  assert.ok(PUBLIC_HEAD.includes('/astryx.css'));
+  assert.deepEqual([LIGHT.bg, LIGHT.panel], [token(astryx, '--color-background-body'), token(astryx, '--color-background-surface')]);
+  assert.deepEqual([DARK.bg, DARK.panel], [token(darkBlock(astryx), '--color-background-body'), token(darkBlock(astryx), '--color-background-surface')]);
+  assert.match(publicPalette().light, /--accent: #0f6b7a;/);
+  for (const f of ['pricing.ts', 'nudges.ts', 'self-service.ts']) {
+    const src = fs.readFileSync(path.resolve(import.meta.dirname, '..', 'src', 'routes', f), 'utf8');
+    assert.ok(src.includes('${PUBLIC_HEAD}') && src.includes('${PUBLIC_VARS}'), f);
+  }
+});

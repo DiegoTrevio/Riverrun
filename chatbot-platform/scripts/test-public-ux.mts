@@ -212,7 +212,7 @@ try {
     await ctx.close();
     return bg;
   };
-  const DARK_PANEL = 'rgb(22, 27, 38)';
+  const DARK_PANEL = 'rgb(38, 38, 38)';
   assert.equal(await panelBg('auto', 'dark'), DARK_PANEL, 'automático + dispositivo oscuro = oscuro');
   assert.notEqual(await panelBg('auto', 'light'), DARK_PANEL, 'automático + dispositivo claro = claro');
   assert.notEqual(await panelBg('light', 'dark'), DARK_PANEL, 'fijo en claro aunque el dispositivo esté oscuro');
