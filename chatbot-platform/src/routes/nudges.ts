@@ -5,7 +5,7 @@
 import type { FastifyInstance } from 'fastify';
 import { stopNudges, unsubscribeOk } from '../onboarding-checklist.js';
 import { logEvent } from '../logs.js';
-import { publicPalette } from '../public-colors.js';
+import { PUBLIC_FONT, PUBLIC_HEAD, PUBLIC_VARS, publicPalette } from '../public-colors.js';
 
 const palette = publicPalette();
 
@@ -19,14 +19,15 @@ function page(title: string, body: string) {
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="robots" content="noindex" />
 <title>${esc(title)}</title>
+${PUBLIC_HEAD}
 <style>
-  :root { ${palette.light} --text: #101828; --muted: #475467; --bg: #f2f4f7; --panel: #fff; --border: #e4e7ec; }
-  @media (prefers-color-scheme: dark) { :root { ${palette.dark} --text: #e4e7ec; --muted: #98a2b3; --bg: #0c111d; --panel: #161b26; --border: #252b37; } }
-  body { margin: 0; font: 16px/1.55 Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--text); background: var(--bg); }
-  main { max-width: 520px; margin: 48px auto; padding: 24px 16px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; }
+  :root { ${palette.light} ${PUBLIC_VARS} }
+  @media (prefers-color-scheme: dark) { :root { ${palette.dark} } }
+  body { margin: 0; font: 16px/1.55 ${PUBLIC_FONT}; color: var(--text); background: var(--bg); }
+  main { max-width: 520px; margin: 48px auto; padding: 24px 16px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-container); }
   h1 { font-size: 22px; margin: 0 0 8px; }
   p { color: var(--muted); }
-  button { background: var(--accent); color: var(--accent-ink); border: 0; padding: 11px 18px; border-radius: 8px; font: inherit; font-weight: 600; cursor: pointer; }
+  button { background: var(--accent); color: var(--accent-ink); border: 0; padding: 11px 18px; border-radius: var(--radius-element); font: inherit; font-weight: 600; cursor: pointer; }
   button:focus-visible { outline: 3px solid var(--link); outline-offset: 2px; }
 </style>
 </head>

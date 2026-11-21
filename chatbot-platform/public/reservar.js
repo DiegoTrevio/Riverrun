@@ -80,7 +80,7 @@
     var root = document.documentElement.style;
     root.setProperty('--accent', accent);
     root.setProperty('--accent-ink', ratio('#ffffff', accent) >= ratio('#101828', accent) ? '#ffffff' : '#101828');
-    root.setProperty('--link', dark ? until(color, '#ffffff', ['#0c111d', '#161b26']) : until(color, '#000000', ['#f9fafb', '#ffffff']));
+    root.setProperty('--link', dark ? until(color, '#ffffff', ['#1b1b1b', '#262626']) : until(color, '#000000', ['#f1f1f1', '#ffffff']));
   }
   function kindText(s) { return s.kind === 'call' ? (s.call_mode === 'video' ? t('Videollamada', 'Video call') : t('Llamada telefónica', 'Phone call')) : t('Cita', 'Appointment'); }
 

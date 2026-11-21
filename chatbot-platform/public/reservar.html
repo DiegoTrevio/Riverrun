@@ -3,13 +3,14 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="/astryx.css" />
   <meta name="robots" content="noindex" />
   <title>Agendar</title>
   <style>
-    :root { --accent: #155eef; --accent-ink: #fff; --link: #155eef; --text: #101828; --muted: #475467; --border: #d0d5dd; --bg: #f9fafb; --panel: #fff; --danger: #b42318; }
-    @media (prefers-color-scheme: dark) { :root { --accent: #84adff; --accent-ink: #0c111d; --link: #84adff; --text: #f2f4f7; --muted: #cbd2dc; --border: #475467; --bg: #0c111d; --panel: #161b26; --danger: #fda29b; } }
+    :root { --accent: #0f6b7a; --accent-ink: #fff; --link: #0f6b7a; --text: var(--color-text-primary); --muted: var(--color-text-secondary); --border: var(--color-border-emphasized); --bg: var(--color-background-body); --panel: var(--color-background-surface); --danger: var(--color-text-error); }
+    @media (prefers-color-scheme: dark) { :root { --accent: #5fb8c6; --accent-ink: #071a1e; --link: #5fb8c6; } }
     * { box-sizing: border-box; }
-    body { margin: 0; font: 16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color: var(--text); background: var(--bg); }
+    body { margin: 0; font: 16px/1.5 var(--font-family-body); color: var(--text); background: var(--bg); }
     main { max-width: 620px; margin: 0 auto; padding: 24px 16px 48px; }
     header { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; }
     header img { width: 48px; height: 48px; border-radius: 10px; object-fit: cover; }

@@ -3,15 +3,16 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="/astryx.css" />
   <title>API de Riverrun — documentación</title>
   <meta name="robots" content="noindex" />
   <style>
-    :root { --accent: #0f6b7a; --accent-ink: #fff; --link: #0f6b7a; --soft: #eef6f7; --text: #111827; --muted: #5f6672; --border: #e5e7eb; --bg: #f9fafb; --panel: #fff; --code: #f3f4f6;
+    :root { --accent: #0f6b7a; --accent-ink: #fff; --link: #0f6b7a; --soft: color-mix(in srgb, var(--accent) 8%, var(--panel)); --text: var(--color-text-primary); --muted: var(--color-text-secondary); --border: var(--color-border-emphasized); --bg: var(--color-background-body); --panel: var(--color-background-surface); --code: var(--color-background-muted);
       --get: #1d5f9e; --post: #247b50; --put: #92400e; --del: #c4242a; }
-    @media (prefers-color-scheme: dark) { :root { --accent: #6fc9d6; --accent-ink: #062a30; --link: #6fc9d6; --soft: #12343a; --text: #e8edf2; --muted: #a3afbb; --border: #2c3a48; --bg: #10161d; --panel: #18212b; --code: #0c1218;
+    @media (prefers-color-scheme: dark) { :root { --accent: #5fb8c6; --accent-ink: #071a1e; --link: #5fb8c6; --soft: color-mix(in srgb, var(--accent) 16%, var(--panel));
       --get: #8cc4f5; --post: #7fd6a4; --put: #f5c37a; --del: #ff9b9b; } }
     * { box-sizing: border-box; }
-    body { margin: 0; font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--text); background: var(--bg); }
+    body { margin: 0; font: 15px/1.55 var(--font-family-body); color: var(--text); background: var(--bg); }
     a { color: var(--link); }
     :focus-visible { outline: 3px solid var(--link); outline-offset: 2px; }
     .skip { position: absolute; left: 8px; top: -100px; background: var(--panel); padding: 8px 12px; border: 2px solid var(--link); border-radius: 6px; z-index: 10; }

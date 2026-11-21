@@ -117,14 +117,14 @@
     function lum(hex) { var c = [1, 3, 5].map(function (i) { var v = parseInt(hex.slice(i, i + 2), 16) / 255; return v <= .04045 ? v / 12.92 : Math.pow((v + .055) / 1.055, 2.4); }); return c[0] * .2126 + c[1] * .7152 + c[2] * .0722; }
     // En oscuro, el mismo borde de marca se aclara hasta 3:1 contra el panel oscuro.
     var lineDark = color;
-    for (var u = 0; u <= 1 && (lum(lineDark) + .05) / (lum('#161b26') + .05) < 3; u += .1) lineDark = mixWhite(color, u);
+    for (var u = 0; u <= 1 && (lum(lineDark) + .05) / (lum('#262626') + .05) < 3; u += .1) lineDark = mixWhite(color, u);
     function mixWhite(hex, k) { return '#' + [1, 3, 5].map(function (i) { var v = parseInt(hex.slice(i, i + 2), 16); return ('0' + Math.round(v + (255 - v) * k).toString(16)).slice(-2); }).join(''); }
     function mixBlack(hex, k) { return '#' + [1, 3, 5].map(function (i) { return ('0' + Math.round(parseInt(hex.slice(i, i + 2), 16) * (1 - k)).toString(16)).slice(-2); }).join(''); }
     var style = el('style');
     style.textContent =
       ':host{all:initial}*{box-sizing:border-box;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}' +
       // Modo de color: «auto» sigue el dispositivo del visitante; «light» y «dark» lo fijan (según el canal).
-      '.w{--w-panel:#fff;--w-list:#f4f5f7;--w-bubble:#fff;--w-text:#1c1f24;--w-border:#e5e7eb;--w-field:#6b7280;--w-err:#c0392b;--w-dot:#999;--w-line:' + line + ';color-scheme:light}.w.dark{--w-panel:#161b26;--w-list:#0c111d;--w-bubble:#1f2633;--w-text:#e4e7ec;--w-border:#2f3747;--w-field:#8b93a3;--w-err:#f97066;--w-dot:#8b93a3;--w-line:' + lineDark + ';color-scheme:dark}@media (prefers-color-scheme:dark){.w.auto{--w-panel:#161b26;--w-list:#0c111d;--w-bubble:#1f2633;--w-text:#e4e7ec;--w-border:#2f3747;--w-field:#8b93a3;--w-err:#f97066;--w-dot:#8b93a3;--w-line:' + lineDark + ';color-scheme:dark}}' +
+      '.w{--w-panel:#fff;--w-list:#f1f1f1;--w-bubble:#fff;--w-text:#111111;--w-border:#e2e2e2;--w-field:#858585;--w-err:#c0262c;--w-dot:#919191;--w-line:' + line + ';color-scheme:light}.w.dark{--w-panel:#262626;--w-list:#1b1b1b;--w-bubble:#303030;--w-text:#ffffff;--w-border:#3d3d3d;--w-field:#8a8a8a;--w-err:#ffaea7;--w-dot:#9e9e9e;--w-line:' + lineDark + ';color-scheme:dark}@media (prefers-color-scheme:dark){.w.auto{--w-panel:#262626;--w-list:#1b1b1b;--w-bubble:#303030;--w-text:#ffffff;--w-border:#3d3d3d;--w-field:#8a8a8a;--w-err:#ffaea7;--w-dot:#9e9e9e;--w-line:' + lineDark + ';color-scheme:dark}}' +
       '.launcher{display:flex;align-items:center;gap:8px;background:' + color + ';color:' + ink + ';border:0;border-radius:999px;padding:12px 18px;font-size:15px;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.2);position:relative}' + // taste-skill-ignore: botón y panel flotantes sobre el sitio del cliente
       '.badge{position:absolute;top:-6px;right:-6px;background:#b12e22;color:#fff;border-radius:999px;font-size:11px;min-width:20px;height:20px;display:flex;align-items:center;justify-content:center;padding:0 6px}' +
       '.panel{width:360px;max-width:calc(100vw - 32px);height:540px;max-height:calc(100vh - 100px);background:var(--w-panel);border-radius:16px;box-shadow:0 12px 40px rgba(0,0,0,.25);display:flex;flex-direction:column;overflow:hidden;margin-bottom:12px}' + // taste-skill-ignore: botón y panel flotantes sobre el sitio del cliente
