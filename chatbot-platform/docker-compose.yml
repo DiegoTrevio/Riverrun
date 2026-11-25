@@ -338,7 +338,7 @@ services:
   # IN-6: Word → PDF de las cotizaciones (Gotenberg con LibreOffice). Sin secretos en su entorno, en una red interna sin
   # salida a internet (solo el backend la alcanza): una plantilla maliciosa no lee llaves ni llega a ningún lado.
   pdf:
-    image: ${PDF_IMAGE:-gotenberg/gotenberg:9.5.1-libreoffice@sha256:5bb80a7e11521238fc3712e963c2c9158fa45499fd0ac7cb19d78f59783a7d11}
+    image: ${PDF_IMAGE:-gotenberg/gotenberg:9.9.3-libreoffice@sha256:d7c238a1b1f5726c0e82e5838b2b5acbbead95a4f4a367c6ffa05c2dc20485f6}
     restart: unless-stopped
     mem_limit: ${PDF_MEM_LIMIT:-1g}
     pids_limit: 300
