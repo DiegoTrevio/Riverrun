@@ -178,11 +178,35 @@ curl -X POST https://TU-DOMINIO/api/v1/contacts \
 
 Las listas traen `data` y, si hay más, `next_cursor` para la siguiente página.
 
-## 4. Canal de correo electrónico (IMAP/SMTP)
+## 4. Canal de correo electrónico
 
-En **Canales → Nuevo canal → Correo electrónico**. Funciona con Gmail, Google Workspace, Outlook/Microsoft 365 o cualquier proveedor con IMAP y SMTP.
+En **Canales → Nuevo canal → Correo electrónico**. Hay dos formas de conectarlo; en las dos el asistente contesta cada correo nuevo de un cliente con la misma información, cotizaciones y reglas que los demás canales, y las reglas de seguimiento de **Automatizaciones** («el cliente no contesta», «cotización por vencer», etc.) funcionan igual. El correo no tiene la ventana de 24 horas de Messenger: el seguimiento sale aunque el cliente lleve días sin escribir.
 
-1. En Gmail o Microsoft activa la verificación en dos pasos y crea una **contraseña de aplicación** (no uses tu contraseña normal).
+### Reenviar mi correo (recomendado)
+
+Funciona con Gmail, Outlook o cualquier proveedor, sin contraseñas y sin SMTP (no choca con el bloqueo de puertos de DigitalOcean).
+
+1. Escribe tu correo de atención y el nombre con el que quieres responder, y pulsa **Crear la dirección de reenvío**. Riverrun crea una dirección propia del canal, por ejemplo `c1a2b3…@correo.tudominio.com`.
+2. En tu correo, activa el reenvío automático a esa dirección:
+   - **Gmail:** Configuración → Ver todos los ajustes → Reenvío y correo POP/IMAP → Agregar una dirección de reenvío. Gmail manda un código de confirmación; en un minuto aparece en la pantalla del canal (y te llega un aviso). Confírmalo y elige «Reenviar una copia del correo entrante».
+   - **Outlook:** Configuración → Correo → Reenvío → Habilitar el reenvío.
+3. Listo: el asistente contesta desde la dirección del canal, con tu nombre, en el mismo hilo (`Re: asunto`). Cuando el cliente responde, su correo llega directo al canal.
+
+Se ignoran avisos automáticos, listas, `no-reply` y los correos de tu propio buzón. Un remitente que no pasa DMARC (lo comprueba el servidor que recibe el correo, no se puede falsear) se guarda marcado «[Remitente no verificado]» y no se contesta (en este modo no se puede apagar: las respuestas salen del dominio de la plataforma). Siguen los mismos frenos: 12 correos por hora de una dirección y 60 respuestas por hora por canal.
+
+**Para el administrador de la plataforma** (una sola vez):
+
+1. En resend.com → Domains da de alta un subdominio, por ejemplo `correo.tudominio.com`, con envío y **recepción** activados (agrega el registro MX que muestra, con la prioridad más baja, y los de DKIM/SPF).
+2. En resend.com → Webhooks agrega `https://<tu dominio>/email/resend` con el evento `email.received` y copia su secreto (`whsec_…`).
+3. En el `.env` del servidor: `EMAIL_INBOUND_DOMAIN=correo.tudominio.com`, `RESEND_WEBHOOK_SECRET=whsec_…` y `RESEND_API_KEY`. Sin ellas, el panel dice que el reenvío aún no está disponible.
+
+Cada aviso de Resend se comprueba con su firma y su hora (más de 5 minutos de diferencia se rechaza). Si algo falla de nuestro lado se responde 503 y Resend lo reintenta; un correo que ya se guardó no se vuelve a contestar.
+
+### Con usuario y contraseña (IMAP y SMTP)
+
+Para un proveedor que permite contraseñas de aplicación. Ojo: Microsoft 365 / Outlook ya no las acepta, y un servidor que bloquea los puertos 465 y 587 (DigitalOcean) no podrá contestar por SMTP; en esos casos usa el reenvío.
+
+1. En Gmail activa la verificación en dos pasos y crea una **contraseña de aplicación** (no uses tu contraseña normal).
 2. Elige el proveedor (rellena los servidores), escribe el correo y la contraseña de aplicación y pulsa **Probar y conectar el correo**.
 3. El buzón se revisa cada minuto (`EMAIL_POLL_SECONDS`, mínimo 15). Solo se contestan los correos **posteriores a la conexión**. Las respuestas salen por SMTP en el mismo hilo (`Re: asunto`, `In-Reply-To`) y varias burbujas de la IA se mandan como un solo correo.
 4. Se ignoran avisos automáticos, listas de correo, rebotes y los mensajes de la propia dirección; el texto citado de la respuesta no se envía a la IA.

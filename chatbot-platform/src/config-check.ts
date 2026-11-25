@@ -52,7 +52,7 @@ export interface ConfigReport {
 /** Variables cuyo valor es secreto: nunca se muestran (ni en el panel ni en los registros). */
 export const SECRET_VARS = [
   'DATABASE_URL', 'POSTGRES_PASSWORD', 'SESSION_SECRET', 'DATA_KEY', 'DATA_KEYS_OLD', 'ADMIN_PASSWORD', 'EVOLUTION_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY',
-  'SMTP_URL', 'RESEND_API_KEY', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'MERCADOPAGO_ACCESS_TOKEN', 'MERCADOPAGO_WEBHOOK_SECRET',
+  'SMTP_URL', 'RESEND_API_KEY', 'RESEND_WEBHOOK_SECRET', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'MERCADOPAGO_ACCESS_TOKEN', 'MERCADOPAGO_WEBHOOK_SECRET',
   'GOOGLE_CLIENT_SECRET', 'MICROSOFT_CLIENT_SECRET', 'ZERNIO_API_KEY', 'META_APP_SECRET', 'META_VERIFY_TOKEN', 'BACKUP_PASSPHRASE', 'BACKUP_S3_SECRET', 'HEARTBEAT_URL', 'ALERT_WEBHOOK_URL',
   'TURNSTILE_SECRET_KEY', 'FACTURAPI_API_KEY',
 ] as const;
@@ -707,6 +707,15 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
     ['SMTP_URL'],
     'SMTP_URL no es una dirección smtp:// o smtps:// válida: no saldrá ningún correo.',
     'Ejemplo: smtps://usuario:clave@smtp.tuproveedor.com:465 (si la clave tiene símbolos, codifícala con %XX).',
+  );
+  // Canal de correo por reenvío: el dominio que recibe, la firma del webhook de Resend y la llave para responder.
+  if (get('EMAIL_INBOUND_DOMAIN') && (!get('RESEND_WEBHOOK_SECRET') || !get('RESEND_API_KEY'))) add(
+    'warning',
+    'email',
+    'email_inbound.incomplete',
+    ['EMAIL_INBOUND_DOMAIN', 'RESEND_WEBHOOK_SECRET', 'RESEND_API_KEY'],
+    'EMAIL_INBOUND_DOMAIN está puesto, pero falta RESEND_WEBHOOK_SECRET o RESEND_API_KEY: los correos reenviados no se recibirán o no se podrán contestar.',
+    'En resend.com → Webhooks agrega <tu dominio>/email/resend con el evento email.received y copia su secreto (whsec_…) en RESEND_WEBHOOK_SECRET.',
   );
   const signup = flag('SIGNUP_ENABLED', true);
   const requireEmail = flag('SIGNUP_REQUIRE_EMAIL', true);

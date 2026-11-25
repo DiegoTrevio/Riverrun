@@ -647,7 +647,7 @@ En **Agentes → + Crear agente** (`#/agentes/nuevo`) hay 3 pantallas: tu negoci
 
 ## Integraciones
 
-Canal de **correo electrónico** (IMAP/SMTP, Gmail y Outlook), inicio de sesión con Google, Google Calendar, webhooks firmados (Zapier, Make, n8n) y API v1 con llaves y especificación OpenAPI: ver [docs/integraciones.md](docs/integraciones.md).
+Canal de **correo electrónico** (reenvío con Resend, o IMAP/SMTP), inicio de sesión con Google, Google Calendar, webhooks firmados (Zapier, Make, n8n) y API v1 con llaves y especificación OpenAPI: ver [docs/integraciones.md](docs/integraciones.md).
 
 - **Conecta tu sistema** (Ajustes → Integraciones): la dirección, la llave, una prueba y ejemplos listos para copiar con los datos de la cuenta; la referencia completa está en `/api/v1/docs` (generada de `/api/v1/openapi.json`, sin llave).
 - **API sin adivinar** (`src/routes/api-v1.ts`):

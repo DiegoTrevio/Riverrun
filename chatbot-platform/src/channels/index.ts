@@ -2,6 +2,7 @@ import { config } from '../config.js';
 import { PlaygroundTransport } from '../engine/transport.js';
 import { ChannelConfigSchemas, MASK, SECRET_FIELDS, type Channel, type ChannelType } from '../types.js';
 import { emailAdapter } from './email.js';
+import { forwardAddress } from './email-inbound.js';
 import { instagramAdapter, messengerAdapter } from './meta.js';
 import { telegramAdapter } from './telegram.js';
 import type { ChannelAdapter } from './types.js';
@@ -52,6 +53,8 @@ export function publicChannel(channel: Channel, viewer?: { role: string } | null
   if (viewer?.role === 'agent') return agentChannel(channel);
   const cfg: Record<string, unknown> = { ...channel.config };
   for (const k of SECRET_FIELDS) if (cfg[k]) cfg[k] = MASK;
+  // Correo por reenvío: la dirección completa a la que el negocio reenvía (el dominio lo pone el servidor).
+  if (channel.type === 'email' && channel.config.forward_alias) cfg.forward_address = forwardAddress(String(channel.config.forward_alias));
   if (channel.type === 'zernio') {
     cfg.connected = !!channel.config.account_id;
     if (viewer?.role !== 'superadmin') { delete cfg.profile_id; delete cfg.account_id; }

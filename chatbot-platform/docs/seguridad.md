@@ -340,6 +340,7 @@ IN-6/7 y PAY-6) sigue pendiente.
 **Queda para después:**
 - La conversión de plantillas DOCX aislada (IN-6/7, IN-21) y la firma del webhook de Evolution (IN-2), con la etapa 6.
 - La lista de las páginas con `inline` se mantiene a mano: una página nueva del servidor sale con la CSP estricta hasta agregarla.
+- Correo por reenvío: se cree el resultado DMARC que calcula el servidor de Resend al recibir (el remitente no lo puede escribir); el aviso de Resend se acepta solo con su firma Svix y una hora de menos de 5 minutos, y la dirección de reenvío de un canal solo la pone el servidor (con la de otro canal se recibirían sus correos).
 - Correo: se cree el `Authentication-Results` del servidor del proveedor (Gmail, Microsoft, el dominio del servidor IMAP o el que se configure en el canal). Un hosting que no agrega el suyo deja los correos sin respuesta (marcados) hasta configurarlo o apagar la comprobación en ese canal; quien adivine el nombre del servidor de un hosting sin el suyo puede escribir uno falso.
 - Almacenamiento: la cuota se revisa antes de guardar, sin candado: subidas simultáneas pueden pasarla por poco (a lo más 30 por hora).
 - Reservas: tres solicitudes pendientes con el correo de alguien le impiden reservar durante una hora; el tope de 20 por día por enlace cuenta cada solicitud.

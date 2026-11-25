@@ -611,6 +611,15 @@ export const ChannelConfigSchemas = {
     connect_state: z.string().max(200).default(''),
   }),
   email: z.object({
+    /**
+     * forward: el negocio reenvía su correo a la dirección del canal (Resend la recibe y avisa por webhook) y se responde
+     * por la API de Resend; no pide contraseñas ni usa SMTP. imap: se lee el buzón por IMAP y se responde por SMTP.
+     */
+    mode: z.enum(['imap', 'forward']).default('imap'),
+    /** Lo pone el sistema: la parte antes de la @ de la dirección de reenvío (EMAIL_INBOUND_DOMAIN). */
+    forward_alias: z.string().max(40).default(''),
+    /** Lo pone el sistema: el último correo de confirmación de reenvío (Gmail manda un código y un enlace). */
+    forward_confirmation: z.string().max(1000).default(''),
     /** gmail | outlook | otro: solo rellena servidores por defecto en el panel. */
     provider: z.enum(['gmail', 'outlook', 'otro']).default('otro'),
     imap_host: z.string().max(200).default(''),
