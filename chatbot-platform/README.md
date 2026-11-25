@@ -434,6 +434,7 @@ Pestaña **Activación** de cada asistente. Lo aplica el sistema (no la IA), por
 - Se envían a ritmo controlado (mensajes por minuto) para proteger el número.
 - Por defecto solo se envían en horario de atención: lo que no alcance sale en la siguiente apertura, al mismo ritmo.
 - Siempre excluyen a quien se dio de baja y no interrumpen conversaciones que está atendiendo una persona. Muestran vista previa de destinatarios y estadísticas por destinatario.
+- **Por correo:** en un canal de correo por reenvío la campaña lleva asunto y sale por la API de Resend desde un subdominio aparte (`EMAIL_CAMPAIGN_DOMAIN`), con enlace de baja y baja de un clic, tope diario que sube solo (calentamiento) y pausa automática si hay muchos rebotes o quejas. Las respuestas caen en Conversaciones y las contesta el asistente. Ver [campañas por correo](docs/campanas-correo.md).
 
 ### Horario y ajustes
 
@@ -502,6 +503,7 @@ Menú **Cotizaciones** (administradores). Detalle en [docs/cotizaciones.md](docs
 - **El asistente** los ve con su etiqueta en los datos del cliente y, si el cliente los menciona, los guarda validando su tipo. No los pide: lo que pide cada agente se configura en sus preguntas y datos a recopilar.
 - **Exportar contactos** trae una columna por campo (con su etiqueta), antes de las de los agentes.
 - **Importar contactos** (Contactos → **Importar contactos**, solo administradores): un CSV con `telefono` (obligatorio, con lada de país), `nombre`, `etiquetas` (separadas por punto y coma) y una columna por campo, reconocida por su etiqueta o su clave; acepta coma o punto y coma como separador y una exportación se puede volver a importar. Es alta o actualización por teléfono en el canal de WhatsApp elegido (el mismo camino que `POST /api/v1/contacts`), hasta 5,000 filas. Una celda vacía no borra nada y las etiquetas se suman. Las filas con un error (teléfono inválido o repetido, una fecha que no existe, una opción que no está en la lista) no se importan y el resumen dice cuáles y por qué. Importar no dispara reglas ni envía mensajes.
+- **Importar una base de correos**: en el mismo botón, eligiendo un canal de correo. La columna obligatoria es `correo` (o `email`) y el teléfono pasa a ser opcional. Pide de dónde salió la base y si esas personas aceptaron recibir correos; las dos cosas quedan en cada contacto. Quien se dio de baja, o cuyo correo rebotó o se quejó, sigue fuera aunque venga en el archivo. Ver [campañas por correo](docs/campanas-correo.md).
 - **API:** `GET /api/contact-fields` (todo el equipo), `POST`, `PUT /:id`, `DELETE /:id` y `PUT /order` (administradores); `POST /api/contacts/import` con `{ channel_id, csv }`.
 
 ## Planes y límites

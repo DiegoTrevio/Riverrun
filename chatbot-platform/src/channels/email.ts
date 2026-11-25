@@ -19,7 +19,7 @@ import { config } from '../config.js';
 import { query, queryOne } from '../db.js';
 import { htmlToText } from '../knowledge-import.js';
 import { clampInbound } from '../engine/text.js';
-import { imageAbsolutePath, type OutgoingFile, type Transport } from '../engine/transport.js';
+import { imageAbsolutePath, type MailEnvelope, type OutgoingFile, type Transport } from '../engine/transport.js';
 import { logEvent } from '../logs.js';
 import { notifyUsers } from '../automation/store.js';
 import { hydrateChannel } from '../store/index.js';
@@ -28,6 +28,7 @@ import type { ChatService } from '../service.js';
 import { ChannelConfigSchemas, type Channel, type ImageAsset } from '../types.js';
 import type { ChannelAdapter, InboundMessage } from './types.js';
 import { forwardAddress, newForwardAlias, sendViaResend } from './email-inbound.js';
+import { campaignAddress } from './email-campaign.js';
 
 export interface MailConfig {
   mode: 'imap' | 'forward'; forward_alias: string;
@@ -104,8 +105,21 @@ export function senderVerified(authResults: string | undefined, from: string, tr
 }
 /** Respuestas por hora en un canal de correo: más se guardan sin contestar y se avisa (IN-17). */
 export const EMAIL_REPLIES_PER_HOUR = 60;
+/**
+ * A quien le llegó una campaña en los últimos 30 días se le contesta con su propio tope: una campaña a miles de personas
+ * recibe muchas respuestas en poco tiempo, y todas son de gente a la que el negocio escribió.
+ */
+export const CAMPAIGN_REPLIES_PER_HOUR = 600;
 
-export interface OutMail { from: string; to: string; subject: string; text: string; inReplyTo: string; references: string; attachment?: { path: string; filename: string } }
+export interface OutMail {
+  from: string; to: string; subject: string; text: string; inReplyTo: string; references: string; attachment?: { path: string; filename: string };
+  /** Campaña: a dónde va la respuesta del cliente (la dirección de reenvío del canal). */
+  replyTo?: string;
+  /** Cabeceras extra (las de baja de un clic de una campaña). */
+  headers?: Record<string, string>;
+  /** Un correo de campaña, no una respuesta: no lleva Auto-Submitted ni In-Reply-To. */
+  bulk?: boolean;
+}
 
 export interface MailBackend {
   fetchNew(cfg: MailConfig): Promise<{ mails: RawMail[]; lastUid: number; uidValidity: number }>;
@@ -123,8 +137,8 @@ async function publicAddress(host: string): Promise<string> {
 
 /** Dirección desde la que responde el canal: la de reenvío, o la del buzón IMAP. */
 const addressOf = (c: MailConfig) => (c.mode === 'forward' ? forwardAddress(c.forward_alias) : c.from_address || c.imap_user).toLowerCase();
-/** Correos propios del canal (no se contestan): su dirección y, por reenvío, el buzón del negocio que reenvía. */
-const ownAddresses = (c: MailConfig) => [addressOf(c), c.from_address.toLowerCase()].filter(Boolean);
+/** Correos propios del canal (no se contestan): su dirección, la de sus campañas y, por reenvío, el buzón que reenvía. */
+const ownAddresses = (c: MailConfig) => [addressOf(c), c.mode === 'forward' ? campaignAddress(c.forward_alias) : '', c.from_address.toLowerCase()].filter(Boolean);
 
 /** Límite del texto de un correo que se guarda (lo que no cabe se corta; el resto del hilo sigue en el correo). */
 const MAX_MAIL_TEXT = 50_000;
@@ -250,10 +264,16 @@ class EmailTransport implements Transport {
   private dispatchGuard?:()=>Promise<void>;
   setDispatchGuard(guard:()=>Promise<void>){this.dispatchGuard=guard;}
   kind = 'email' as const;
+  private envelope: MailEnvelope | null = null;
   constructor(private channel: Channel, private to: string) {}
+
+  setMailEnvelope(envelope: MailEnvelope) {
+    this.envelope = envelope;
+  }
 
   private async deliver(text: string, attachment?: OutMail['attachment']) {
     const cfg = cfgOf(this.channel);
+    if (this.envelope) return this.deliverCampaign(cfg, this.envelope, text, attachment);
     const t = await queryOne<{ subject: string; message_id: string; refs: string }>(`SELECT subject, message_id, refs FROM email_threads WHERE channel_id = $1 AND address = $2`, [this.channel.id, this.to.toLowerCase()]);
     const base = (t?.subject || 'Tu consulta').trim();
     const subject = /^(re|rv):/i.test(base) ? base : `Re: ${base}`;
@@ -262,6 +282,28 @@ class EmailTransport implements Transport {
     await this.dispatchGuard?.();
     const out: OutMail = { from, to: this.to, subject, text, inReplyTo: t?.message_id ?? '', references: [t?.refs, t?.message_id].filter(Boolean).join(' '), attachment };
     return cfg.mode === 'forward' ? sendViaResend(out) : backend.send(cfg, out);
+  }
+
+  /**
+   * Correo de campaña: sale desde el subdominio de campañas con Reply-To a la dirección de reenvío, así la respuesta
+   * llega a la conversación. Su asunto queda como el del hilo: el asistente contesta «Re: <asunto>».
+   */
+  private async deliverCampaign(cfg: MailConfig, env: MailEnvelope, text: string, attachment?: OutMail['attachment']) {
+    const sender = campaignAddress(cfg.forward_alias);
+    const replyTo = forwardAddress(cfg.forward_alias);
+    if (cfg.mode !== 'forward' || !sender || !replyTo) throw new Error('Las campañas por correo necesitan un canal por reenvío y EMAIL_CAMPAIGN_DOMAIN en el servidor');
+    const from = cfg.from_name ? `"${cfg.from_name.replace(/["\\\r\n<>]/g, '')}" <${sender}>` : sender;
+    const subject = env.subject.replace(/[\r\n]+/g, ' ').trim().slice(0, 300);
+    await this.dispatchGuard?.();
+    const id = await sendViaResend({ from, to: this.to, subject, text, inReplyTo: '', references: '', attachment, replyTo, headers: env.headers, bulk: true });
+    // Ya salió: si guardar el hilo falla, solo se anota (el correo no se marca como fallido ni se reenvía). Es un correo
+    // nuevo, así que el hilo empieza de cero con su asunto.
+    await query(
+      `INSERT INTO email_threads (channel_id, address, subject, message_id, refs) VALUES ($1,$2,$3,'','')
+       ON CONFLICT (channel_id, address) DO UPDATE SET subject = EXCLUDED.subject, message_id = '', refs = '', updated_at = now()`,
+      [this.channel.id, this.to.toLowerCase(), subject],
+    ).catch((e) => logEvent({ level: 'warn', source: 'channel', message: `No se guardó el hilo de la campaña: ${String(e?.message ?? e).slice(0, 200)}`, accountId: this.channel.account_id, channelId: this.channel.id }));
+    return id;
   }
 
   async sendText(text: string) {
@@ -376,13 +418,20 @@ export async function processIncomingMail(channel: Channel, mail: RawMail, deliv
     await deliver({ ...msg, text: `[Remitente no verificado] ${msg.text}`, captureOnly: true, held: 'remitente_no_verificado' });
     return;
   }
-  // Tope del canal: más de 60 respuestas en una hora se guardan sin contestar, con un aviso (IN-17).
-  const replies = await countHit(`email-replies:${channel.id}`, 3600_000);
-  if (replies > EMAIL_REPLIES_PER_HOUR) {
-    if (replies === EMAIL_REPLIES_PER_HOUR + 1) {
-      await logEvent({ level: 'warn', source: 'channel', message: `El correo ${addressOf(cfg)} llegó a ${EMAIL_REPLIES_PER_HOUR} respuestas en una hora: los demás correos se guardan sin contestar hasta la siguiente hora`, accountId: channel.account_id, channelId: channel.id });
+  // Tope del canal: más de 60 respuestas en una hora se guardan sin contestar, con un aviso (IN-17). Las respuestas a
+  // una campaña llevan su propio tope, más alto.
+  const campaignReply = !!(await queryOne(
+    `SELECT 1 FROM messages m JOIN conversations cv ON cv.id = m.conversation_id JOIN contacts ct ON ct.id = cv.contact_id
+      WHERE ct.channel_id = $1 AND ct.external_id = $2 AND m.direction = 'out' AND m.meta->>'source' = 'campaign' AND m.created_at > now() - interval '30 days' LIMIT 1`,
+    [channel.id, mail.address],
+  ));
+  const cap = campaignReply ? CAMPAIGN_REPLIES_PER_HOUR : EMAIL_REPLIES_PER_HOUR;
+  const replies = await countHit(`${campaignReply ? 'email-campaign-replies' : 'email-replies'}:${channel.id}`, 3600_000);
+  if (replies > cap) {
+    if (replies === cap + 1) {
+      await logEvent({ level: 'warn', source: 'channel', message: `El correo ${addressOf(cfg)} llegó a ${cap} respuestas en una hora: los demás correos se guardan sin contestar hasta la siguiente hora`, accountId: channel.account_id, channelId: channel.id });
       const admins = await query<{ id: string }>(`SELECT id FROM users WHERE account_id = $1 AND role = 'admin' AND active`, [channel.account_id]);
-      await notifyUsers(channel.account_id, admins.map((a) => a.id), { title: 'Tu correo contestó demasiados mensajes', body: `El asistente del correo ${addressOf(cfg)} contestó ${EMAIL_REPLIES_PER_HOUR} correos en una hora. Los siguientes se guardan sin respuesta hasta la siguiente hora; revisa si hay correo masivo.`, link: '#/conversations', kind: 'channel' }).catch(() => undefined);
+      await notifyUsers(channel.account_id, admins.map((a) => a.id), { title: 'Tu correo contestó demasiados mensajes', body: `El asistente del correo ${addressOf(cfg)} contestó ${cap} correos en una hora. Los siguientes se guardan sin respuesta hasta la siguiente hora; revisa si hay correo masivo.`, link: '#/conversations', kind: 'channel' }).catch(() => undefined);
     }
     await deliver({ ...toInbound(mail, false), captureOnly: true, held: 'limite_del_canal' });
     return;

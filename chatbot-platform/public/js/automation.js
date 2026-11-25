@@ -625,7 +625,9 @@ async function editCampaign(root, id) {
   const flows = refs.sequences.filter((q) => q.active);
   const flowName = fromFlow ? refs.sequences.find((q) => q.id === fromFlow)?.name ?? '' : '';
   const c = draftModel(`campaign:${id}`, existing || { name: flowName ? `Flujo: ${flowName}` : '', channel_id: channels[0]?.id || '', message: '', image_id: null, audience: { tags_any: [], tags_none: [], active_within_days: 0, statuses: [] }, scheduled_at: null, rate_per_minute: 20, business_hours_only: true, status: 'draft', kind: fromFlow ? 'sequence' : 'message', sequence_id: fromFlow }, false);
-  initializeDraftDefaults(`campaign:${id}`, () => { c.image_id ??= ''; c.flow_step ??= 0; c.channel_ids ??= []; c.kind ??= 'message'; c.sequence_id ??= null; });
+  initializeDraftDefaults(`campaign:${id}`, () => { c.image_id ??= ''; c.flow_step ??= 0; c.channel_ids ??= []; c.kind ??= 'message'; c.sequence_id ??= null; c.subject ??= ''; });
+  // Por correo: un mensaje con asunto, solo texto (cada correo lleva su enlace de baja).
+  const isEmail = () => channels.find((ch) => ch.id === c.channel_id)?.type === 'email';
   const editable = ['draft', 'scheduled'].includes(c.status);
   const local = draftModel(`campaign-time:${id}`, { when: localDateTime(c.scheduled_at, info.timezone) }, false);
   root.append(draftNotice([`campaign:${id}`, `campaign-time:${id}`], render));
@@ -642,7 +644,7 @@ async function editCampaign(root, id) {
       h('small', {}, 'Cada cliente recibe el mensaje desde el número con el que ya hablaba. Cada número lleva su propio ritmo, así la campaña termina antes sin arriesgar a ninguno.')) : null);
   };
   drawExtra();
-  const body = () => ({ ...c, image_id: c.image_id || null, scheduled_local: local.when || null, account_id: state.accountId || undefined });
+  const body = () => ({ ...c, ...(isEmail() ? { kind: 'message', sequence_id: null, image_id: null, wa_template: null, flow_step: 0 } : { image_id: c.image_id || null }), scheduled_local: local.when || null, account_id: state.accountId || undefined });
   const save = async () => {
     const versions = [`campaign:${id}`, `campaign-time:${id}`].map((key) => [key, draftVersion(key)]);
     const saved = await run(() => (existing ? api('PUT', `/api/campaigns/${id}`, body()) : api('POST', '/api/campaigns', body())), 'Campaña guardada');
@@ -659,8 +661,11 @@ async function editCampaign(root, id) {
       if (!preview) return;
       if (JSON.stringify(body()) !== fingerprint) return toast('Cambiaste la campaña. Revisa de nuevo los destinatarios.', true);
       if (!preview.count) return toast('No hay destinatarios disponibles para esta campaña.', true);
+      if (preview.problem) return toast(preview.problem, true);
       const flowName = c.kind === 'sequence' ? refs.sequences.find((q) => q.id === c.sequence_id)?.name ?? '' : '';
       const review = h('div', {}, h('p', {}, `${preview.count} destinatarios · ${preview.excluded_no_consent || 0} excluidos por falta de consentimiento`), h('p', {}, `Conexiones: ${[c.channel_id, ...c.channel_ids].map((key) => channels.find((ch) => ch.id === key)?.name || key).join(', ')}`), h('p', {}, local.when ? `Fecha: ${local.when.replace('T', ' ')} · ${info.timezone}` : 'Envío inmediato'),
+        isEmail() ? h('p', {}, h('strong', {}, 'Asunto: '), c.subject) : null,
+        isEmail() && preview.email_daily_cap ? h('p', { class: 'small' }, `Hoy pueden salir hasta ${preview.email_daily_cap} correos; el resto sale en los días siguientes.`) : null,
         c.kind === 'sequence' ? h('p', {}, `Flujo "${flowName}": ${preview.messages_per_person} mensaje${preview.messages_per_person === 1 ? '' : 's'} por persona (${preview.total_messages} en total, cuentan para el cupo de tu plan).`) : h('div', { class: 'pre' }, c.message),
         preview.warning ? h('p', { class: 'banner warn' }, preview.warning) : null);
       if (!(await dialog('Revisa la campaña antes de enviarla', review, local.when ? 'Confirmar programación' : 'Confirmar envío ahora'))) return;
@@ -672,7 +677,10 @@ async function editCampaign(root, id) {
   };
   // Qué se envía: un mensaje (con foto o plantilla) o un flujo completo (sus mensajes y botones, a su hora).
   const whatBox = h('div');
-  const drawWhat = () => fill(whatBox,
+  const drawWhat = () => isEmail() ? fill(whatBox,
+    varsField('Asunto', text(c, 'subject', { maxlength: 200, placeholder: 'Renta de sillas con 20% de descuento', disabled: !editable }), 'campaign'),
+    varsField('Mensaje', area(c, 'message', { big: true }), 'campaign'),
+    h('p', { class: 'small muted' }, 'Sale como un correo de texto, desde la dirección de campañas de tu canal. Las respuestas llegan a Conversaciones y las contesta tu asistente. Al final se agrega un enlace para darse de baja.')) : fill(whatBox,
     h('fieldset', { class: 'field' }, h('legend', {}, '¿Qué quieres enviar?'),
       h('label', { class: 'check' }, h('input', { type: 'radio', name: 'campaign-kind', value: 'message', disabled: !editable, checked: c.kind !== 'sequence', onchange: () => { c.kind = 'message'; drawWhat(); } }), 'Un mensaje'),
       h('label', { class: 'check' }, h('input', { type: 'radio', name: 'campaign-kind', value: 'sequence', disabled: !editable, checked: c.kind === 'sequence', onchange: () => { c.kind = 'sequence'; c.sequence_id ||= flows[0]?.id ?? null; drawWhat(); } }), 'Un flujo (varios mensajes, con botones)')),
@@ -696,8 +704,9 @@ async function editCampaign(root, id) {
           ['scheduled', 'sending'].includes(c.status) ? h('button', { class: 'small danger', onclick: async () => { if (await confirmAction(c.kind === 'sequence' ? '¿Cancelar la campaña? El flujo se detiene para todos los que siguen en él.' : '¿Cancelar la campaña?')) { if (!(await run(() => api('POST', `/api/campaigns/${id}/cancel`), 'Cancelada'))) return; render(); } } }, 'Cancelar') : null,
           c.kind === 'sequence' && c.status === 'sent' ? h('button', { class: 'small danger', onclick: async () => { if (await confirmAction('¿Detener el flujo para todos los que siguen en él? Ya no recibirán sus mensajes siguientes.')) { if (!(await run(() => api('POST', `/api/campaigns/${id}/cancel`), 'Flujo detenido'))) return; render(); } } }, 'Detener el flujo') : null)),
       previewBox,
+      c.stats.bounced || c.stats.complained ? h('p', { class: 'small' }, `${c.stats.bounced ?? 0} rebotaron · ${c.stats.complained ?? 0} lo marcaron como spam (ya no reciben campañas)`) : null,
       recipients.length ? h('details', {}, h('summary', {}, `Destinatarios (${recipients.length}) · ${c.stats.sent ?? 0} enviados · ${c.stats.skipped ?? 0} omitidos`),
-        h('table', {}, h('tbody', {}, recipients.map((r) => h('tr', {}, h('td', {}, r.name || r.push_name || (r.phone ? `+${r.phone}` : '—')), h('td', {}, r.status), h('td', { class: 'small muted' }, r.reason)))))) : null));
+        h('table', {}, h('tbody', {}, recipients.map((r) => h('tr', {}, h('td', {}, r.name || r.push_name || (r.phone ? `+${r.phone}` : r.channel_type === 'email' ? r.external_id : '—')), h('td', {}, r.status), h('td', { class: 'small muted' }, r.reason)))))) : null));
   }
   root.append(
     h('a', { href: '#/automation/campaigns' }, '← Campañas'),
@@ -705,7 +714,7 @@ async function editCampaign(root, id) {
     h('div', { class: 'card' },
       h('div', { class: 'grid' },
         field('Nombre', text(c, 'name', { placeholder: 'Promoción de octubre' })),
-        field('Canal', select(c, 'channel_id', channels.map((ch) => [ch.id, `${ch.name} (${ch.label})`]), () => { c.channel_ids = []; if (editable) { drawExtra(); } }))),
+        field('Canal', select(c, 'channel_id', channels.map((ch) => [ch.id, `${ch.name} (${ch.label})`]), () => { c.channel_ids = []; if (editable) { drawExtra(); drawWhat(); } }))),
       extraBox,
       whatBox),
     h('div', { class: 'card' },

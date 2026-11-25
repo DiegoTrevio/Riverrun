@@ -9,11 +9,12 @@ import { PUBLIC_FONT, PUBLIC_HEAD, PUBLIC_VARS, publicPalette } from '../public-
 
 const palette = publicPalette();
 
-const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+export const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
-function page(title: string, body: string) {
+/** Página pública sencilla (bajas): título y un cuerpo HTML ya escapado. */
+export function page(title: string, body: string, lang: 'es' | 'en' = 'es') {
   return `<!doctype html>
-<html lang="es">
+<html lang="${lang}">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />

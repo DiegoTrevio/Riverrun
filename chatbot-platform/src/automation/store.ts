@@ -508,6 +508,8 @@ export interface Campaign {
   wa_template: WaTemplateRef | null;
   /** Un mensaje, o un flujo (cada persona entra a `sequence_id`). */
   kind: 'message' | 'sequence';
+  /** Asunto del correo (solo campañas por correo). */
+  subject: string;
   sequence_id: string | null;
   stats: Record<string, number>;
 }
@@ -524,20 +526,20 @@ export async function getCampaign(id: string) {
 
 export async function saveCampaign(
   accountId: string,
-  c: Pick<Campaign, 'channel_id' | 'channel_ids' | 'name' | 'message' | 'image_id' | 'audience' | 'scheduled_at' | 'rate_per_minute' | 'business_hours_only' | 'flow_step'> & { wa_template?: WaTemplateRef | null; kind?: Campaign['kind']; sequence_id?: string | null },
+  c: Pick<Campaign, 'channel_id' | 'channel_ids' | 'name' | 'message' | 'image_id' | 'audience' | 'scheduled_at' | 'rate_per_minute' | 'business_hours_only' | 'flow_step'> & { wa_template?: WaTemplateRef | null; kind?: Campaign['kind']; sequence_id?: string | null; subject?: string },
   id?: string,
 ) {
   const kind = c.kind ?? 'message';
-  const params = [c.channel_id, c.name, c.message, c.image_id, JSON.stringify(c.audience), c.scheduled_at, c.rate_per_minute, c.business_hours_only, JSON.stringify(c.channel_ids ?? []), c.flow_step ?? 0, c.wa_template ? JSON.stringify(c.wa_template) : null, kind, kind === 'sequence' ? c.sequence_id ?? null : null];
+  const params = [c.channel_id, c.name, c.message, c.image_id, JSON.stringify(c.audience), c.scheduled_at, c.rate_per_minute, c.business_hours_only, JSON.stringify(c.channel_ids ?? []), c.flow_step ?? 0, c.wa_template ? JSON.stringify(c.wa_template) : null, kind, kind === 'sequence' ? c.sequence_id ?? null : null, c.subject ?? ''];
   if (id) {
     return queryOne<Campaign>(
-      `UPDATE campaigns SET channel_id=$1, name=$2, message=$3, image_id=$4, audience=$5, scheduled_at=$6, rate_per_minute=$7, business_hours_only=$8, channel_ids=$9, flow_step=$10, wa_template=$11, kind=$12, sequence_id=$13, updated_at=now()
-       WHERE id = $14 RETURNING *`,
+      `UPDATE campaigns SET channel_id=$1, name=$2, message=$3, image_id=$4, audience=$5, scheduled_at=$6, rate_per_minute=$7, business_hours_only=$8, channel_ids=$9, flow_step=$10, wa_template=$11, kind=$12, sequence_id=$13, subject=$14, updated_at=now()
+       WHERE id = $15 RETURNING *`,
       [...params, id],
     );
   }
   return queryOne<Campaign>(
-    `INSERT INTO campaigns (channel_id, name, message, image_id, audience, scheduled_at, rate_per_minute, business_hours_only, channel_ids, flow_step, wa_template, kind, sequence_id, account_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
+    `INSERT INTO campaigns (channel_id, name, message, image_id, audience, scheduled_at, rate_per_minute, business_hours_only, channel_ids, flow_step, wa_template, kind, sequence_id, subject, account_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
     [...params, accountId],
   );
 }
@@ -573,8 +575,8 @@ export async function campaignAudience(c: Pick<Campaign, 'channel_id' | 'audienc
     where.push(`cv.status = ANY($${params.length})`);
   }
   params.push(limit);
-  return query<{ conversation_id: string; channel_id: string; name: string; push_name: string; phone: string }>(
-    `SELECT cv.id AS conversation_id, cv.channel_id, ct.name, ct.push_name, ct.phone FROM conversations cv JOIN contacts ct ON ct.id = cv.contact_id
+  return query<{ conversation_id: string; channel_id: string; name: string; push_name: string; phone: string; external_id: string }>(
+    `SELECT cv.id AS conversation_id, cv.channel_id, ct.name, ct.push_name, ct.phone, ct.external_id FROM conversations cv JOIN contacts ct ON ct.id = cv.contact_id
      WHERE ${where.join(' AND ')} ORDER BY cv.last_message_at DESC LIMIT $${params.length}`,
     params,
   );
@@ -585,7 +587,8 @@ export async function campaignStats(id: string) {
   const stats: Record<string, number> = { pending: 0, sent: 0, skipped: 0, failed: 0 };
   for (const r of rows) stats[r.status] = r.n;
   stats.total = rows.reduce((a, r) => a + r.n, 0);
-  await query('UPDATE campaigns SET stats = $2, updated_at = now() WHERE id = $1', [id, JSON.stringify(stats)]);
+  // Se combina: los rebotes y las quejas (campañas por correo) se suman aparte y no se pierden al recontar.
+  await query('UPDATE campaigns SET stats = stats || $2::jsonb, updated_at = now() WHERE id = $1', [id, JSON.stringify(stats)]);
   return stats;
 }
 

@@ -1,3 +1,4 @@
+import { DELIVERY_EVENTS, handleDeliveryEvent } from '../channels/email-campaign.js';
 import { truncateChars } from '../engine/text.js';
 import { ipLimitKey, limited } from '../identity/rate-limit.js';
 import net from 'node:net';
@@ -174,6 +175,11 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
       return reply.code(401).send({ ok: false });
     }
     try {
+      // Rebotes y quejas de los correos que enviamos (campañas sobre todo): dan de baja la dirección.
+      if (DELIVERY_EVENTS.has(String(req.body?.type ?? ''))) {
+        await handleDeliveryEvent(req.body, { pauseCampaign: (id) => service.campaigns.cancel(id) });
+        return reply.send({ ok: true });
+      }
       await handleResendEvent(req.body, (channel, mail) => processIncomingMail(channel, mail, async (m) => { await service.handleIncoming(channel, m); }));
       return reply.send({ ok: true });
     } catch (e: any) {

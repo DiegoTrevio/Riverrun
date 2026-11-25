@@ -37,6 +37,14 @@ export interface Transport {
   sendButtons?(text: string, buttons: OutgoingButton[], delayMs: number): Promise<string | null>;
   /** Aviso interno (p.ej. al encargado cuando hay transferencia). */
   notify(number: string, text: string): Promise<void>;
+  /** Solo correo: lo que se envía después sale como correo de campaña (asunto propio, remitente y cabeceras de campaña). */
+  setMailEnvelope?(envelope: MailEnvelope): void;
+}
+
+/** Correo de campaña: un asunto nuevo (no «Re:») y las cabeceras de baja de un clic. */
+export interface MailEnvelope {
+  subject: string;
+  headers: Record<string, string>;
 }
 
 /** Botón de un mensaje: de respuesta (al tocarlo regresa `payload`) o de enlace (abre `url`). */

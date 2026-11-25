@@ -3,7 +3,7 @@ import { setControlVersion } from '../engine/coordination.js';
 import { queryOne } from '../db.js';
 import { messageQuota } from '../billing/limits.js';
 import { attachmentAbsolutePath } from '../attachments.js';
-import { CAPTION_MAX, PlaygroundTransport, type OutgoingFile, type OutgoingTemplate } from '../engine/transport.js';
+import { CAPTION_MAX, PlaygroundTransport, type OutgoingFile, type OutgoingTemplate, type Transport } from '../engine/transport.js';
 import { logEvent } from '../logs.js';
 import type { ChatService } from '../service.js';
 import * as store from '../store/index.js';
@@ -13,6 +13,7 @@ import { zernioNeedsWindow } from '../channels/zernio.js';
 import { fillBody, outgoingTemplate, templateBody, templateForChannel, templateText, templateVarCount, type WaTemplate } from '../channels/zernio-templates.js';
 import type { Appointment, FlowButton, WaTemplateRef } from './types.js';
 import { composeButtons, newButtonSet } from './buttons.js';
+import { campaignFooter, campaignHeaders, emailCampaignProblem, suppressionOf, unsubscribeUrl } from '../channels/email-campaign.js';
 
 export interface OutboundOptions {
   text?: string;
@@ -47,6 +48,8 @@ export interface OutboundOptions {
   buttons?: FlowButton[];
   /** De qué paso de qué flujo son los botones (para seguir el flujo al tocarlos). */
   buttonsFrom?: { enrollment_id: string; sequence_id: string; step: number };
+  /** Campaña por correo: el asunto (admite variables). Sale con enlace de baja y cabeceras de baja de un clic. */
+  email?: { subject: string };
 }
 
 /** Juego de botones vigente de una conversación (conversations.pending_buttons). */
@@ -75,6 +78,17 @@ const META_WINDOW_MS = 24 * 3600 * 1000;
 /** Orígenes que son promoción (llevan pie de baja y exigen consentimiento): campañas y secuencias. */
 const PROMOTIONAL_SOURCES = new Set(['campaign', 'sequence']);
 
+/** Envíos proactivos que, por correo a alguien que nunca escribió, salen como correo de campaña. */
+const COLD_MAIL_SOURCES = new Set(['campaign', 'sequence', 'automation', 'no_reply', 'api']);
+
+/** Asunto de un seguimiento por correo: «Re: » y el asunto del último correo del hilo (el de la campaña). */
+async function followUpSubject(channelId: string, address: string): Promise<string> {
+  const t = await queryOne<{ subject: string }>(`SELECT subject FROM email_threads WHERE channel_id = $1 AND address = $2`, [channelId, address.toLowerCase()]);
+  const base = (t?.subject ?? '').trim();
+  if (!base) return '';
+  return /^(re|rv):/i.test(base) ? base : `Re: ${base}`;
+}
+
 /** "Responde {{palabra_baja}} …" → con la primera palabra de baja del negocio en mayúsculas. */
 export function optOutFooter(oo: { keywords: string[]; footer_text: string }) {
   const word = (oo.keywords[0] ?? 'BAJA').toUpperCase();
@@ -90,11 +104,29 @@ export class Outbound {
     const [channel, contact] = await Promise.all([store.getChannel(conv.channel_id), store.getContact(conv.contact_id)]);
     if (!channel || !contact) return { sent: false, reason: 'conversación incompleta' };
     if (!channel.active || channel.account_active === false) return { sent: false, reason: 'canal o cuenta inactivos', transient: true };
+    // Un correo proactivo a quien nunca nos ha escrito (una base importada) es comercial aunque sea un seguimiento: sale
+    // como correo de campaña, con su enlace de baja y desde el subdominio de campañas.
+    // Solo si el servidor puede mandar campañas por este canal; si no, sale como siempre (respuesta normal del canal).
+    const coldMail = channel.type === 'email' && !o.email && !o.transactional && COLD_MAIL_SOURCES.has(o.source)
+      && !emailCampaignProblem(channel, { subject: '-', kind: 'message' }) && !(await astore.lastInbound(conv.id));
+    const mailSubject = o.email?.subject ?? (coldMail ? await followUpSubject(channel.id, contact.external_id) : '');
+    const mailCampaign = channel.type === 'email' && (!!o.email || coldMail);
+    if (mailCampaign) {
+      const problem = emailCampaignProblem(channel, { subject: mailSubject, kind: 'message' });
+      if (problem) return { sent: false, reason: problem };
+    }
+    // Lista de bajas del negocio: aunque el contacto se haya creado de nuevo o esté en otro canal, la dirección sigue
+    // fuera. Un rebote o una queja tampoco reciben avisos de servicio (no llegan, o dañan la entrega de los demás).
+    if (channel.type === 'email') {
+      const sup = await suppressionOf(conv.account_id, contact.external_id);
+      if (sup && (mailCampaign || PROMOTIONAL_SOURCES.has(o.source) || sup !== 'unsubscribed')) return { sent: false, reason: sup === 'unsubscribed' ? 'el cliente se dio de baja' : sup === 'bounced' ? 'el correo del cliente rebotó' : 'el cliente marcó un correo como spam' };
+    }
     if (contact.opted_out && !o.transactional) return { sent: false, reason: 'el cliente se dio de baja' };
     // Los envíos automáticos también gastan el cupo del plan (los recordatorios y confirmaciones no se cortan).
     if (!o.transactional && ['automation', 'sequence', 'campaign', 'no_reply', 'api'].includes(o.source) && (await messageQuota(conv.account_id)).reached) return { sent: false, reason: 'se alcanzó el límite de mensajes de tu plan' };
     const promotional = !o.transactional && PROMOTIONAL_SOURCES.has(o.source);
-    const needsConsent = promotional && !o.conversational;
+    // Un correo comercial a quien nunca escribió también pide consentimiento, aunque sea un seguimiento.
+    const needsConsent = (promotional && !o.conversational) || coldMail;
     if (needsConsent) {
       const st = await astore.getSettings(conv.account_id);
       if (st.consent.require_for_campaigns && !contact.consent_at) return { sent: false, reason: 'el cliente no ha aceptado recibir promociones' };
@@ -166,7 +198,10 @@ export class Outbound {
     }
     if (!text && !image && !file && !wa) return { sent: false, reason: 'mensaje vacío' };
     // Pie de baja: toda promoción dice cómo dejar de recibirlas (se añade al texto, o a la leyenda de la foto).
-    const footer = promotional && settings.opt_out.enabled && settings.opt_out.footer_enabled ? optOutFooter(settings.opt_out) : '';
+    // Un correo de campaña lleva siempre su enlace de baja (la ley lo pide), aunque se apague el pie de WhatsApp.
+    const unsubscribe = mailCampaign ? unsubscribeUrl(contact.id) : '';
+    const footer = mailCampaign ? campaignFooter(settings.language, unsubscribe, bot?.name ?? account?.name ?? channel.name)
+      : promotional && settings.opt_out.enabled && settings.opt_out.footer_enabled ? optOutFooter(settings.opt_out) : '';
     // A una plantilla no se le puede agregar texto: una promoción solo sale si ella misma dice cómo darse de baja.
     if (wa && footer && template) {
       const said = templateText(template.components).toLowerCase();
@@ -180,7 +215,13 @@ export class Outbound {
     const textOut = composed ? composed.text : footer && text ? `${text}\n\n${footer}` : text;
     const captionFooter = footer && !text ? footer : '';
 
-    const transport = channel.type === 'playground' ? new PlaygroundTransport() : this.chat.transportFor(channel, contact);
+    const transport: Transport = channel.type === 'playground' ? new PlaygroundTransport() : this.chat.transportFor(channel, contact);
+    if (mailCampaign) {
+      const subject = render(mailSubject).trim();
+      if (!subject) return { sent: false, reason: 'el asunto quedó vacío' };
+      if (!transport.setMailEnvelope) return { sent: false, reason: 'el canal no envía correos de campaña' };
+      transport.setMailEnvelope({ subject, headers: campaignHeaders(unsubscribe) });
+    }
     const meta = { ...o.meta,source: o.source,transactional:o.transactional===true, allow_when_human: o.allowWhenHuman === true, allow_when_closed: true };
     // Un envío que empieza el recorrido en una etapa forma parte de ese recorrido (su foto cuenta como ya enviada).
     const journeyStart = o.flowStep ? await store.dbNow() : undefined;

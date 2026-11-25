@@ -1,3 +1,4 @@
+import { emailCampaignProblem, emailDailyCap } from '../channels/email-campaign.js';
 import { ALERT_GROUPS, alertGroupsForPanel, kindsOfGroup } from '../automation/alert-groups.js';
 import { deliveriesFor, failedDeliveries, retryDelivery, whatsappFailing } from '../automation/alert-delivery.js';
 import { NoticeBody, sendNotice } from '../automation/notices.js';
@@ -113,6 +114,8 @@ const CampaignBody = z.object({
   /** Qué se envía: un mensaje, o un flujo (cada persona entra al flujo y recibe sus pasos). */
   kind: z.enum(['message', 'sequence']).default('message'),
   sequence_id: z.string().uuid().nullable().default(null),
+  /** Campañas por correo: el asunto (admite variables como {{nombre}}). */
+  subject: z.string().trim().max(200).default(''),
 }).refine((c) => c.kind !== 'sequence' || !!c.sequence_id, { message: 'Elige el flujo que se envía', path: ['sequence_id'] });
 
 /** El flujo de una campaña es del mismo negocio. */
@@ -403,9 +406,12 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
       messages_per_person: perPerson,
       total_messages: audience.length * perPerson,
       excluded_no_consent: requireConsent ? await astore.campaignExcludedNoConsent(c) : 0,
-      sample: audience.slice(0, 10).map((a) => a.name || a.push_name || (a.phone ? `+${a.phone}` : 'Cliente')),
+      sample: audience.slice(0, 10).map((a) => a.name || a.push_name || (a.phone ? `+${a.phone}` : ch?.type === 'email' ? a.external_id : 'Cliente')),
+      ...(ch?.type === 'email' ? { email_daily_cap: await emailDailyCap(c.account_id), problem: emailCampaignProblem(ch, c) || null } : {}),
       warning:
-        ch?.type === 'messenger' || ch?.type === 'instagram'
+        ch?.type === 'email'
+          ? 'Por correo, los primeros días sale un número limitado de correos al día para calentar el dominio; el resto pasa a los días siguientes. Cada correo lleva su enlace de baja.'
+          : ch?.type === 'messenger' || ch?.type === 'instagram'
           ? 'Meta solo permite escribir a quienes enviaron un mensaje en las últimas 24 horas; el resto se omitirá.'
           : ch?.type === 'zernio' && ch.config.platform === 'whatsapp'
             ? (c.wa_template ? 'A quienes no escribieron en las últimas 24 horas se les enviará la plantilla elegida.' : 'Solo se escribirá a quienes enviaron un mensaje en las últimas 24 horas; para el resto elige una plantilla de WhatsApp aprobada.')
@@ -437,8 +443,8 @@ export async function automationRoutes(api: FastifyInstance, service: ChatServic
   api.get('/api/campaigns/:id/recipients', admins, async (req: any) => {
     const c = await campaignFor(req.user, req.params.id);
     return query(
-      `SELECT r.*, ct.name, ct.push_name, ct.phone FROM campaign_recipients r
-         JOIN conversations cv ON cv.id = r.conversation_id JOIN contacts ct ON ct.id = cv.contact_id
+      `SELECT r.*, ct.name, ct.push_name, ct.phone, ct.external_id, ch.type AS channel_type FROM campaign_recipients r
+         JOIN conversations cv ON cv.id = r.conversation_id JOIN contacts ct ON ct.id = cv.contact_id JOIN channels ch ON ch.id = cv.channel_id
        WHERE r.campaign_id = $1 ORDER BY r.sent_at NULLS LAST LIMIT 1000`,
       [c.id],
     );

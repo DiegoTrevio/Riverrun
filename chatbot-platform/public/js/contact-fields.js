@@ -1,4 +1,4 @@
-import { api, dialog, field, fill, h, run, select, state, text, toast, LOCALE } from './core.js';
+import { api, check, dialog, field, fill, h, run, select, state, text, toast, LOCALE } from './core.js';
 import { isAdmin, isSuper, withAcct } from './session.js';
 import { dataLabel } from './bot.js';
 import { resetVarsCache } from './vars-help.js';
@@ -106,25 +106,41 @@ export async function viewContactFields(root) {
   await draw();
 }
 
-/** Contactos → «Importar contactos» (solo administradores). */
+/** Contactos → «Importar contactos» (solo administradores): por teléfono a WhatsApp o una base de correos a un canal de correo. */
 export async function importContactsDialog() {
   const [channels, fields] = await Promise.all([api('GET', withAcct('/api/channels')), loadContactFields()]);
-  const wa = channels.filter((c) => c.type === 'whatsapp');
-  if (!wa.length) { toast('Para importar necesitas un canal de WhatsApp: los contactos se identifican por su teléfono', true); return; }
-  const m = { channel_id: wa[0].id };
+  const usable = channels.filter((c) => c.type === 'whatsapp' || c.type === 'email');
+  if (!usable.length) { toast('Para importar necesitas un canal de WhatsApp (los contactos se identifican por su teléfono) o de correo (por su correo)', true); return; }
+  const m = { channel_id: usable[0].id, source: '', confirmed: false };
+  const isEmail = () => usable.find((c) => c.id === m.channel_id)?.type === 'email';
   const file = h('input', { type: 'file', accept: '.csv,text/csv', required: true });
-  const columns = ['telefono', 'nombre', 'etiquetas', ...fields.map((f) => f.label)];
+  const source = text(m, 'source', { maxlength: 120, placeholder: 'Formulario de mi sitio, clientes de la tienda…' });
+  const help = h('p', { class: 'small' });
+  const emailPart = h('div', { class: 'stack' },
+    field('¿De dónde salió esta base?', source, 'Queda anotado en cada contacto. Sirve para demostrar de dónde salió el correo si alguien pregunta.'),
+    check(m, 'confirmed', 'Estas personas aceptaron recibir correos de mi negocio'),
+    h('p', { class: 'small muted' }, 'Sin esa casilla los contactos se importan, pero las campañas solo les llegan si aceptan después (si en Ajustes pediste consentimiento). Quien ya se dio de baja, o cuyo correo rebotó, no vuelve a recibir campañas aunque venga en el archivo. Comprar o copiar bases ajenas daña la entrega de tus correos y puede ir contra la ley.'));
+  const draw = () => {
+    const email = isEmail();
+    const columns = [email ? 'correo' : 'telefono', 'nombre', ...(email ? ['telefono'] : []), 'etiquetas', ...fields.map((f) => f.label)];
+    fill(help, 'Un archivo CSV con encabezados. Obligatorio: ', h('strong', {}, columns[0]), email ? '. Opcionales: ' : ' (con lada de país, p. ej. 5215512345678). Opcionales: ', columns.slice(1).join(', '), '. Las etiquetas van separadas por punto y coma. Una celda vacía no borra lo que ya tiene el contacto; importar no dispara reglas ni envía mensajes.');
+    emailPart.hidden = !email;
+    source.required = email;
+  };
   const body = h('div', { class: 'stack' },
-    h('p', { class: 'small' }, 'Un archivo CSV con encabezados. Obligatorio: ', h('strong', {}, 'telefono'), ' (con lada de país, p. ej. 5215512345678). Opcionales: ', columns.slice(1).join(', '), '. Las etiquetas van separadas por punto y coma. Una celda vacía no borra lo que ya tiene el contacto; importar no dispara reglas ni envía mensajes.'),
-    wa.length > 1 ? field('Canal de WhatsApp', select(m, 'channel_id', wa.map((c) => [c.id, c.name]))) : null,
-    field('Archivo', file, 'Hasta 5,000 contactos. Una exportación de Contactos se puede volver a importar.'));
-  if (!(await dialog('Importar contactos', body, 'Importar', () => file.reportValidity()))) return;
+    help,
+    usable.length > 1 ? field('Canal', select(m, 'channel_id', usable.map((c) => [c.id, `${c.name} (${c.type === 'email' ? 'correo' : 'WhatsApp'})`]), draw)) : null,
+    field('Archivo', file, 'Hasta 5,000 contactos. Una exportación de Contactos se puede volver a importar.'),
+    emailPart);
+  draw();
+  if (!(await dialog('Importar contactos', body, 'Importar', () => file.reportValidity() && (!isEmail() || source.reportValidity())))) return;
   const csv = await file.files[0].text();
-  const r = await run(() => api('POST', '/api/contacts/import', { channel_id: m.channel_id, csv }));
+  const r = await run(() => api('POST', '/api/contacts/import', { channel_id: m.channel_id, csv, ...(isEmail() ? { consent: { confirmed: m.confirmed, source: m.source } } : {}) }));
   if (!r) return;
   const errors = r.errors.slice(0, 50);
   await dialog('Importación terminada', h('div', { class: 'stack', role: 'status' },
     h('p', {}, `${r.created} ${r.created === 1 ? 'contacto nuevo' : 'contactos nuevos'} y ${r.updated} ${r.updated === 1 ? 'actualizado' : 'actualizados'}.`),
+    r.suppressed ? h('p', { class: 'small' }, `${r.suppressed} ${r.suppressed === 1 ? 'correo ya estaba dado de baja (o rebotó): no recibirá campañas' : 'correos ya estaban dados de baja (o rebotaron): no recibirán campañas'}.`) : null,
     r.ignored_columns.length ? h('p', { class: 'small muted' }, `Columnas que no se importaron (no son un dato de tus clientes): ${r.ignored_columns.join(', ')}.`) : null,
     errors.length ? h('div', {}, h('p', { class: 'error' }, `${r.errors.length} ${r.errors.length === 1 ? 'fila no se importó' : 'filas no se importaron'}:`), h('ul', { class: 'small' }, ...errors.map((e) => h('li', {}, `Fila ${e.row}: ${e.error}`))), r.errors.length > errors.length ? h('p', { class: 'small muted' }, `…y ${r.errors.length - errors.length} más.`) : null) : null), 'Listo');
   return r;
