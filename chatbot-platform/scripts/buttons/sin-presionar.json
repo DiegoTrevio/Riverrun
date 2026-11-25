@@ -601,7 +601,9 @@
     "quotes.js|button||click|1",
     "quotes.js|input||change|2",
     "admin.js|button||click|2",
-    "auth.js|a||click|0"
+    "auth.js|a||click|0",
+    "channels.js|select||change|1",
+    "channels.js|button||click|2"
   ],
   "sin_presionar": {
     "admin.js|button|Reenviar|click|0": "Otra prueba: test:billing:ux lo presiona",
@@ -898,6 +900,8 @@
     "system.js|button|Mandarme un correo de prueba|click|0": "Servicio real: manda un correo por Resend o SMTP (lista manual; probado en mail-domain.test.ts)",
     "security-log.js|button|Desbloquear|click|0": "Otra prueba: security-log.test.ts lo prueba por su ruta (POST /api/system/security/unblock); solo aparece con una IP bloqueada, que el recorrido no prepara",
     "admin.js|button||click|2": "Otra prueba: test:english:ux lo presiona (cambia el idioma y recarga; el recorrido lo omite)",
-    "auth.js|a||click|0": "Otra prueba: test:english:ux lo presiona (cambia el idioma y recarga; el recorrido lo omite)"
+    "auth.js|a||click|0": "Otra prueba: test:english:ux lo presiona (cambia el idioma y recarga; el recorrido lo omite)",
+    "channels.js|select||change|1": "Estado no alcanzado: select solo aparece en un estado que el recorrido no prepara",
+    "channels.js|button||click|2": "Servicio real: WhatsApp, Telegram o correo de verdad (lista manual)"
   }
 }
