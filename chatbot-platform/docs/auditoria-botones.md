@@ -135,6 +135,7 @@ Esto **no se puede probar con servicios simulados**. Hazlo en tu servidor de pru
 - [ ] **Google Calendar y Outlook:** Agenda → Equipo → «Conectar mi Google» / «Conectar mi Outlook» → autorizar → «Conectado»; una cita nueva aparece en el calendario; «Desconectar». Lo mismo en Integraciones.
 - [ ] **Facebook / Instagram (Meta):** Conexiones → «Conectar con Facebook» → autorizar → elegir las páginas → «Conectar lo elegido»; un mensaje de Messenger llega al agente; «Desconectar».
 - [ ] **Redes con Zernio:** «Conectar Instagram» (y otra red) con la cuenta real; responder, ocultar y eliminar un comentario real; publicar algo de prueba.
+- [ ] **Canal de correo por reenvío (Resend):** con `EMAIL_INBOUND_DOMAIN` y el webhook dados de alta → «Crear la dirección de reenvío» → reenviar un Gmail real a esa dirección → la confirmación de Gmail aparece en el canal → un correo al buzón llega como conversación y se contesta.
 - [ ] **Canal de correo (IMAP/SMTP):** configurar un buzón real → «Verificar» → un correo al buzón llega como conversación.
 - [ ] **Avisos al equipo por WhatsApp:** Automatización → Ajustes → «Enviar alerta de prueba» llega al WhatsApp de la persona; «Reintentar» un aviso que no llegó.
 - [ ] **Webhook real:** Integraciones → crear un webhook a Zapier o Make → «Enviar prueba» llega con `"test": true`.
