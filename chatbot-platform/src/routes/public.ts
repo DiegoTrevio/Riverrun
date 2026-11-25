@@ -15,6 +15,8 @@ import { newWebchatSession, readWebchatSession } from '../channels/webchat.js';
 import { ipKey, rateLimited as limitedFor } from '../auth.js';
 import { eventAccountId, platformWebhookSecret, verifySignature } from '../channels/zernio.js';
 import { receiveZernioEvent } from '../channels/zernio-events.js';
+import { handleResendEvent, verifyResendSignature } from '../channels/email-inbound.js';
+import { processIncomingMail } from '../channels/email.js';
 import { saveZernioAccount, ZernioOwnershipError } from '../channels/zernio-connect.js';
 import { HttpError } from '../access.js';
 import { config } from '../config.js';
@@ -157,6 +159,25 @@ export async function publicRoutes(app: FastifyInstance, service: ChatService) {
       return reply.code(code).send({ ok: true });
     } catch (e: any) {
       await logEvent({ level: 'error', source: 'webhook', message: 'webhook_receipt_failed', details: { reason: 'parse_or_storage', error: String(e?.message ?? e).slice(0, 500), zernioAccount: eventAccountId(req.body) } }).catch(() => undefined);
+      return reply.code(503).send({ ok: false, error: 'No se pudo guardar la recepción. Reintenta.' });
+    }
+  });
+
+  /**
+   * Correo por reenvío: Resend avisa aquí de cada correo que llega a <alias>@EMAIL_INBOUND_DOMAIN (firmado con
+   * RESEND_WEBHOOK_SECRET). Si algo falla de nuestro lado se responde 503 y Resend lo reintenta; un correo ya guardado
+   * no se vuelve a contestar.
+   */
+  app.post('/email/resend', webhookRoute, async (req: any, reply) => {
+    if (!verifyResendSignature(req.headers, req.rawBody, config.emailInbound.webhookSecret)) {
+      await logRejected(req, 'resend', { level: 'warn', source: 'webhook', message: 'Correo: firma inválida en el webhook de Resend; se rechaza', details: { ip: req.ip } });
+      return reply.code(401).send({ ok: false });
+    }
+    try {
+      await handleResendEvent(req.body, (channel, mail) => processIncomingMail(channel, mail, async (m) => { await service.handleIncoming(channel, m); }));
+      return reply.send({ ok: true });
+    } catch (e: any) {
+      await logEvent({ level: 'error', source: 'webhook', message: 'webhook_receipt_failed', details: { reason: 'resend_inbound', error: String(e?.message ?? e).slice(0, 500) } }).catch(() => undefined);
       return reply.code(503).send({ ok: false, error: 'No se pudo guardar la recepción. Reintenta.' });
     }
   });

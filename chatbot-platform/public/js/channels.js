@@ -185,9 +185,20 @@ function channelConfigFields(ch, cfg) {
         if (p === 'outlook') Object.assign(cfg, { imap_host: 'outlook.office365.com', imap_port: 993, smtp_host: 'smtp.office365.com', smtp_port: 587 });
         render();
       };
-      // Un canal nuevo empieza comprobando remitentes (como en el servidor).
+      // Un canal nuevo empieza comprobando remitentes (como en el servidor) y por reenvío (no pide contraseñas).
       if (cfg.require_sender_auth === undefined) cfg.require_sender_auth = true;
+      if (!cfg.mode) cfg.mode = ch.config.imap_host ? 'imap' : 'forward';
+      const modeField = field('Cómo conectar tu correo', h('select', { onchange: (e) => { cfg.mode = e.target.value; render(); } },
+        [['forward', 'Reenviar mi correo (recomendado)'], ['imap', 'Con usuario y contraseña (IMAP y SMTP)']].map(([v, l]) => h('option', { value: v, selected: cfg.mode === v }, l))),
+        'Reenviar funciona con Gmail, Outlook o cualquier correo y no pide contraseñas.');
+      if (cfg.mode === 'forward') return [
+        modeField,
+        field('Tu correo de atención', text(cfg, 'from_address', { placeholder: 'atencion@tuempresa.com' }), 'El correo que vas a reenviar. Sus propios mensajes no se contestan.'),
+        field('Nombre al responder', text(cfg, 'from_name', { placeholder: 'Atención Mi Empresa' })),
+        h('p', { class: 'muted small' }, 'Un correo cuyo remitente no se puede comprobar (DMARC) se guarda marcado «[Remitente no verificado]» y no se contesta: así nadie escribe a tu nombre de cliente.'),
+      ];
       return [
+        modeField,
         field('Proveedor', h('select', { onchange: (e) => preset(e.target.value) }, [['gmail', 'Gmail / Google Workspace'], ['outlook', 'Outlook / Microsoft 365'], ['otro', 'Otro (IMAP y SMTP)']].map(([v, l]) => h('option', { value: v, selected: cfg.provider === v }, l))), 'Elige uno para rellenar los servidores.'),
         field('Correo (usuario)', text(cfg, 'imap_user', { placeholder: 'atencion@tuempresa.com' })),
         secret('imap_password', 'Contraseña de aplicación', 'En Gmail y Microsoft crea una "contraseña de aplicación" (necesitas la verificación en dos pasos); no uses tu contraseña normal.'),
@@ -336,6 +347,24 @@ export async function viewChannel(root, id, parentId = null) {
         h('li', {}, 'Suscríbete a los campos ', h('code', {}, 'messages'), ', ', h('code', {}, 'messaging_postbacks'), ' y ', h('code', {}, 'message_echoes'), '.'),
         h('li', {}, 'Guarda aquí el token y la clave secreta, y pulsa el botón:')),
       h('button', { class: 'primary', onclick: setup }, ch.type === 'messenger' ? 'Guardar, verificar y suscribir la página' : 'Guardar y verificar token'),
+    );
+  } else if (ch.type === 'email' && (ch.config.mode || 'imap') === 'forward') {
+    const addr = ch.config.forward_address;
+    connection.push(
+      addr
+        ? h('div', {},
+          h('p', {}, 'Reenvía tu correo a esta dirección:'),
+          h('div', { class: 'row' }, h('code', { translate: 'no' }, addr), copyBtn(addr)),
+          h('ul', { class: 'small' },
+            h('li', {}, 'Gmail: Configuración → Ver todos los ajustes → Reenvío y correo POP/IMAP → Agregar una dirección de reenvío. Gmail manda un código de confirmación: aparecerá aquí abajo en un minuto. Después elige «Reenviar una copia del correo entrante».'),
+            h('li', {}, 'Outlook: Configuración → Correo → Reenvío → Habilitar el reenvío, pega la dirección y guarda.'),
+            h('li', {}, 'Otro proveedor: busca «reenvío automático» en su configuración.')),
+          ch.config.forward_confirmation
+            ? h('div', { class: 'banner', role: 'status' }, h('strong', {}, 'Confirmación de Gmail'), h('pre', { class: 'small pre', translate: 'no' }, ch.config.forward_confirmation))
+            : null,
+          h('p', { class: 'muted small' }, 'El asistente contesta desde esta dirección con tu nombre. Los avisos automáticos, las listas y tus propios correos no se contestan.'))
+        : h('p', { class: 'muted small' }, 'Pulsa el botón para crear la dirección a la que reenviarás tu correo.'),
+      h('button', { class: 'primary', onclick: setup }, addr ? 'Guardar' : 'Crear la dirección de reenvío'),
     );
   } else if (ch.type === 'email') {
     connection.push(

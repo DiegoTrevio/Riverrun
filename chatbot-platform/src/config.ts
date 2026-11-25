@@ -236,6 +236,15 @@ export const config = {
     from: env('MAIL_FROM', 'Chatbots <no-responder@localhost>'),
   },
   /**
+   * Canal de correo por reenvío: el negocio reenvía su buzón a <alias>@EMAIL_INBOUND_DOMAIN, Resend lo recibe y avisa a
+   * /email/resend (firmado con RESEND_WEBHOOK_SECRET), y las respuestas salen por la API de Resend (RESEND_API_KEY)
+   * desde esa misma dirección. El dominio debe estar verificado en Resend para enviar y recibir.
+   */
+  emailInbound: {
+    domain: env('EMAIL_INBOUND_DOMAIN', '').trim().toLowerCase(),
+    webhookSecret: env('RESEND_WEBHOOK_SECRET', ''),
+  },
+  /**
    * Verificación en dos pasos (código de una app de autenticación). Apagada (por defecto): se entra solo con correo y
    * contraseña (o Google), y las acciones delicadas no piden código. MFA_REQUIRED=true la vuelve obligatoria.
    */

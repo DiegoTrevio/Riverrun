@@ -51,7 +51,11 @@ const META_SERVER_FIELDS = ['connected_via', 'meta_connected_at', 'meta_verify']
 /** En un canal conectado con el botón, la página y su token tampoco se cambian desde el panel (recibiría los eventos de otra página). */
 const META_CONNECTED_FIELDS = ['page_id', 'account_id', 'page_access_token', 'page_name', 'username', 'picture'];
 
+/** Correo por reenvío: la dirección y la confirmación de Gmail solo las escribe el servidor (con la dirección de otro canal se recibirían sus correos). */
+const EMAIL_SERVER_FIELDS = ['forward_alias', 'forward_confirmation', 'forward_address'];
+
 function clientConfig(user: User, type: string, cfg: Record<string, unknown> | undefined, current?: Record<string, unknown>) {
+  if (cfg && type === 'email') return Object.fromEntries(Object.entries(cfg).filter(([k]) => !EMAIL_SERVER_FIELDS.includes(k)));
   if (cfg && type === 'zernio' && user.role === 'superadmin') {
     const out = Object.fromEntries(Object.entries(cfg).filter(([k]) => !ZERNIO_SERVER_FIELDS.includes(k)));
     // La llave propia de un canal de antes se guarda cifrada (zernioKey la descifra al usarla).

@@ -1,7 +1,11 @@
 /**
- * Canal de correo: recibe por IMAP (sondeo cada minuto) y responde por SMTP en el mismo hilo.
- * Sirve con Gmail y Outlook (contraseña de aplicación) o cualquier proveedor. Los servidores de red interna
- * se rechazan para que un cliente no use el canal para explorar la red del servidor.
+ * Canal de correo, de dos formas:
+ * - Reenvío (recomendado): el negocio reenvía su correo a la dirección del canal; llega por el webhook de Resend y se
+ *   responde por su API (src/channels/email-inbound.ts). No pide contraseñas ni usa SMTP.
+ * - IMAP: recibe por IMAP (sondeo cada minuto) y responde por SMTP en el mismo hilo. Sirve con Gmail (contraseña de
+ *   aplicación) o cualquier proveedor. Los servidores de red interna se rechazan para que un cliente no use el canal
+ *   para explorar la red del servidor.
+ * Los dos caminos pasan cada correo por los mismos filtros (processIncomingMail).
  */
 import crypto from 'node:crypto';
 import dns from 'node:dns/promises';
@@ -23,8 +27,10 @@ import { countHit } from '../identity/rate-limit.js';
 import type { ChatService } from '../service.js';
 import { ChannelConfigSchemas, type Channel, type ImageAsset } from '../types.js';
 import type { ChannelAdapter, InboundMessage } from './types.js';
+import { forwardAddress, newForwardAlias, sendViaResend } from './email-inbound.js';
 
 export interface MailConfig {
+  mode: 'imap' | 'forward'; forward_alias: string;
   imap_host: string; imap_port: number; imap_user: string; imap_password: string;
   smtp_host: string; smtp_port: number; smtp_user: string; smtp_password: string;
   from_address: string; from_name: string; last_uid: number; uid_validity: number;
@@ -42,6 +48,14 @@ export interface RawMail {
   automated: boolean;
   /** El primer encabezado Authentication-Results (el que pone el servidor que recibió el correo). */
   authResults?: string;
+  /** Por reenvío: SPF, DKIM y DMARC calculados por el servidor de Resend que lo recibió. */
+  authentication?: MailAuthentication;
+}
+
+export interface MailAuthentication {
+  spf: 'pass' | 'fail' | 'gray' | 'processing_failed' | 'unknown';
+  dkim: MailAuthentication['spf'];
+  dmarc: MailAuthentication['spf'];
 }
 
 /**
@@ -107,7 +121,10 @@ async function publicAddress(host: string): Promise<string> {
   return ip;
 }
 
-const addressOf = (c: MailConfig) => (c.from_address || c.imap_user).toLowerCase();
+/** Dirección desde la que responde el canal: la de reenvío, o la del buzón IMAP. */
+const addressOf = (c: MailConfig) => (c.mode === 'forward' ? forwardAddress(c.forward_alias) : c.from_address || c.imap_user).toLowerCase();
+/** Correos propios del canal (no se contestan): su dirección y, por reenvío, el buzón del negocio que reenvía. */
+const ownAddresses = (c: MailConfig) => [addressOf(c), c.from_address.toLowerCase()].filter(Boolean);
 
 /** Límite del texto de un correo que se guarda (lo que no cabe se corta; el resto del hilo sigue en el correo). */
 const MAX_MAIL_TEXT = 50_000;
@@ -241,8 +258,10 @@ class EmailTransport implements Transport {
     const base = (t?.subject || 'Tu consulta').trim();
     const subject = /^(re|rv):/i.test(base) ? base : `Re: ${base}`;
     const from = cfg.from_name ? `"${cfg.from_name.replace(/["\\\r\n<>]/g, '')}" <${addressOf(cfg)}>` : addressOf(cfg);
+    if (!addressOf(cfg)) throw new Error('El canal de correo no tiene dirección de envío (falta EMAIL_INBOUND_DOMAIN en el servidor)');
     await this.dispatchGuard?.();
-    return backend.send(cfg, { from, to: this.to, subject, text, inReplyTo: t?.message_id ?? '', references: [t?.refs, t?.message_id].filter(Boolean).join(' '), attachment });
+    const out: OutMail = { from, to: this.to, subject, text, inReplyTo: t?.message_id ?? '', references: [t?.refs, t?.message_id].filter(Boolean).join(' '), attachment };
+    return cfg.mode === 'forward' ? sendViaResend(out) : backend.send(cfg, out);
   }
 
   async sendText(text: string) {
@@ -266,6 +285,13 @@ class EmailTransport implements Transport {
   }
 }
 
+/** Por reenvío: crea la dirección del canal (una sola vez) y explica a dónde reenviar. */
+async function setupForward(channel: Channel, cfg: MailConfig) {
+  if (!config.emailInbound.domain || !config.mail.resendApiKey) return { ok: false, message: 'El correo por reenvío aún no está disponible en este servidor. Pídele al administrador de la plataforma que lo active.' };
+  const alias = cfg.forward_alias || newForwardAlias();
+  return { ok: true, message: `Listo. Reenvía tu correo a ${forwardAddress(alias)} y el asistente contestará los mensajes nuevos.`, config: { forward_alias: alias } };
+}
+
 export const emailAdapter: ChannelAdapter = {
   type: 'email',
   label: 'Correo electrónico',
@@ -275,6 +301,7 @@ export const emailAdapter: ChannelAdapter = {
 
   async setup(channel) {
     const cfg = cfgOf(channel);
+    if (cfg.mode === 'forward') return setupForward(channel, cfg);
     if (!cfg.imap_host || !cfg.imap_user || !cfg.imap_password) return { ok: false, message: 'Completa el servidor, el usuario y la contraseña de correo' };
     try {
       await backend.verify(cfg);
@@ -287,6 +314,7 @@ export const emailAdapter: ChannelAdapter = {
 
   async status(channel) {
     const cfg = cfgOf(channel);
+    if (cfg.mode === 'forward') return { state: cfg.forward_alias && forwardAddress(cfg.forward_alias) ? 'open' : 'not_configured', details: { forward_address: forwardAddress(cfg.forward_alias) } };
     if (!cfg.imap_host || !cfg.imap_password) return { state: 'not_configured' };
     return { state: (channel.config as any).last_error ? 'error' : 'open', details: { error: (channel.config as any).last_error ?? '' } };
   },
@@ -315,6 +343,59 @@ export function toInbound(m: RawMail, firstInThread: boolean): InboundMessage {
   };
 }
 
+/** ¿El remitente está comprobado? Por reenvío, lo dice Resend (DMARC); por IMAP, el Authentication-Results del proveedor. */
+function mailVerified(mail: RawMail, channel: Channel): boolean {
+  if (mail.authentication) return mail.authentication.dmarc === 'pass';
+  return senderVerified(mail.authResults, mail.address, trustedAuthServers(channel.config as any));
+}
+
+/**
+ * Un correo nuevo de un canal (por IMAP o por reenvío): descarta automáticos y propios, frena bucles, guarda sin
+ * contestar lo de remitentes sin comprobar y lo que pasa del tope por hora, y entrega lo demás al asistente.
+ */
+export async function processIncomingMail(channel: Channel, mail: RawMail, deliver: (m: InboundMessage) => Promise<void>) {
+  const cfg = cfgOf(channel);
+  if (mail.automated || ownAddresses(cfg).includes(mail.address)) return;
+  // Freno de bucles: más de 12 correos por hora de la misma dirección no se contestan (ver abajo).
+  const recent = (await queryOne<{ n: number }>(
+    `SELECT count(*)::int AS n FROM messages m JOIN conversations cv ON cv.id = m.conversation_id JOIN contacts ct ON ct.id = cv.contact_id
+      WHERE ct.channel_id = $1 AND ct.external_id = $2 AND m.direction = 'in' AND m.created_at > now() - interval '1 hour'`,
+    [channel.id, mail.address],
+  ))?.n ?? 0;
+  if (recent >= 12) {
+    // Freno de bucles: se guarda pero no se contesta (nada se pierde del historial del cliente).
+    await deliver({ ...toInbound(mail, false), captureOnly: true });
+    return;
+  }
+  // Remitente sin comprobar: cualquiera escribe «From: cliente@real.com». Se guarda marcado, sin contestar (IN-17).
+  // Por reenvío siempre se comprueba: se responde desde el dominio compartido de la plataforma y un remitente falso
+  // haría que se escriba a cualquier dirección en nombre del negocio.
+  const checkSender = cfg.mode === 'forward' || (channel.config as any).require_sender_auth !== false;
+  if (checkSender && !mailVerified(mail, channel)) {
+    const msg = toInbound(mail, false);
+    await deliver({ ...msg, text: `[Remitente no verificado] ${msg.text}`, captureOnly: true, held: 'remitente_no_verificado' });
+    return;
+  }
+  // Tope del canal: más de 60 respuestas en una hora se guardan sin contestar, con un aviso (IN-17).
+  const replies = await countHit(`email-replies:${channel.id}`, 3600_000);
+  if (replies > EMAIL_REPLIES_PER_HOUR) {
+    if (replies === EMAIL_REPLIES_PER_HOUR + 1) {
+      await logEvent({ level: 'warn', source: 'channel', message: `El correo ${addressOf(cfg)} llegó a ${EMAIL_REPLIES_PER_HOUR} respuestas en una hora: los demás correos se guardan sin contestar hasta la siguiente hora`, accountId: channel.account_id, channelId: channel.id });
+      const admins = await query<{ id: string }>(`SELECT id FROM users WHERE account_id = $1 AND role = 'admin' AND active`, [channel.account_id]);
+      await notifyUsers(channel.account_id, admins.map((a) => a.id), { title: 'Tu correo contestó demasiados mensajes', body: `El asistente del correo ${addressOf(cfg)} contestó ${EMAIL_REPLIES_PER_HOUR} correos en una hora. Los siguientes se guardan sin respuesta hasta la siguiente hora; revisa si hay correo masivo.`, link: '#/conversations', kind: 'channel' }).catch(() => undefined);
+    }
+    await deliver({ ...toInbound(mail, false), captureOnly: true, held: 'limite_del_canal' });
+    return;
+  }
+  const prior = await queryOne(`SELECT 1 FROM email_threads WHERE channel_id = $1 AND address = $2`, [channel.id, mail.address]);
+  await query(
+    `INSERT INTO email_threads (channel_id, address, subject, message_id, refs) VALUES ($1,$2,$3,$4,$5)
+     ON CONFLICT (channel_id, address) DO UPDATE SET subject = EXCLUDED.subject, message_id = EXCLUDED.message_id, refs = EXCLUDED.refs, updated_at = now()`,
+    [channel.id, mail.address, mail.subject.slice(0, 300), mail.messageId, mail.references.slice(-1500)],
+  );
+  await deliver(toInbound(mail, !prior));
+}
+
 /** Una pasada de lectura de un canal. Devuelve los mensajes ya normalizados; guarda el avance y el hilo. */
 export async function pollEmailChannel(channel: Channel, deliver: (m: InboundMessage) => Promise<void>) {
   const cfg = cfgOf(channel);
@@ -323,43 +404,7 @@ export async function pollEmailChannel(channel: Channel, deliver: (m: InboundMes
     const r = await backend.fetchNew(cfg);
     for (const mail of r.mails) {
       try {
-        const own = mail.address === addressOf(cfg);
-        if (mail.automated || own) continue;
-        // Freno de bucles: más de 12 correos por hora de la misma dirección no se contestan (ver abajo).
-        const recent = (await queryOne<{ n: number }>(
-          `SELECT count(*)::int AS n FROM messages m JOIN conversations cv ON cv.id = m.conversation_id JOIN contacts ct ON ct.id = cv.contact_id
-            WHERE ct.channel_id = $1 AND ct.external_id = $2 AND m.direction = 'in' AND m.created_at > now() - interval '1 hour'`,
-          [channel.id, mail.address],
-        ))?.n ?? 0;
-        if (recent >= 12) {
-          // Freno de bucles: se guarda pero no se contesta (nada se pierde del historial del cliente).
-          await deliver({ ...toInbound(mail, false), captureOnly: true });
-          continue;
-        }
-        // Remitente sin comprobar: cualquiera escribe «From: cliente@real.com». Se guarda marcado, sin contestar (IN-17).
-        if ((channel.config as any).require_sender_auth !== false && !senderVerified(mail.authResults, mail.address, trustedAuthServers(channel.config as any))) {
-          const msg = toInbound(mail, false);
-          await deliver({ ...msg, text: `[Remitente no verificado] ${msg.text}`, captureOnly: true, held: 'remitente_no_verificado' });
-          continue;
-        }
-        // Tope del canal: más de 60 respuestas en una hora se guardan sin contestar, con un aviso (IN-17).
-        const replies = await countHit(`email-replies:${channel.id}`, 3600_000);
-        if (replies > EMAIL_REPLIES_PER_HOUR) {
-          if (replies === EMAIL_REPLIES_PER_HOUR + 1) {
-            await logEvent({ level: 'warn', source: 'channel', message: `El correo ${addressOf(cfg)} llegó a ${EMAIL_REPLIES_PER_HOUR} respuestas en una hora: los demás correos se guardan sin contestar hasta la siguiente hora`, accountId: channel.account_id, channelId: channel.id });
-            const admins = await query<{ id: string }>(`SELECT id FROM users WHERE account_id = $1 AND role = 'admin' AND active`, [channel.account_id]);
-            await notifyUsers(channel.account_id, admins.map((a) => a.id), { title: 'Tu correo contestó demasiados mensajes', body: `El asistente del correo ${addressOf(cfg)} contestó ${EMAIL_REPLIES_PER_HOUR} correos en una hora. Los siguientes se guardan sin respuesta hasta la siguiente hora; revisa si hay correo masivo.`, link: '#/conversations', kind: 'channel' }).catch(() => undefined);
-          }
-          await deliver({ ...toInbound(mail, false), captureOnly: true, held: 'limite_del_canal' });
-          continue;
-        }
-        const prior = await queryOne(`SELECT 1 FROM email_threads WHERE channel_id = $1 AND address = $2`, [channel.id, mail.address]);
-        await query(
-          `INSERT INTO email_threads (channel_id, address, subject, message_id, refs) VALUES ($1,$2,$3,$4,$5)
-           ON CONFLICT (channel_id, address) DO UPDATE SET subject = EXCLUDED.subject, message_id = EXCLUDED.message_id, refs = EXCLUDED.refs, updated_at = now()`,
-          [channel.id, mail.address, mail.subject.slice(0, 300), mail.messageId, mail.references.slice(-1500)],
-        );
-        await deliver(toInbound(mail, !prior));
+        await processIncomingMail(channel, mail, deliver);
       } catch (e: any) {
         await logEvent({ level: 'error', source: 'channel', message: `Correo de ${mail.address}: ${String(e?.message ?? e).slice(0, 200)}`, accountId: channel.account_id, channelId: channel.id });
       }
@@ -383,7 +428,7 @@ export async function pollEmailChannels(service: Pick<ChatService, 'handleIncomi
   if (polling) return 0;
   polling = true;
   try {
-    const rows = await query<Channel>(`SELECT ch.* FROM channels ch JOIN accounts a ON a.id = ch.account_id WHERE ch.type = 'email' AND ch.active AND a.active AND ch.config->>'imap_host' <> '' AND ch.config->>'imap_password' <> ''`);
+    const rows = await query<Channel>(`SELECT ch.* FROM channels ch JOIN accounts a ON a.id = ch.account_id WHERE ch.type = 'email' AND ch.active AND a.active AND coalesce(ch.config->>'mode', 'imap') = 'imap' AND ch.config->>'imap_host' <> '' AND ch.config->>'imap_password' <> ''`);
     let n = 0;
     for (const ch of rows.map((r) => hydrateChannel(r)!)) await pollEmailChannel(ch, async (m) => { n++; await service.handleIncoming(ch, m); });
     return n;
