@@ -6304,5 +6304,15 @@
  "el correo del cliente rebotó": "the customer's email bounced",
  "el cliente marcó un correo como spam": "the customer marked an email as spam",
  "Uno de los canales adicionales ya no existe.": "One of the additional channels no longer exists.",
- "No se guardó el hilo de la campaña: {0}": "The campaign thread wasn't saved: {0}"
+ "No se guardó el hilo de la campaña: {0}": "The campaign thread wasn't saved: {0}",
+ "Dar seguimiento con IA": "Follow up with AI",
+ "Seguimiento con IA si no responde": "AI follow-up if there's no reply",
+ "La IA escribe un mensaje corto que retoma lo que el cliente quería, con la información de tu negocio. Si el mensaje trae un precio, enlace o dato que no está en tu información, no se envía.": "The AI writes a short message that picks up what the customer wanted, using your business information. If the message includes a price, link or detail that isn't in your information, it isn't sent.",
+ "Indicación para la IA (opcional)": "Instruction for the AI (optional)",
+ "Pregunta si pudo revisar la cotización y ofrece resolver dudas.": "Ask whether they could review the quote and offer to answer questions.",
+ "Qué buscas con este seguimiento. No pongas precios aquí si no están en tu información.": "What you want from this follow-up. Don't put prices here unless they're in your information.",
+ "Máximo de seguimientos sin respuesta": "Maximum follow-ups without a reply",
+ "Con «El cliente no contesta», se vuelve a intentar con la misma espera hasta este número. Si el cliente contesta, se reinicia.": "With \"The customer doesn't reply\", it tries again after the same wait up to this number. If the customer replies, it starts over.",
+ "Mensaje de respaldo (opcional)": "Backup message (optional)",
+ "Se envía si la IA no pudo escribir un mensaje seguro. Vacío: ese día no se envía nada.": "Sent if the AI couldn't write a safe message. Empty: nothing is sent that time."
 }
