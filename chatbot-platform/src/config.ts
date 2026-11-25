@@ -245,6 +245,19 @@ export const config = {
     webhookSecret: env('RESEND_WEBHOOK_SECRET', ''),
   },
   /**
+   * Campañas por correo: salen por la API de Resend desde <alias>@EMAIL_CAMPAIGN_DOMAIN, un subdominio aparte (p. ej.
+   * envios.tudominio.com) para que una campaña con quejas no dañe la entrega de las respuestas ni de los correos del
+   * sistema. Las respuestas del cliente van a la dirección de reenvío del canal (Reply-To). Sin este dominio no se
+   * pueden enviar campañas de correo.
+   */
+  emailCampaigns: {
+    domain: env('EMAIL_CAMPAIGN_DOMAIN', '').trim().toLowerCase(),
+    /** Tope de correos de campaña por negocio al día, ya calentado el dominio. */
+    dailyMax: Math.max(1, Number(env('EMAIL_CAMPAIGN_DAILY_MAX', '5000')) || 5000),
+    /** Llamadas por segundo a la API de Resend desde este servidor (su límite por cuenta es 2 por omisión). */
+    apiPerSecond: Math.max(1, Number(env('RESEND_API_PER_SECOND', '2')) || 2),
+  },
+  /**
    * Verificación en dos pasos (código de una app de autenticación). Apagada (por defecto): se entra solo con correo y
    * contraseña (o Google), y las acciones delicadas no piden código. MFA_REQUIRED=true la vuelve obligatoria.
    */

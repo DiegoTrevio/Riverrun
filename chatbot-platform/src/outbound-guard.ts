@@ -51,6 +51,7 @@ export function guardTransport(t: Transport, destination: string): Transport {
     typingSimulation: t.typingSimulation,
     libraryFilesOnly: t.libraryFilesOnly,
     ...(t.setDispatchGuard?{setDispatchGuard:(guard:()=>Promise<void>)=>t.setDispatchGuard!(guard)}:{}),
+    ...(t.setMailEnvelope ? { setMailEnvelope: (envelope: Parameters<NonNullable<Transport['setMailEnvelope']>>[0]) => t.setMailEnvelope!(envelope) } : {}),
     ...(t.startTyping?{startTyping:async()=>{assertOutbound(destination);await t.startTyping!();}}:{}),
     sendText: async (text, delay) => {
       assertOutbound(destination);

@@ -1,3 +1,4 @@
+import { resumeAddress } from '../channels/email-campaign.js';
 import { eventVars, lookupVars } from './template-vars.js';
 import * as assignment from './assignment.js';
 import { alertChannels, groupsRepeats } from './alert-groups.js';
@@ -681,7 +682,9 @@ export class Automator {
       await this.handle({ type: 'opt_out', conversationId: conv.id, text });
       return true;
     }
-    if (oo.enabled && contact.opted_out && norm && oo.resume_keywords.some((k) => normalize(k) === norm)) {
+    if (oo.enabled && contact.opted_out && norm && oo.resume_keywords.some((k) => normalize(k) === norm)
+      // Por correo, una queja de spam o un rebote no se levantan con ALTA (la IA contesta el mensaje como cualquier otro).
+      && ((await store.getChannel(conv.channel_id))?.type !== 'email' || (await resumeAddress(conv.account_id, contact.external_id)))) {
       await astore.setOptOut(contact.id, false);
       await astore.setConsent(contact.id, true, 'keyword'); // volver a pedir mensajes es aceptarlos
       await this.chat.outbound.send(conv.id, { text: oo.resume_message, source: 'opt_out', transactional: true, allowWhenHuman: true });

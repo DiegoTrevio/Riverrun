@@ -49,6 +49,7 @@ import { publicRoutes } from './routes/public.js';
 import { signupRoutes } from './routes/signup.js';
 import { invitationPublicRoutes, invitationRoutes } from './routes/invitations.js';
 import { nudgesRoutes } from './routes/nudges.js';
+import { emailUnsubscribeRoutes } from './routes/email-unsubscribe.js';
 import { pricingRoutes } from './routes/pricing.js';
 import { accountSelfServiceRoutes, selfServicePages } from './routes/self-service.js';
 import { socialPublicRoutes, socialRoutes } from './routes/social.js';
@@ -180,6 +181,7 @@ export async function buildApp(opts: { ai: AiProvider; transportFactory?: Transp
   await accountPublicRoutes(app);
   await pricingRoutes(app);
   await nudgesRoutes(app);
+  await emailUnsubscribeRoutes(app);
   await selfServicePages(app);
   await publicRoutes(app, service);
   await socialPublicRoutes(app);

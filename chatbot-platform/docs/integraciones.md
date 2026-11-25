@@ -197,7 +197,7 @@ Se ignoran avisos automáticos, listas, `no-reply` y los correos de tu propio bu
 **Para el administrador de la plataforma** (una sola vez):
 
 1. En resend.com → Domains da de alta un subdominio, por ejemplo `correo.tudominio.com`, con envío y **recepción** activados (agrega el registro MX que muestra, con la prioridad más baja, y los de DKIM/SPF).
-2. En resend.com → Webhooks agrega `https://<tu dominio>/email/resend` con el evento `email.received` y copia su secreto (`whsec_…`).
+2. En resend.com → Webhooks agrega `https://<tu dominio>/email/resend` con el evento `email.received` (y `email.bounced` y `email.complained` si vas a mandar [campañas por correo](campanas-correo.md)) y copia su secreto (`whsec_…`).
 3. En el `.env` del servidor: `EMAIL_INBOUND_DOMAIN=correo.tudominio.com`, `RESEND_WEBHOOK_SECRET=whsec_…` y `RESEND_API_KEY`. Sin ellas, el panel dice que el reenvío aún no está disponible.
 
 Cada aviso de Resend se comprueba con su firma y su hora (más de 5 minutos de diferencia se rechaza). Si algo falla de nuestro lado se responde 503 y Resend lo reintenta; un correo que ya se guardó no se vuelve a contestar.

@@ -433,6 +433,7 @@ Pestaña **Activación** de cada asistente. Lo aplica el sistema (no la IA), por
 - Se envían a ritmo controlado (mensajes por minuto) para proteger el número.
 - Por defecto solo se envían en horario de atención: lo que no alcance sale en la siguiente apertura, al mismo ritmo.
 - Siempre excluyen a quien se dio de baja y no interrumpen conversaciones que está atendiendo una persona. Muestran vista previa de destinatarios y estadísticas por destinatario.
+- **Por correo:** en un canal de correo por reenvío la campaña lleva asunto y sale por la API de Resend desde un subdominio aparte (`EMAIL_CAMPAIGN_DOMAIN`), con enlace de baja y baja de un clic, tope diario que sube solo (calentamiento) y pausa automática si hay muchos rebotes o quejas. Las respuestas caen en Conversaciones y las contesta el asistente. Ver [campañas por correo](docs/campanas-correo.md).
 
 ### Horario y ajustes
 

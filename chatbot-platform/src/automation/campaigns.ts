@@ -6,6 +6,8 @@ import { query, queryOne, withTransaction } from '../db.js';
 import { addDays, localParts, nextOpen, zonedToUtc } from './time.js';
 import type { OutboundResult } from './outbound.js';
 import { OwnershipLost } from '../engine/coordination.js';
+import * as store from '../store/index.js';
+import { emailCampaignProblem, emailDailyCap } from '../channels/email-campaign.js';
 
 /** Campañas: envío programado a un segmento, espaciado para no parecer spam (y no arriesgar el número). */
 export class Campaigns {
@@ -21,6 +23,16 @@ export class Campaigns {
       if (!seq || seq.account_id !== c.account_id) throw new Error('El flujo de la campaña ya no existe');
       if (!seq.active) throw new Error(`El flujo "${seq.name}" está desactivado: actívalo antes de enviarlo`);
     } else if (!c.message.trim() && !c.image_id) throw new Error('La campaña no tiene mensaje');
+    const channel = await store.getChannel(c.channel_id);
+    if (channel?.type === 'email') {
+      const problem = emailCampaignProblem(channel, c);
+      if (problem) throw new Error(problem);
+      for (const extra of c.channel_ids ?? []) {
+        const ch = await store.getChannel(extra);
+        const p = ch ? emailCampaignProblem(ch, c) : 'Uno de los canales adicionales ya no existe.';
+        if (p) throw new Error(p);
+      }
+    }
     if (c.scheduled_at && new Date(c.scheduled_at).getTime() > Date.now() + 30_000) {
       await astore.setCampaignStatus(c.id, 'scheduled');
       await astore.scheduleJob({ account_id: c.account_id, type: 'campaign_start', payload: { campaign_id: c.id }, run_at: new Date(c.scheduled_at), dedupe_key: `campaign:${c.id}` });
@@ -58,7 +70,11 @@ export class Campaigns {
     const gapMs = Math.ceil(60_000 / Math.max(1, c.rate_per_minute));
     const settings = await astore.getSettings(c.account_id);
     const tz = settings.timezone;
-    const cap = settings.sending.daily_cap_per_number;
+    // Por correo, el tope del día es el del calentamiento del dominio (sube con los días en que ya se envió).
+    const channel = await store.getChannel(c.channel_id);
+    const isEmail = channel?.type === 'email';
+    const numberCap = settings.sending.daily_cap_per_number;
+    const cap = isEmail ? Math.min(numberCap || Infinity, await emailDailyCap(c.account_id)) : numberCap;
     // Cada número lleva su propio ritmo (con varios números la campaña termina antes sin acelerar ninguno) y, si hay tope
     // diario, lo que no cabe hoy pasa al día siguiente. Los ya enviados hoy por otras campañas cuentan para el tope, y
     // cada persona de un flujo cuenta como todos sus mensajes (con un tope de 100 y un flujo de 4, 25 personas por día).
@@ -117,6 +133,7 @@ export class Campaigns {
     // Un destinatario se envía una sola vez aunque haya tareas duplicadas.
     const mine = await queryOne(`UPDATE campaign_recipients SET reason = 'enviando' WHERE campaign_id = $1 AND conversation_id = $2 AND status = 'pending' AND reason = '' RETURNING 1`, [c.id, payload.conversation_id]);
     if (!mine) return;
+    const isEmail = (await store.getChannel(c.channel_id))?.type === 'email';
     const r = c.kind === 'sequence' ? await this.startFlow(c, payload.conversation_id) : await this.chat.outbound.send(payload.conversation_id, {
       text: c.message,
       imageId: c.image_id ?? undefined,
@@ -125,6 +142,7 @@ export class Campaigns {
       meta: { campaign_id: c.id },
       flowStep: c.flow_step,
       waTemplate: c.wa_template,
+      email: isEmail ? { subject: c.subject } : undefined,
     });
     await query(
       `UPDATE campaign_recipients SET status = $3, reason = $4, sent_at = CASE WHEN $3 = 'sent' THEN now() ELSE NULL END

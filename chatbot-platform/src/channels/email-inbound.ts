@@ -15,6 +15,7 @@ import { hydrateChannel } from '../store/index.js';
 import { clearHits, countHit } from '../identity/rate-limit.js';
 import type { Channel } from '../types.js';
 import type { MailAuthentication, OutMail, RawMail } from './email.js';
+import { resendTurn } from './resend-pace.js';
 
 const RESEND_API = 'https://api.resend.com';
 /** Un aviso firmado hace más de 5 minutos (o en el futuro) se rechaza: así no se puede repetir uno viejo. */
@@ -103,15 +104,19 @@ export function parseAddress(v: string): { address: string; name: string } {
 /** Un encabezado que sale en la respuesta: sin saltos de línea y con tope. */
 const oneLine = (v: string, max = 2000) => v.replace(/[\r\n]+/g, ' ').slice(0, max);
 
-/** Alias de los destinatarios que son de nuestro dominio de reenvío. */
+/**
+ * Alias de los destinatarios que son de nuestro dominio de reenvío o del de campañas (quien contesta una campaña sin
+ * respetar el Reply-To le escribe al remitente de la campaña).
+ */
 export function aliasesIn(addresses: unknown[]): string[] {
   const domain = config.emailInbound.domain;
   if (!domain) return [];
+  const domains = [domain, config.emailCampaigns.domain].filter(Boolean);
   const out = new Set<string>();
   for (const a of addresses) {
     const { address } = parseAddress(String(a ?? ''));
     const [local, host] = address.split('@');
-    if (host === domain && /^[a-z0-9]{4,40}$/.test(local ?? '')) out.add(local);
+    if (domains.includes(host) && /^[a-z0-9]{4,40}$/.test(local ?? '')) out.add(local);
   }
   return [...out];
 }
@@ -249,8 +254,11 @@ export async function sendViaResend(mail: OutMail): Promise<string> {
   const attachments = mail.attachment
     ? [{ filename: mail.attachment.filename, content: (await fs.readFile(mail.attachment.path)).toString('base64') }]
     : undefined;
-  const headers: Record<string, string> = { 'Auto-Submitted': 'auto-replied', 'X-Auto-Response-Suppress': 'All' };
+  // Una respuesta lleva Auto-Submitted (evita bucles con otros contestadores); una campaña no, pero sí sus cabeceras de baja.
+  const headers: Record<string, string> = mail.bulk ? {} : { 'Auto-Submitted': 'auto-replied', 'X-Auto-Response-Suppress': 'All' };
+  for (const [k, v] of Object.entries(mail.headers ?? {})) if (/^[A-Za-z0-9-]{1,60}$/.test(k)) headers[k] = oneLine(v);
   if (mail.inReplyTo) headers['In-Reply-To'] = oneLine(mail.inReplyTo, 500);
   if (mail.references) headers.References = oneLine(mail.references);
-  return backend.send({ from: mail.from, to: [mail.to], subject: oneLine(mail.subject, 300), text: mail.text, headers, attachments });
+  await resendTurn();
+  return backend.send({ from: mail.from, to: [mail.to], subject: oneLine(mail.subject, 300), text: mail.text, headers, attachments, ...(mail.replyTo ? { reply_to: [oneLine(mail.replyTo, 300)] } : {}) });
 }

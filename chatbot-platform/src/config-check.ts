@@ -717,6 +717,24 @@ export function validateConfig(env: Env = process.env, now = new Date()): Config
     'EMAIL_INBOUND_DOMAIN está puesto, pero falta RESEND_WEBHOOK_SECRET o RESEND_API_KEY: los correos reenviados no se recibirán o no se podrán contestar.',
     'En resend.com → Webhooks agrega <tu dominio>/email/resend con el evento email.received y copia su secreto (whsec_…) en RESEND_WEBHOOK_SECRET.',
   );
+  // Campañas por correo: necesitan el canal por reenvío (para recibir las respuestas) y un subdominio aparte para enviar.
+  const campaignDomain = get('EMAIL_CAMPAIGN_DOMAIN').toLowerCase();
+  if (campaignDomain && (!get('EMAIL_INBOUND_DOMAIN') || !get('RESEND_API_KEY'))) add(
+    'warning',
+    'email',
+    'email_campaigns.incomplete',
+    ['EMAIL_CAMPAIGN_DOMAIN', 'EMAIL_INBOUND_DOMAIN', 'RESEND_API_KEY'],
+    'EMAIL_CAMPAIGN_DOMAIN está puesto, pero falta EMAIL_INBOUND_DOMAIN o RESEND_API_KEY: las campañas de correo no podrán salir ni recibir respuestas.',
+    'Configura primero el correo por reenvío (docs/integraciones.md, sección 4) y luego las campañas (docs/campanas-correo.md).',
+  );
+  if (campaignDomain && campaignDomain === get('EMAIL_INBOUND_DOMAIN').toLowerCase()) add(
+    'warning',
+    'email',
+    'email_campaigns.same_domain',
+    ['EMAIL_CAMPAIGN_DOMAIN', 'EMAIL_INBOUND_DOMAIN'],
+    'EMAIL_CAMPAIGN_DOMAIN es el mismo que EMAIL_INBOUND_DOMAIN: una campaña con quejas puede mandar a spam las respuestas del asistente.',
+    'Usa otro subdominio para las campañas, por ejemplo envios.tudominio.com, y dalo de alta en Resend.',
+  );
   const signup = flag('SIGNUP_ENABLED', true);
   const requireEmail = flag('SIGNUP_REQUIRE_EMAIL', true);
   if (!mailOn) {
