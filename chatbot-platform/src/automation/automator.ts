@@ -28,6 +28,7 @@ import * as store from '../store/index.js';
 import type { Channel, Chatbot, Contact, Conversation, Message } from '../types.js';
 import * as astore from './store.js';
 import { renderTemplate } from './templates.js';
+import { draftFollowUp, followUpMessageId, followUpsSinceCustomer } from './follow-up-ai.js';
 import type { OutboundResult, PendingButtons } from './outbound.js';
 import { matchChoice, parsePayload } from './buttons.js';
 import { addDays, isOpen, localParts, nextOpen, nextTimeOfDay, zonedToUtc } from './time.js';
@@ -389,6 +390,55 @@ export class Automator {
     await store.insertMessage({ conversation_id: ctx.conv.id, direction: 'out', sender: 'system', type: 'text', content: `(simulador) ${text}`, meta: { source: 'simulation' } });
   }
 
+  /**
+   * «Dar seguimiento con IA»: hasta max_attempts mensajes de esta regla mientras el cliente no conteste. La IA escribe
+   * con lo que se habló; si su mensaje trae datos sin respaldo (o falla), sale el texto de respaldo o nada. Sale por
+   * Outbound.send como cualquier regla: respeta bajas, conversación con una persona y la ventana de 24 h.
+   */
+  private async followUpWithAi(rule: Automation, a: Extract<Action, { type: 'follow_up_ai' }>, ctx: Ctx, e: AutomationEvent) {
+    const log = (message: string) => logEvent({ level: 'info', source: 'engine', message: `Regla "${rule.name}": ${message}`, accountId: ctx.conv.account_id, conversationId: ctx.conv.id });
+    const sent = await followUpsSinceCustomer(ctx.conv.id, rule.id);
+    if (sent >= a.max_attempts) return log(`seguimiento con IA: ya se mandaron ${sent} sin respuesta del cliente; no se insiste`);
+    const lastIn = async () => Number((await astore.lastInbound(ctx.conv.id))?.id ?? 0);
+    const before = await lastIn();
+    const fallback = a.fallback_text.trim() ? '; se envía el texto de respaldo' : '; no se envió';
+    let text = '';
+    if (!ctx.bot) await log(`seguimiento con IA sin agente en el canal${fallback}`);
+    else {
+      try {
+        const draft = await draftFollowUp(this.chat.aiProvider, ctx.bot, ctx.conv.id, { instruction: a.instruction, attempt: sent + 1 });
+        if (draft.skipped) return log(`seguimiento con IA no enviado: ${draft.skipped}`);
+        text = draft.text;
+        if (draft.invalid) await log(`la IA no devolvió un mensaje de seguimiento válido${fallback}`);
+        else if (!text) await log(`seguimiento con IA con datos sin respaldo (${draft.unverified.slice(0, 3).join('; ')})${fallback}`);
+      } catch (err: unknown) {
+        const reason = err instanceof Error ? err.message : String(err);
+        await logEvent({ level: 'warn', source: 'ai', message: `Regla "${rule.name}": la IA no pudo escribir el seguimiento (${reason.slice(0, 200)})${fallback}`, accountId: ctx.conv.account_id, conversationId: ctx.conv.id });
+      }
+    }
+    if (!text && a.fallback_text.trim()) text = this.render(a.fallback_text, ctx, e);
+    if (!text.trim()) return;
+    // La IA tarda unos segundos: si mientras tanto el cliente escribió, el seguimiento ya no viene al caso.
+    if ((await lastIn()) > before) return log('seguimiento con IA no enviado: el cliente acaba de escribir');
+    const source = e.type === 'no_reply' ? 'no_reply' : 'automation';
+    // Sin variables: el texto ya viene escrito (o el de respaldo, ya con sus variables); lo que escribió la IA no se interpreta.
+    const r = await this.chat.outbound.send(ctx.conv.id, { text, source, meta: { automation_id: rule.id, follow_up_ai: rule.id } });
+    if (!r.sent) return log(`seguimiento con IA no enviado (${r.reason})`);
+    // «El cliente no contesta» no se reprograma con sus propios mensajes: si quedan intentos, esta regla se vuelve a
+    // programar desde el seguimiento recién enviado. Si el cliente contesta después, la tarea ve su mensaje y no corre;
+    // y si contestó justo antes de enviarlo (no se alcanzó a ver), no se reprograma encima de lo que programó la respuesta.
+    if (rule.trigger.type === 'no_reply' && sent + 1 < a.max_attempts) {
+      const last = await followUpMessageId(ctx.conv.id, rule.id);
+      if (!last || (await lastIn()) > before) return;
+      await astore.scheduleJob({
+        account_id: ctx.conv.account_id, type: 'no_reply',
+        payload: { automation_id: rule.id, conversation_id: ctx.conv.id, after_message_id: last },
+        run_at: new Date(Date.now() + rule.trigger.minutes * 60_000),
+        dedupe_key: `noreply:${rule.id}:${ctx.conv.id}`,
+      });
+    }
+  }
+
   private async runAction(a: Action, ctx: Ctx, rule: Automation, e: AutomationEvent, index: number) {
     const depth = (e.depth ?? 0) + 1;
     const isSim = ctx.channel.type === 'playground';
@@ -410,6 +460,9 @@ export class Automator {
         if (!r.sent) await logEvent({ level: 'info', source: 'engine', message: `Regla "${rule.name}": mensaje no enviado (${r.reason})`, accountId: ctx.conv.account_id, conversationId: ctx.conv.id });
         return;
       }
+      case 'follow_up_ai':
+        await this.followUpWithAi(rule, a, ctx, e);
+        return;
       case 'add_tag':
       case 'remove_tag': {
         const tag = a.tag.trim();

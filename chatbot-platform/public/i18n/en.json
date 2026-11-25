@@ -6254,5 +6254,15 @@
  "Tu correo de atención": "Your support email",
  "Un correo cuyo remitente no se puede comprobar (DMARC) se guarda marcado «[Remitente no verificado]» y no se contesta: así nadie escribe a tu nombre de cliente.": "An email whose sender can't be verified (DMARC) is saved marked \"[Unverified sender]\" and not answered, so no one can write pretending to be your customer.",
  "EMAIL_INBOUND_DOMAIN está puesto, pero falta RESEND_WEBHOOK_SECRET o RESEND_API_KEY: los correos reenviados no se recibirán o no se podrán contestar.": "EMAIL_INBOUND_DOMAIN is set, but RESEND_WEBHOOK_SECRET or RESEND_API_KEY is missing: forwarded emails won't be received or can't be answered.",
- "En resend.com → Webhooks agrega <tu dominio>/email/resend con el evento email.received y copia su secreto (whsec_…) en RESEND_WEBHOOK_SECRET.": "In resend.com → Webhooks add <your domain>/email/resend with the email.received event and copy its secret (whsec_…) into RESEND_WEBHOOK_SECRET."
+ "En resend.com → Webhooks agrega <tu dominio>/email/resend con el evento email.received y copia su secreto (whsec_…) en RESEND_WEBHOOK_SECRET.": "In resend.com → Webhooks add <your domain>/email/resend with the email.received event and copy its secret (whsec_…) into RESEND_WEBHOOK_SECRET.",
+ "Dar seguimiento con IA": "Follow up with AI",
+ "Seguimiento con IA si no responde": "AI follow-up if there's no reply",
+ "La IA escribe un mensaje corto que retoma lo que el cliente quería, con la información de tu negocio. Si el mensaje trae un precio, enlace o dato que no está en tu información, no se envía.": "The AI writes a short message that picks up what the customer wanted, using your business information. If the message includes a price, link or detail that isn't in your information, it isn't sent.",
+ "Indicación para la IA (opcional)": "Instruction for the AI (optional)",
+ "Pregunta si pudo revisar la cotización y ofrece resolver dudas.": "Ask whether they could review the quote and offer to answer questions.",
+ "Qué buscas con este seguimiento. No pongas precios aquí si no están en tu información.": "What you want from this follow-up. Don't put prices here unless they're in your information.",
+ "Máximo de seguimientos sin respuesta": "Maximum follow-ups without a reply",
+ "Con «El cliente no contesta», se vuelve a intentar con la misma espera hasta este número. Si el cliente contesta, se reinicia.": "With \"The customer doesn't reply\", it tries again after the same wait up to this number. If the customer replies, it starts over.",
+ "Mensaje de respaldo (opcional)": "Backup message (optional)",
+ "Se envía si la IA no pudo escribir un mensaje seguro. Vacío: ese día no se envía nada.": "Sent if the AI couldn't write a safe message. Empty: nothing is sent that time."
 }

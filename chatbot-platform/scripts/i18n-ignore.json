@@ -125,5 +125,8 @@
  "xMidYMid meet",
  "{0}-{1}-{2}T{3}:{4}",
  "{0}T12:00:00Z",
- "{{campo.{0}}}"
+ "{{campo.{0}}}",
+ "El mensaje de seguimiento para el cliente. Vacío si skip = true.",
+ "true si no conviene escribir (el cliente ya dijo que no le interesa, se despidió, ya se resolvió o pidió no recibir mensajes).",
+ "Por qué no conviene escribir (solo si skip = true)."
 ]
