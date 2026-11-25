@@ -218,6 +218,12 @@ export type Condition = z.infer<typeof ConditionSchema>;
 
 export const ActionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('send_message'), text: z.string().max(4000).default(''), image_id: z.string().default(''), attachment_id: AttachmentRef, wa_template: WaTemplateRefSchema, delay_minutes: z.number().int().min(0).max(60 * 24 * 30).default(0) }),
+  /**
+   * La IA escribe el seguimiento según la conversación (revisado contra la información del negocio). max_attempts:
+   * cuántos manda esta regla mientras el cliente no conteste. fallback_text: se envía si la IA no pudo escribir uno
+   * seguro (vacío = no se envía nada).
+   */
+  z.object({ type: z.literal('follow_up_ai'), instruction: z.string().max(500).default(''), max_attempts: z.number().int().min(1).max(5).default(2), fallback_text: z.string().max(2000).default('') }),
   z.object({ type: z.literal('add_tag'), tag: Slug }),
   z.object({ type: z.literal('remove_tag'), tag: Slug }),
   z.object({ type: z.literal('set_field'), field: z.string().regex(/^[a-z0-9_]+$/), value: z.string().max(500) }),

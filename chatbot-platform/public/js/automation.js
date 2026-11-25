@@ -91,6 +91,7 @@ const TRIGGERS = {
 
 export const ACTIONS = {
   send_message: 'Enviar mensaje o foto',
+  follow_up_ai: 'Dar seguimiento con IA',
   alert_team: 'Alertar al equipo',
   send_report: 'Enviar reporte de la conversación',
   assign: 'Asignar a alguien del equipo (por turnos)',
@@ -145,6 +146,7 @@ const RULE_TEMPLATES = [
   { name: 'Fuera de horario', trigger: { type: 'message_received', match: 'any' }, conditions: [{ type: 'business_hours', inside: false }], actions: [{ type: 'send_message', text: 'Gracias por escribir 🙌 Estamos fuera de horario; te respondemos en cuanto abramos.' }] }, // taste-skill-ignore: texto que llega al WhatsApp del cliente o del equipo
   { name: 'Palabra urgente → alerta', trigger: { type: 'message_received', match: 'keywords', keywords: ['urgente', 'emergencia'] }, actions: [{ type: 'alert_team', message: '🚨 {{cliente}} escribió algo urgente: "{{mensaje}}"' }, { type: 'handoff', reason: 'Mensaje urgente' }] }, // taste-skill-ignore: texto que llega al WhatsApp del cliente o del equipo
   { name: 'Seguimiento si no responde', trigger: { type: 'no_reply', minutes: 120 }, conditions: [{ type: 'status', status: 'bot' }], actions: [{ type: 'send_message', text: '¿Pudiste revisarlo, {{nombre}}? Si tienes alguna duda, aquí estoy.' }] },
+  { name: 'Seguimiento con IA si no responde', trigger: { type: 'no_reply', minutes: 1440 }, conditions: [{ type: 'status', status: 'bot' }], actions: [{ type: 'follow_up_ai', instruction: '', max_attempts: 2, fallback_text: '' }] },
   { name: 'Queja → persona', trigger: { type: 'intent', intent: 'queja', description: 'El cliente está molesto, inconforme o reporta un problema' }, actions: [{ type: 'handoff', reason: 'Queja del cliente' }, { type: 'alert_team', message: 'Queja de {{cliente}}: "{{mensaje}}"' }] },
   { name: 'Quiere comprar → avisar a ventas', trigger: { type: 'intent', intent: 'listo_para_comprar', description: 'El cliente quiere comprar, reservar o pagar' }, actions: [{ type: 'add_tag', tag: 'caliente' }, { type: 'alert_team', message: '{{cliente}} está listo para comprar. {{link}}' }] },
   { name: 'Correo capturado → CRM', trigger: { type: 'data_captured', field: 'correo' }, actions: [{ type: 'webhook', url: 'https://mi-crm.com/webhook' }] },
@@ -263,6 +265,15 @@ function actionFields(a, refs, trigger) {
           field('Esperar antes de enviar (minutos)', num(a, 'delay_minutes', { min: 0 }), '0 = de inmediato')),
         field('Archivo (opcional)', attachmentPicker(a, refs)),
         waTemplateField(a, refs.waTemplates),
+      ];
+    case 'follow_up_ai':
+      a.instruction ??= ''; a.max_attempts ??= 2; a.fallback_text ??= '';
+      return [
+        h('p', { class: 'small muted', style: 'margin:0 0 6px' }, 'La IA escribe un mensaje corto que retoma lo que el cliente quería, con la información de tu negocio. Si el mensaje trae un precio, enlace o dato que no está en tu información, no se envía.'),
+        field('Indicación para la IA (opcional)', area(a, 'instruction', { placeholder: 'Pregunta si pudo revisar la cotización y ofrece resolver dudas.' }), 'Qué buscas con este seguimiento. No pongas precios aquí si no están en tu información.'),
+        field('Máximo de seguimientos sin respuesta', num(a, 'max_attempts', { min: 1, max: 5 }), 'Con «El cliente no contesta», se vuelve a intentar con la misma espera hasta este número. Si el cliente contesta, se reinicia.'),
+        varsField('Mensaje de respaldo (opcional)', area(a, 'fallback_text'), 'rule', { trigger }),
+        h('p', { class: 'small muted', style: 'margin:0' }, 'Se envía si la IA no pudo escribir un mensaje seguro. Vacío: ese día no se envía nada.'),
       ];
     case 'alert_team':
       a.message ??= '{{cliente}} necesita atención: "{{mensaje}}"'; a.roles ??= ['admin', 'agent']; a.user_ids ??= []; a.phones ??= [];
