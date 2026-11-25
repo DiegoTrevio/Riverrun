@@ -6254,5 +6254,22 @@
  "Tu correo de atención": "Your support email",
  "Un correo cuyo remitente no se puede comprobar (DMARC) se guarda marcado «[Remitente no verificado]» y no se contesta: así nadie escribe a tu nombre de cliente.": "An email whose sender can't be verified (DMARC) is saved marked \"[Unverified sender]\" and not answered, so no one can write pretending to be your customer.",
  "EMAIL_INBOUND_DOMAIN está puesto, pero falta RESEND_WEBHOOK_SECRET o RESEND_API_KEY: los correos reenviados no se recibirán o no se podrán contestar.": "EMAIL_INBOUND_DOMAIN is set, but RESEND_WEBHOOK_SECRET or RESEND_API_KEY is missing: forwarded emails won't be received or can't be answered.",
- "En resend.com → Webhooks agrega <tu dominio>/email/resend con el evento email.received y copia su secreto (whsec_…) en RESEND_WEBHOOK_SECRET.": "In resend.com → Webhooks add <your domain>/email/resend with the email.received event and copy its secret (whsec_…) into RESEND_WEBHOOK_SECRET."
+ "En resend.com → Webhooks agrega <tu dominio>/email/resend con el evento email.received y copia su secreto (whsec_…) en RESEND_WEBHOOK_SECRET.": "In resend.com → Webhooks add <your domain>/email/resend with the email.received event and copy its secret (whsec_…) into RESEND_WEBHOOK_SECRET.",
+ ". Opcionales:": ". Optional:",
+ "Correo inválido: {0}": "Invalid email: {0}",
+ "Correo repetido en el archivo": "Email repeated in the file",
+ "Elige un canal de WhatsApp (los contactos se identifican por su teléfono) o de correo (por su correo)": "Choose a WhatsApp channel (contacts are matched by phone) or an email channel (matched by email address)",
+ "Escribe de dónde salió esta base de correos": "Write where this email list came from",
+ "Estas personas aceptaron recibir correos de mi negocio": "These people agreed to receive emails from my business",
+ "Falta el correo": "Email is missing",
+ "Falta la columna «correo»": "The «correo» (email) column is missing",
+ "Formulario de mi sitio, clientes de la tienda…": "My website form, store customers…",
+ "Para importar necesitas un canal de WhatsApp (los contactos se identifican por su teléfono) o de correo (por su correo)": "To import you need a WhatsApp channel (contacts are matched by phone) or an email channel (matched by email address)",
+ "Queda anotado en cada contacto. Sirve para demostrar de dónde salió el correo si alguien pregunta.": "It's saved on each contact, so you can show where the address came from if anyone asks.",
+ "Sin esa casilla los contactos se importan, pero las campañas solo les llegan si aceptan después (si en Ajustes pediste consentimiento). Quien ya se dio de baja, o cuyo correo rebotó, no vuelve a recibir campañas aunque venga en el archivo. Comprar o copiar bases ajenas daña la entrega de tus correos y puede ir contra la ley.": "Without that box the contacts are imported, but campaigns only reach them if they agree later (if you require consent in Settings). Anyone who already unsubscribed, or whose address bounced, won't get campaigns again even if they're in the file. Buying or copying other people's lists hurts your email delivery and may be against the law.",
+ "correo ya estaba dado de baja (o rebotó): no recibirá campañas": "address was already unsubscribed (or bounced): it won't get campaigns",
+ "correos ya estaban dados de baja (o rebotaron): no recibirán campañas": "addresses were already unsubscribed (or bounced): they won't get campaigns",
+ "{0} (WhatsApp)": "{0} (WhatsApp)",
+ "{0} (correo)": "{0} (email)",
+ "¿De dónde salió esta base?": "Where did this list come from?"
 }

@@ -64,15 +64,27 @@ export async function contactFieldRoutes(api: FastifyInstance) {
     return { ok: true };
   });
 
-  /** Importar contactos desde CSV: alta o actualización por teléfono en un canal de WhatsApp. */
+  /**
+   * Importar contactos desde CSV: alta o actualización por teléfono en un canal de WhatsApp, o por correo en un canal de
+   * correo (una base para campañas). Una base de correos pide de dónde salió y si esas personas aceptaron recibir correos.
+   */
   api.post('/api/contacts/import', admins, async (req: any) => {
-    const b = parse(z.object({ channel_id: z.string().uuid(), csv: z.string().min(1).max(5 * 1024 * 1024) }), req.body);
+    const b = parse(z.object({
+      channel_id: z.string().uuid(),
+      csv: z.string().min(1).max(5 * 1024 * 1024),
+      consent: z.object({ confirmed: z.boolean().default(false), source: z.string().trim().max(120).default('') }).optional(),
+    }), req.body);
     const channel = assertAccount(req.user, await store.getChannel(b.channel_id), 'Canal no encontrado');
-    if (channel.type !== 'whatsapp') throw new HttpError(400, 'Elige un canal de WhatsApp: los contactos se identifican por su teléfono');
+    if (channel.type !== 'whatsapp' && channel.type !== 'email') throw new HttpError(400, 'Elige un canal de WhatsApp (los contactos se identifican por su teléfono) o de correo (por su correo)');
     if (await limited(`contacts-import:${channel.account_id}`, 20, 3600_000)) throw new HttpError(429, 'Demasiadas importaciones seguidas; intenta en un rato.');
     try {
-      const r = await importContacts(channel, b.csv, await listContactFields(channel.account_id));
-      await logEvent({ level: 'info', source: 'admin', message: `Importación de contactos por ${req.user.email}: ${r.created} nuevos, ${r.updated} actualizados, ${r.errors.length} con error`, accountId: channel.account_id });
+      const r = await importContacts(channel, b.csv, await listContactFields(channel.account_id), b.consent);
+      await logEvent({
+        level: 'info', source: 'admin', message: `Importación de contactos por ${req.user.email}: ${r.created} nuevos, ${r.updated} actualizados, ${r.errors.length} con error`,
+        accountId: channel.account_id, channelId: channel.id,
+        // De dónde salió la base y si el negocio dijo que aceptaron: la constancia de la importación.
+        details: b.consent ? { origen: b.consent.source, consentimiento: b.consent.confirmed, bajas: r.suppressed } : undefined,
+      });
       return r;
     } catch (e) {
       if (e instanceof ImportError) throw new HttpError(400, e.message);
